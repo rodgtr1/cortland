@@ -3,7 +3,7 @@
 
 Scans local Claude Code and Codex CLI session logs and emits a single unified,
 searchable list of past agent sessions. Throwaway prototype: prove the index is
-useful before any Sidekick UI is built.
+useful before any Cortland UI is built.
 
 Standard library only. Session logs are read-only inputs.
 """

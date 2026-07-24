@@ -1,16 +1,16 @@
 #!/bin/bash
 
-# Build and package Sidekick.app for macOS
+# Build and package Cortland.app for macOS
 
 set -e
 
-echo "🔨 Building Sidekick..."
+echo "🔨 Building Cortland..."
 
 # Build the Swift package
 swift build --configuration release
 
 # Create app bundle structure
-APP_NAME="Sidekick"
+APP_NAME="Cortland"
 BUNDLE_NAME="${APP_NAME}.app"
 BUILD_DIR="build"
 
@@ -70,38 +70,41 @@ if [ "${RELEASE:-0}" = "1" ]; then
     SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: TRAVIS KEITH RODGERS (2UWZ923R8C)}"
     TIMESTAMP_FLAG="--timestamp"
 else
+    # Still "Sidekick Dev" after the Cortland rename — the whole point of this
+    # identity is a cdhash that outlives rebuilds, and renaming it would drop
+    # every TCC grant it holds.
     SIGN_IDENTITY="${SIGN_IDENTITY:-Sidekick Dev}"
     TIMESTAMP_FLAG=""
 fi
 
-# Create sidekick-ctl CLI tool in bundle
-echo "📋 Adding sidekick-ctl CLI..."
-cp ".build/release/sidekick-ctl" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-ctl"
-chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-ctl"
+# Create cortland-ctl CLI tool in bundle
+echo "📋 Adding cortland-ctl CLI..."
+cp ".build/release/cortland-ctl" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/cortland-ctl"
+chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/cortland-ctl"
 
-# Create sidekick-agent-status CLI tool in bundle
-echo "📋 Adding sidekick-agent-status CLI..."
-cp ".build/release/sidekick-agent-status" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-agent-status"
-chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-agent-status"
+# Create cortland-agent-status CLI tool in bundle
+echo "📋 Adding cortland-agent-status CLI..."
+cp ".build/release/cortland-agent-status" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/cortland-agent-status"
+chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/cortland-agent-status"
 
-# Create sidekick-mcp MCP server in bundle (Model Context Protocol)
-echo "📋 Adding sidekick-mcp MCP server..."
-cp ".build/release/sidekick-mcp" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-mcp"
-chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-mcp"
+# Create cortland-mcp MCP server in bundle (Model Context Protocol)
+echo "📋 Adding cortland-mcp MCP server..."
+cp ".build/release/cortland-mcp" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/cortland-mcp"
+chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/cortland-mcp"
 
-# Create sidekick-telemetry helper in bundle (Stop-hook token/cost reporter)
-echo "📋 Adding sidekick-telemetry helper..."
-cp ".build/release/sidekick-telemetry" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-telemetry"
-chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/sidekick-telemetry"
+# Create cortland-telemetry helper in bundle (Stop-hook token/cost reporter)
+echo "📋 Adding cortland-telemetry helper..."
+cp ".build/release/cortland-telemetry" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/cortland-telemetry"
+chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/cortland-telemetry"
 
-# Bundle the sidekick-panes agent skill (must land before the signing step
+# Bundle the cortland-panes agent skill (must land before the signing step
 # below, which seals Contents/Resources). Preferences -> Agents installs it into
 # ~/.claude/skills etc. from here, and InstalledSkillRefresher re-syncs it on
 # every launch — so an app-only user, with no repo and no scripts, still gets
 # the skill their agents read, and still gets it updated.
-echo "📋 Adding sidekick-panes skill..."
-SKILL_SOURCE=".claude/skills/sidekick-panes"
-SKILL_DEST="${BUILD_DIR}/${BUNDLE_NAME}/Contents/Resources/skills/sidekick-panes"
+echo "📋 Adding cortland-panes skill..."
+SKILL_SOURCE=".claude/skills/cortland-panes"
+SKILL_DEST="${BUILD_DIR}/${BUNDLE_NAME}/Contents/Resources/skills/cortland-panes"
 mkdir -p "${SKILL_DEST}/agents"
 cp "${SKILL_SOURCE}/SKILL.md" "${SKILL_DEST}/SKILL.md"
 cp "${SKILL_SOURCE}/agents/openai.yaml" "${SKILL_DEST}/agents/openai.yaml"
@@ -109,14 +112,14 @@ cp "${SKILL_SOURCE}/agents/openai.yaml" "${SKILL_DEST}/agents/openai.yaml"
 # Code-sign the bundle (helpers first, main app last) with a stable identity.
 if security find-identity -p codesigning -v 2>/dev/null | grep -q "${SIGN_IDENTITY}"; then
     echo "🔏 Signing with '${SIGN_IDENTITY}'..."
-    for HELPER in sidekick-ctl sidekick-agent-status sidekick-mcp sidekick-telemetry; do
+    for HELPER in cortland-ctl cortland-agent-status cortland-mcp cortland-telemetry; do
         codesign --force --options runtime ${TIMESTAMP_FLAG} \
-            --entitlements Sidekick.entitlements \
+            --entitlements Cortland.entitlements \
             --sign "${SIGN_IDENTITY}" \
             "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/${HELPER}"
     done
     codesign --force --options runtime ${TIMESTAMP_FLAG} \
-        --entitlements Sidekick.entitlements \
+        --entitlements Cortland.entitlements \
         --sign "${SIGN_IDENTITY}" \
         "${BUILD_DIR}/${BUNDLE_NAME}"
     codesign --verify --deep --strict --verbose=2 "${BUILD_DIR}/${BUNDLE_NAME}"
@@ -134,7 +137,7 @@ fi
 # flag entirely; browser/AirDrop transfers need right-click -> Open (or
 # System Settings -> Privacy & Security -> Open Anyway) on first launch.
 echo "📦 Creating distribution zip..."
-ditto -c -k --keepParent "${BUILD_DIR}/${BUNDLE_NAME}" "${BUILD_DIR}/Sidekick.zip"
+ditto -c -k --keepParent "${BUILD_DIR}/${BUNDLE_NAME}" "${BUILD_DIR}/Cortland.zip"
 
 # DMG for the standard drag-to-Applications install experience. Built from a
 # staging dir so the mounted volume shows the app next to an Applications
@@ -145,23 +148,23 @@ rm -rf "${DMG_STAGING}"
 mkdir -p "${DMG_STAGING}"
 cp -R "${BUILD_DIR}/${BUNDLE_NAME}" "${DMG_STAGING}/${BUNDLE_NAME}"
 ln -s /Applications "${DMG_STAGING}/Applications"
-rm -f "${BUILD_DIR}/Sidekick.dmg"
-hdiutil create -volname "${APP_NAME}" -srcfolder "${DMG_STAGING}" -ov -format UDZO "${BUILD_DIR}/Sidekick.dmg"
+rm -f "${BUILD_DIR}/Cortland.dmg"
+hdiutil create -volname "${APP_NAME}" -srcfolder "${DMG_STAGING}" -ov -format UDZO "${BUILD_DIR}/Cortland.dmg"
 rm -rf "${DMG_STAGING}"
 
 # Release DMGs get their own Developer ID signature so Gatekeeper can vouch
 # for the container, not just the app inside it.
 if [ "${RELEASE:-0}" = "1" ]; then
     echo "🔏 Signing DMG..."
-    codesign --sign "${SIGN_IDENTITY}" --timestamp "${BUILD_DIR}/Sidekick.dmg"
+    codesign --sign "${SIGN_IDENTITY}" --timestamp "${BUILD_DIR}/Cortland.dmg"
 fi
 
 echo "✅ App bundle created at: ${BUILD_DIR}/${BUNDLE_NAME}"
-echo "✅ Distribution DMG at:   ${BUILD_DIR}/Sidekick.dmg"
-echo "✅ Distribution zip at:   ${BUILD_DIR}/Sidekick.zip"
+echo "✅ Distribution DMG at:   ${BUILD_DIR}/Cortland.dmg"
+echo "✅ Distribution zip at:   ${BUILD_DIR}/Cortland.zip"
 echo ""
 echo "📱 To install:"
-echo "   open ${BUILD_DIR}/Sidekick.dmg   # then drag Sidekick to Applications"
+echo "   open ${BUILD_DIR}/Cortland.dmg   # then drag Cortland to Applications"
 echo "   # or, without the DMG:"
 echo "   cp -r ${BUILD_DIR}/${BUNDLE_NAME} /Applications/"
 echo ""
@@ -171,8 +174,8 @@ echo "   # or"
 echo "   /Applications/${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
 echo ""
 echo "🛠️  To add CLI tools to PATH:"
-echo "   ln -sf /Applications/${BUNDLE_NAME}/Contents/MacOS/sidekick-ctl /usr/local/bin/sidekick-ctl"
-echo "   ln -sf /Applications/${BUNDLE_NAME}/Contents/MacOS/sidekick-agent-status /usr/local/bin/sidekick-agent-status"
+echo "   ln -sf /Applications/${BUNDLE_NAME}/Contents/MacOS/cortland-ctl /usr/local/bin/cortland-ctl"
+echo "   ln -sf /Applications/${BUNDLE_NAME}/Contents/MacOS/cortland-agent-status /usr/local/bin/cortland-agent-status"
 echo ""
 echo "🔌 To register the MCP server with Claude Code:"
-echo "   claude mcp add --scope user sidekick /Applications/${BUNDLE_NAME}/Contents/MacOS/sidekick-mcp"
+echo "   claude mcp add --scope user cortland /Applications/${BUNDLE_NAME}/Contents/MacOS/cortland-mcp"

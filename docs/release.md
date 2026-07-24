@@ -26,7 +26,7 @@ RELEASE=1 ./build-app.sh    # build, then sign app + 4 helpers + DMG with
                             # staple the DMG, spctl-assess both
 ```
 
-Ship `build/Sidekick.dmg` (or `build/Sidekick.zip`). The `.app` is stapled
+Ship `build/Cortland.dmg` (or `build/Cortland.zip`). The `.app` is stapled
 before the containers are rebuilt, so first launch passes Gatekeeper even
 offline.
 
@@ -38,7 +38,9 @@ xcrun notarytool log <submission-id> --keychain-profile sidekick-notary
 
 Dev builds are unchanged: plain `./build-app.sh` signs with the local
 `Sidekick Dev` identity so TCC grants persist across rebuilds; it never
-touches the notary service.
+touches the notary service. That identity and the `sidekick-notary` keychain
+profile keep their pre-rename names on purpose — renaming either would throw
+away the TCC grants and stored credentials attached to them.
 
 ## Before shipping to anyone
 

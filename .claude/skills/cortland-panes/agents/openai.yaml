@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cortland Panes"
+  short_description: "Orchestrate agents in Cortland terminal panes"
+  default_prompt: "Use $cortland-panes to launch workers in separate Cortland panes and collect their results."

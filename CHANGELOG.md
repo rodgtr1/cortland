@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Renamed
+
+- **Sidekick is now Cortland.** Everything user-facing takes the new name: the app bundle and its DMG/zip, the `cortland-ctl` / `cortland-agent-status` / `cortland-mcp` / `cortland-telemetry` helpers, the `cortland` MCP server and its `mcp__cortland__*` tools, the `cortland-panes` skill, the `CORTLAND_*` environment variables, the socket at `~/.config/cortland/cortland.sock`, and the bundle identifier (`app.cortland.terminal`). Earlier entries in this file still say Sidekick, because that is what shipped.
+- **Upgrading carries the old install across.** On first launch the app copies `~/.config/sidekick` to `~/.config/cortland` — config, themes, and every arcade journal and almanac — item by item, skipping the stale IPC socket that would otherwise fail the copy outright, and leaving the old directory untouched so the previous build still works. Installing the hooks now also recognises a pre-rename integration and adopts it: the `cortland-*` entries go in and the `sidekick-*` ones come out (in `~/.claude/settings.json`, `~/.codex/config.toml`, the Pi extension, the installed skill, and the registered MCP server), so no event fires twice and none of them fire into a binary that no longer exists.
+- The local codesigning identity stays `Sidekick Dev` and the notary keychain profile stays `sidekick-notary`. Renaming the certificate would throw away every TCC grant tied to it, which is the one thing it exists to preserve.
+
 ## 0.5.0 (2026-07-20)
 
 ### New features

@@ -2,16 +2,16 @@
 import PackageDescription
 
 let package = Package(
-    name: "Sidekick",
+    name: "Cortland",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "Sidekick", targets: ["Sidekick"]),
-        .executable(name: "sidekick-ctl", targets: ["SidekickCtl"]),
-        .executable(name: "sidekick-agent-status", targets: ["SidekickAgentStatus"]),
-        .executable(name: "sidekick-mcp", targets: ["SidekickMCP"]),
-        .executable(name: "sidekick-telemetry", targets: ["SidekickTelemetry"]),
+        .executable(name: "Cortland", targets: ["Cortland"]),
+        .executable(name: "cortland-ctl", targets: ["CortlandCtl"]),
+        .executable(name: "cortland-agent-status", targets: ["CortlandAgentStatus"]),
+        .executable(name: "cortland-mcp", targets: ["CortlandMCP"]),
+        .executable(name: "cortland-telemetry", targets: ["CortlandTelemetry"]),
     ],
     dependencies: [
         .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.13.0"),
@@ -39,8 +39,8 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "SidekickTelemetryCore",
-            path: "Sources/SidekickTelemetryCore",
+            name: "CortlandTelemetryCore",
+            path: "Sources/CortlandTelemetryCore",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "5"])
             ]
@@ -58,15 +58,15 @@ let package = Package(
             cSettings: [.headerSearchPath("include")]
         ),
         .executableTarget(
-            name: "Sidekick",
+            name: "Cortland",
             dependencies: [
                 "SwiftTerm",
                 "TOMLKit",
-                "SidekickTelemetryCore",
+                "CortlandTelemetryCore",
                 // The app parses what the CLI helpers send, so it shares their
                 // wire definitions (AgentStatusReport) rather than keeping a
                 // second copy of the protocol version in sync by hand.
-                "SidekickIPCCore",
+                "CortlandIPCCore",
                 .product(name: "SwiftTreeSitter", package: "SwiftTreeSitter"),
                 .product(name: "TreeSitterSwift", package: "tree-sitter-swift"),
                 .product(name: "TreeSitterGo", package: "tree-sitter-go"),
@@ -80,7 +80,7 @@ let package = Package(
                 .product(name: "TreeSitterPython", package: "tree-sitter-python"),
                 "TreeSitterPythonScanner",
             ],
-            path: "Sources/Sidekick",
+            path: "Sources/Cortland",
             swiftSettings: [
                 // The app is overwhelmingly AppKit main-thread code, so the whole
                 // module defaults to the main actor; the genuinely-background
@@ -93,58 +93,58 @@ let package = Package(
         // Shared Unix-socket client for the CLI helpers (one correct copy of the
         // connect/write/read plumbing instead of four drifting ones).
         .target(
-            name: "SidekickIPCCore",
-            path: "Sources/SidekickIPCCore",
+            name: "CortlandIPCCore",
+            path: "Sources/CortlandIPCCore",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         .executableTarget(
-            name: "SidekickCtl",
-            dependencies: ["SidekickIPCCore"],
-            path: "Sources/sidekick-ctl",
+            name: "CortlandCtl",
+            dependencies: ["CortlandIPCCore"],
+            path: "Sources/cortland-ctl",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         .executableTarget(
-            name: "SidekickAgentStatus",
-            dependencies: ["SidekickIPCCore"],
-            path: "Sources/sidekick-agent-status",
+            name: "CortlandAgentStatus",
+            dependencies: ["CortlandIPCCore"],
+            path: "Sources/cortland-agent-status",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         // The MCP tool catalog, extracted from the executable so its schemas and
-        // argument handling can be unit tested (SidekickTests depends on it).
+        // argument handling can be unit tested (CortlandTests depends on it).
         .target(
-            name: "SidekickMCPCore",
-            dependencies: ["SidekickIPCCore"],
-            path: "Sources/SidekickMCPCore",
+            name: "CortlandMCPCore",
+            dependencies: ["CortlandIPCCore"],
+            path: "Sources/CortlandMCPCore",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         .executableTarget(
-            name: "SidekickMCP",
-            dependencies: ["SidekickIPCCore", "SidekickMCPCore"],
-            path: "Sources/sidekick-mcp",
+            name: "CortlandMCP",
+            dependencies: ["CortlandIPCCore", "CortlandMCPCore"],
+            path: "Sources/cortland-mcp",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         .executableTarget(
-            name: "SidekickTelemetry",
-            dependencies: ["SidekickTelemetryCore", "SidekickIPCCore"],
-            path: "Sources/sidekick-telemetry",
+            name: "CortlandTelemetry",
+            dependencies: ["CortlandTelemetryCore", "CortlandIPCCore"],
+            path: "Sources/cortland-telemetry",
             swiftSettings: [
                 .unsafeFlags(["-swift-version", "6"])
             ]
         ),
         .testTarget(
-            name: "SidekickTests",
-            dependencies: ["Sidekick", "SidekickTelemetryCore", "SidekickIPCCore", "SidekickMCPCore"],
-            path: "Tests/SidekickTests"
+            name: "CortlandTests",
+            dependencies: ["Cortland", "CortlandTelemetryCore", "CortlandIPCCore", "CortlandMCPCore"],
+            path: "Tests/CortlandTests"
         ),
     ]
 )

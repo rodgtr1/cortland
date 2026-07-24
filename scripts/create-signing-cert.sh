@@ -1,12 +1,16 @@
 #!/bin/bash
 #
-# Create a STABLE self-signed code-signing certificate for Sidekick.
+# Create a STABLE self-signed code-signing certificate for Cortland.
 #
 # Run this ONCE. After that, build-app.sh signs every build with this same
 # identity, so macOS keeps your "Allow folder/app access" (TCC) grants across
 # rebuilds instead of re-prompting each time.
 #
 # Re-running is safe: it's a no-op if the cert already exists.
+#
+# The certificate keeps its original "Sidekick Dev" name through the Cortland
+# rename: renaming it would invalidate every TCC grant already tied to it, which
+# is exactly what this cert exists to preserve.
 
 set -e
 
@@ -54,12 +58,12 @@ openssl pkcs12 -export -legacy -macalg sha1 \
     -in "${TMP}/cert.pem" \
     -out "${TMP}/identity.p12" \
     -name "${CERT_NAME}" \
-    -passout pass:sidekick >/dev/null 2>&1
+    -passout pass:cortland >/dev/null 2>&1
 
 # Import key + cert into the login keychain, allowing codesign to use it.
 security import "${TMP}/identity.p12" \
     -k "${KEYCHAIN}" \
-    -P "sidekick" \
+    -P "cortland" \
     -T /usr/bin/codesign \
     -T /usr/bin/security >/dev/null 2>&1
 

@@ -10,7 +10,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { closeSync, openSync, writeSync } from "node:fs";
 
-const TERMPROP = "vte.ext.sidekick.agent";
+const TERMPROP = "vte.ext.cortland.agent";
 function report(status: "busy" | "ready"): void {
   try {
     const fd = openSync("/dev/tty", "w");

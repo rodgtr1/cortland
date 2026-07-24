@@ -17,9 +17,9 @@ set -e
 
 PROFILE="${NOTARY_PROFILE:-sidekick-notary}"
 BUILD_DIR="build"
-APP="${BUILD_DIR}/Sidekick.app"
-DMG="${BUILD_DIR}/Sidekick.dmg"
-ZIP="${BUILD_DIR}/Sidekick.zip"
+APP="${BUILD_DIR}/Cortland.app"
+DMG="${BUILD_DIR}/Cortland.dmg"
+ZIP="${BUILD_DIR}/Cortland.zip"
 SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: TRAVIS KEITH RODGERS (2UWZ923R8C)}"
 
 if [ ! -d "${APP}" ]; then
@@ -49,10 +49,10 @@ echo "💿 Rebuilding DMG from the stapled app..."
 DMG_STAGING="${BUILD_DIR}/dmg-staging"
 rm -rf "${DMG_STAGING}"
 mkdir -p "${DMG_STAGING}"
-cp -R "${APP}" "${DMG_STAGING}/Sidekick.app"
+cp -R "${APP}" "${DMG_STAGING}/Cortland.app"
 ln -s /Applications "${DMG_STAGING}/Applications"
 rm -f "${DMG}"
-hdiutil create -volname "Sidekick" -srcfolder "${DMG_STAGING}" -ov -format UDZO "${DMG}"
+hdiutil create -volname "Cortland" -srcfolder "${DMG_STAGING}" -ov -format UDZO "${DMG}"
 rm -rf "${DMG_STAGING}"
 codesign --sign "${SIGN_IDENTITY}" --timestamp "${DMG}"
 

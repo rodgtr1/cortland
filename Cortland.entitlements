@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Cortland is intentionally NOT sandboxed: a terminal app must spawn
+      arbitrary shells and read the whole filesystem as the user. With the
+      sandbox disabled, file/network entitlement keys are inert, so none
+      are listed here.
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+</dict>
+</plist>

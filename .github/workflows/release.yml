@@ -28,8 +28,8 @@ jobs:
           # keeps its notes and just gets the CI-built assets attached.
           if gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
             gh release upload "${{ github.ref_name }}" \
-              build/Sidekick.dmg \
-              build/Sidekick.zip \
+              build/Cortland.dmg \
+              build/Cortland.zip \
               --clobber
             exit 0
           fi
@@ -42,7 +42,7 @@ jobs:
             NOTES_ARGS=(--generate-notes)
           fi
           gh release create "${{ github.ref_name }}" \
-            build/Sidekick.dmg \
-            build/Sidekick.zip \
+            build/Cortland.dmg \
+            build/Cortland.zip \
             --title "${{ github.ref_name }}" \
             "${NOTES_ARGS[@]}"

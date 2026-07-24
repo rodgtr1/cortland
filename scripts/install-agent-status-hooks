@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Wires Claude Code / Codex / Pi to report agent status to Sidekick: builds the
-# helper binaries into ~/.local/bin, installs the sidekick-panes skill, and adds
+# Wires Claude Code / Codex / Pi to report agent status to Cortland: builds the
+# helper binaries into ~/.local/bin, installs the cortland-panes skill, and adds
 # the hook entries that name those binaries.
 #
 # Run it once, by hand, to opt in. After that it is maintenance, and maintenance
@@ -14,7 +14,7 @@ set -euo pipefail
 #   --refresh-only        Do nothing unless the integration is already installed.
 #                         This is how install.sh calls it: opted-in users get a
 #                         silent refresh, everyone else is left alone with a hint.
-#   --binaries-from DIR   Take sidekick-agent-status / sidekick-mcp from DIR
+#   --binaries-from DIR   Take cortland-agent-status / cortland-mcp from DIR
 #                         instead of building them. install.sh passes the app
 #                         bundle it just installed, which skips a redundant
 #                         release build AND guarantees the ~/.local/bin helpers
@@ -49,11 +49,12 @@ done
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bin_dir="${HOME}/.local/bin"
-status_bin="${bin_dir}/sidekick-agent-status"
-mcp_bin="${bin_dir}/sidekick-mcp"
-skill_source="${repo}/.claude/skills/sidekick-panes"
+status_bin="${bin_dir}/cortland-agent-status"
+mcp_bin="${bin_dir}/cortland-mcp"
+skill_source="${repo}/.claude/skills/cortland-panes"
 claude_settings="${HOME}/.claude/settings.json"
 codex_config="${HOME}/.codex/config.toml"
+legacy_skill="sidekick-panes"
 
 # Has this machine ever opted in? Two kinds of evidence, either one is enough:
 # a hook entry naming our status helper, or the helpers themselves sitting in
@@ -61,12 +62,17 @@ codex_config="${HOME}/.codex/config.toml"
 # name the copy inside the bundle, and count too — the user opted into hooks
 # either way, and the entry dedup below keys on the binary name, not its path,
 # so refreshing an app-installed integration adds no duplicate entries.)
+#
+# A pre-rename install counts as opted in, under either name: the point of a
+# refresh over one of those is precisely to replace the sidekick-* wiring, and
+# treating it as "never installed" would leave a dead agents panel behind.
 integration_installed() {
-    if [ -e "$status_bin" ] || [ -e "$mcp_bin" ]; then
+    if [ -e "$status_bin" ] || [ -e "$mcp_bin" ] \
+        || [ -e "${bin_dir}/sidekick-agent-status" ] || [ -e "${bin_dir}/sidekick-mcp" ]; then
         return 0
     fi
     for config in "$claude_settings" "$codex_config"; do
-        if [ -f "$config" ] && grep -q 'sidekick-agent-status' "$config"; then
+        if [ -f "$config" ] && grep -qE 'cortland-agent-status|sidekick-agent-status' "$config"; then
             return 0
         fi
     done
@@ -77,7 +83,7 @@ if [ "$refresh_only" -eq 1 ] && ! integration_installed; then
     cat <<EOF
 Agent status integration is not installed, so there is nothing to refresh.
 
-To hook Claude Code/Codex/Pi into Sidekick's agents panel (one time — install.sh
+To hook Claude Code/Codex/Pi into Cortland's agents panel (one time — install.sh
 and the app keep it current from then on):
 
   ${repo}/scripts/install-agent-status-hooks
@@ -90,27 +96,38 @@ mkdir -p "$bin_dir"
 if [ -n "$binaries_from" ]; then
     # Binaries handed to us (install.sh passing the app bundle it just
     # installed). Nothing to build.
-    for helper in sidekick-agent-status sidekick-mcp; do
+    for helper in cortland-agent-status cortland-mcp; do
         if [ ! -f "${binaries_from}/${helper}" ]; then
             echo "❌ ${binaries_from}/${helper} not found — build the app first (./build-app.sh)." >&2
             exit 1
         fi
     done
-    install -m 0755 "${binaries_from}/sidekick-agent-status" "$status_bin"
-    install -m 0755 "${binaries_from}/sidekick-mcp" "$mcp_bin"
+    install -m 0755 "${binaries_from}/cortland-agent-status" "$status_bin"
+    install -m 0755 "${binaries_from}/cortland-mcp" "$mcp_bin"
 else
-    swift build --package-path "$repo" -c release --product sidekick-agent-status
-    swift build --package-path "$repo" -c release --product sidekick-mcp
-    install -m 0755 "$repo/.build/release/sidekick-agent-status" "$status_bin"
-    install -m 0755 "$repo/.build/release/sidekick-mcp" "$mcp_bin"
+    swift build --package-path "$repo" -c release --product cortland-agent-status
+    swift build --package-path "$repo" -c release --product cortland-mcp
+    install -m 0755 "$repo/.build/release/cortland-agent-status" "$status_bin"
+    install -m 0755 "$repo/.build/release/cortland-mcp" "$mcp_bin"
 fi
+
+# Pre-rename helpers in ~/.local/bin: nothing points at them once the hooks
+# below are rewritten, and leaving them on PATH invites a stale one to be run
+# by hand. Only the ones we put there.
+rm -f "${bin_dir}/sidekick-agent-status" "${bin_dir}/sidekick-mcp" "${bin_dir}/sidekick-telemetry"
 
 # Install the same pane-orchestration skill for Claude Code, Codex, and Pi.
 # All three load Agent Skills standard SKILL.md files; Pi reads ~/.pi/agent/skills.
+# The pre-rename copy goes: two skills describing the same panes, one of them
+# naming binaries that no longer exist, is worse than either alone. A symlinked
+# one is the user's own checkout and stays.
 for skill_root in "${HOME}/.claude/skills" "${HOME}/.codex/skills" "${HOME}/.pi/agent/skills"; do
-    mkdir -p "${skill_root}/sidekick-panes/agents"
-    install -m 0644 "${skill_source}/SKILL.md" "${skill_root}/sidekick-panes/SKILL.md"
-    install -m 0644 "${skill_source}/agents/openai.yaml" "${skill_root}/sidekick-panes/agents/openai.yaml"
+    mkdir -p "${skill_root}/cortland-panes/agents"
+    install -m 0644 "${skill_source}/SKILL.md" "${skill_root}/cortland-panes/SKILL.md"
+    install -m 0644 "${skill_source}/agents/openai.yaml" "${skill_root}/cortland-panes/agents/openai.yaml"
+    if [ -d "${skill_root}/${legacy_skill}" ] && [ ! -L "${skill_root}/${legacy_skill}" ]; then
+        rm -rf "${skill_root:?}/${legacy_skill}"
+    fi
 done
 
 python3 - "$claude_settings" "$status_bin" <<'PY'
@@ -130,10 +147,10 @@ else:
 hooks = data.setdefault("hooks", {})
 
 def signature(command):
-    """Binary name + arguments: '/a/b/sidekick-agent-status busy' -> 'sidekick-agent-status busy'.
+    """Binary name + arguments: '/a/b/cortland-agent-status busy' -> 'cortland-agent-status busy'.
 
     Hooks are deduped on this rather than the full command, so an entry pointing
-    at the copy inside Sidekick.app (what the app's Preferences -> Agents
+    at the copy inside Cortland.app (what the app's Preferences -> Agents
     installer writes) counts as the same hook as one pointing at ~/.local/bin,
     and re-running this script over an app-installed integration adds no
     duplicate entries. Mirrors AgentIntegrationInstaller.addClaudeHook.
@@ -175,9 +192,14 @@ def remove_hook(event, signature):
     else:
         hooks.pop(event, None)
 
-# The PreToolUse diff-review hook (sidekick-hook) is no longer shipped — it
-# duplicated Claude Code's own approval prompt. Strip it from older installs.
-remove_hook("PreToolUse", "sidekick-hook")
+# Helpers we no longer ship, swept out of every event. The sidekick-* ones are
+# pre-rename: the binary they name is gone, so each event they still sit on
+# fires twice and one of the two goes nowhere. sidekick-hook is older still — a
+# PreToolUse diff popup that duplicated Claude Code's own approval prompt.
+# Mirrors AgentIntegrationInstaller.removeLegacyHooks.
+for legacy in ("sidekick-agent-status", "sidekick-telemetry", "sidekick-hook"):
+    for event in list(hooks):
+        remove_hook(event, legacy)
 
 # This event list mirrors AgentIntegrationInstaller (statusHooks +
 # sharedRefinementHooks + claudeOnlyStatusHooks); the two installers write the
@@ -198,9 +220,9 @@ add_hook("PostToolUseFailure", f"{status_bin} busy")
 add_hook("Stop", f"{status_bin} done")
 # Clears the tab from the agents panel when the session ends.
 add_hook("SessionEnd", f"{status_bin} idle")
-# Edit-gate: routes Edit/Write through Sidekick's diff-review queue and answers
+# Edit-gate: routes Edit/Write through Cortland's diff-review queue and answers
 # Claude's permission question with the reviewer's decision (allow/deny) —
-# unlike the retired sidekick-hook, which could only duplicate the prompt. On
+# unlike the retired cortland-hook, which could only duplicate the prompt. On
 # any failure it stays silent and Claude's own prompt takes over. The timeout
 # is the human-review budget (600s, Claude Code's default, spelled out).
 add_hook("PreToolUse", f"{status_bin} edit-gate", matcher="Edit|Write", timeout=600)
@@ -240,6 +262,48 @@ def ensure_hooks_enabled(text):
 
     return text[:features.end()] + section + text[section_end:]
 
+LEGACY_HELPERS = ("sidekick-agent-status", "sidekick-telemetry", "sidekick-hook")
+
+def remove_legacy_hooks(text):
+    """Drop every [[hooks.<event>]] block that runs a pre-rename helper.
+
+    Line ranges rather than a TOML round-trip, so the user's own formatting and
+    comments survive. A block runs from its [[hooks.<event>]] header to the next
+    table header that isn't its own .hooks sub-table. Mirrors
+    AgentIntegrationInstaller.removeLegacyCodexHooks.
+    """
+    def is_event_header(line):
+        stripped = line.strip()
+        return (stripped.startswith("[[hooks.") and stripped.endswith("]]")
+                and "." not in stripped[len("[[hooks."):-2])
+
+    def starts_table(line):
+        stripped = line.strip()
+        if not stripped.startswith("["):
+            return False
+        return not (stripped.startswith("[[hooks.") and stripped.endswith(".hooks]]"))
+
+    lines = text.split("\n")
+    kept = []
+    index = 0
+    while index < len(lines):
+        if not is_event_header(lines[index]):
+            kept.append(lines[index])
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines) and not starts_table(lines[end]):
+            end += 1
+        block = lines[index:end]
+        if not any(helper in line for line in block for helper in LEGACY_HELPERS):
+            kept.extend(block)
+        index = end
+    return "\n".join(kept)
+
+# Before adding anything: a pre-rename block still names an event we are about
+# to write, and the dedup below keys on the helper name, so leaving it would
+# give the event two hooks.
+text = remove_legacy_hooks(text)
 text = ensure_hooks_enabled(text)
 
 # Mirrors AgentIntegrationInstaller.installCodex (statusHooks +
@@ -286,36 +350,44 @@ for event, command in commands.items():
 path.write_text(text)
 PY
 
-# Pi coding agent: install the status extension when pi is set up.
+# Pi coding agent: install the status extension when pi is set up. Pi loads
+# every file in extensions/, so the pre-rename copy has to go or each lifecycle
+# event gets reported twice, once to a termprop this build no longer reads.
 pi_note=""
 if [ -d "${HOME}/.pi/agent" ]; then
     mkdir -p "${HOME}/.pi/agent/extensions"
-    install -m 0644 "$repo/scripts/pi-sidekick-status.ts" "${HOME}/.pi/agent/extensions/sidekick-status.ts"
-    pi_note="  ${HOME}/.pi/agent/extensions/sidekick-status.ts"
+    install -m 0644 "$repo/scripts/pi-cortland-status.ts" "${HOME}/.pi/agent/extensions/cortland-status.ts"
+    rm -f "${HOME}/.pi/agent/extensions/sidekick-status.ts"
+    pi_note="  ${HOME}/.pi/agent/extensions/cortland-status.ts"
 fi
 
 # Register the MCP server with Claude Code via the canonical `claude mcp add`
 # (user scope), idempotently. Other MCP clients (Claude Desktop, Cursor) can
 # use the .mcp.json snippet in the README.
 if command -v claude >/dev/null 2>&1; then
-    if claude mcp list 2>/dev/null | grep -q "sidekick"; then
-        mcp_note="  Claude Code MCP server 'sidekick' (already registered)"
-    elif claude mcp add --scope user sidekick "$mcp_bin" >/dev/null 2>&1; then
-        mcp_note="  Registered Claude Code MCP server 'sidekick' -> $mcp_bin"
+    # The pre-rename server points at a binary this install just deleted, and
+    # its tools would show up beside the new ones under the old prefix.
+    if claude mcp list 2>/dev/null | grep -q '^sidekick'; then
+        claude mcp remove --scope user sidekick >/dev/null 2>&1 || true
+    fi
+    if claude mcp list 2>/dev/null | grep -q "cortland"; then
+        mcp_note="  Claude Code MCP server 'cortland' (already registered)"
+    elif claude mcp add --scope user cortland "$mcp_bin" >/dev/null 2>&1; then
+        mcp_note="  Registered Claude Code MCP server 'cortland' -> $mcp_bin"
     else
-        mcp_note="  Could not auto-register; run: claude mcp add --scope user sidekick \"$mcp_bin\""
+        mcp_note="  Could not auto-register; run: claude mcp add --scope user cortland \"$mcp_bin\""
     fi
 else
-    mcp_note="  Register with your MCP client (e.g. claude mcp add --scope user sidekick \"$mcp_bin\")"
+    mcp_note="  Register with your MCP client (e.g. claude mcp add --scope user cortland \"$mcp_bin\")"
 fi
 
 cat <<EOF
 Installed:
   $status_bin
   $mcp_bin (MCP server)
-  $HOME/.claude/skills/sidekick-panes/SKILL.md
-  $HOME/.codex/skills/sidekick-panes/SKILL.md
-  $HOME/.pi/agent/skills/sidekick-panes/SKILL.md
+  $HOME/.claude/skills/cortland-panes/SKILL.md
+  $HOME/.codex/skills/cortland-panes/SKILL.md
+  $HOME/.pi/agent/skills/cortland-panes/SKILL.md
 ${pi_note}
 
 Updated:

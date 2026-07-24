@@ -1,4 +1,0 @@
-interface:
-  display_name: "Sidekick Panes"
-  short_description: "Orchestrate agents in Sidekick terminal panes"
-  default_prompt: "Use $sidekick-panes to launch workers in separate Sidekick panes and collect their results."

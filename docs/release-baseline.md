@@ -1,6 +1,6 @@
 # Release baseline
 
-Snapshot of the shippable state of Sidekick before signing and notarization
+Snapshot of the shippable state of Cortland before signing and notarization
 work starts. Recorded 2026-07-21 against the `main` working tree at v0.5.0.
 
 Toolchain used for every measurement below:
@@ -43,9 +43,9 @@ cuts the first major release.
 
 A repo-wide grep found two consumers, both already correct:
 
-- `Sources/Sidekick/App/AppDelegate.swift:22-24` reads both and writes them to
+- `Sources/Cortland/App/AppDelegate.swift:22-24` reads both and writes them to
   the launch log as `version 0.5.0 build 500`. Diagnostic, not user-facing.
-- `Sources/Sidekick/Terminal/TerminalViewController.swift:784` exports
+- `Sources/Cortland/Terminal/TerminalViewController.swift:784` exports
   `CFBundleShortVersionString` as `TERM_PROGRAM_VERSION` for the shell
   integration script.
 
@@ -53,7 +53,7 @@ No test asserts on either key, and no source file hardcodes `0.5.0` (the only
 other match is the TOMLKit dependency floor in `Package.swift`, unrelated).
 Nothing had to change outside `Info.plist`, and nothing shows `500` to a user.
 
-Worth knowing for later: the "About Sidekick" menu item is built with
+Worth knowing for later: the "About Cortland" menu item is built with
 `action: nil` (`AppDelegate.swift:113`), so it is inert and no About panel
 exists yet. Whenever one gets wired up it must read
 `CFBundleShortVersionString`, never `CFBundleVersion`.
@@ -74,7 +74,7 @@ The single skip is deliberate, not a failure:
 
 | Test | Reason |
 | --- | --- |
-| `GroveTests.testPrintSampleTrees` | Debug helper that prints grove silhouettes for visual tuning. Guarded by `XCTSkipUnless(env["GROVE_EYEBALL"] != nil)` (`Tests/SidekickTests/GroveTests.swift:260`). Contains no assertions; runs only when opted in. |
+| `GroveTests.testPrintSampleTrees` | Debug helper that prints grove silhouettes for visual tuning. Guarded by `XCTSkipUnless(env["GROVE_EYEBALL"] != nil)` (`Tests/CortlandTests/GroveTests.swift:260`). Contains no assertions; runs only when opted in. |
 
 The run also prints `SwiftTerm: Unknown OSC code: 133` several times. That is
 SwiftTerm logging on the shell-integration sequences the tests feed it, not a
@@ -88,11 +88,11 @@ notarization phase, signed inside-out (helpers first, bundle last).
 
 | Path in bundle | Size | Signing identifier | Purpose |
 | --- | --- | --- | --- |
-| `Contents/MacOS/Sidekick` | 16M | `com.sidekick.terminal` | Main app binary |
-| `Contents/MacOS/sidekick-ctl` | 192K | `sidekick-ctl` | Pane-control CLI |
-| `Contents/MacOS/sidekick-agent-status` | 152K | `sidekick-agent-status` | Agent status reporter for hooks |
-| `Contents/MacOS/sidekick-mcp` | 237K | `sidekick-mcp` | MCP server |
-| `Contents/MacOS/sidekick-telemetry` | 289K | `sidekick-telemetry` | Stop-hook token/cost reporter |
+| `Contents/MacOS/Cortland` | 16M | `app.cortland.terminal` | Main app binary |
+| `Contents/MacOS/cortland-ctl` | 192K | `cortland-ctl` | Pane-control CLI |
+| `Contents/MacOS/cortland-agent-status` | 152K | `cortland-agent-status` | Agent status reporter for hooks |
+| `Contents/MacOS/cortland-mcp` | 237K | `cortland-mcp` | MCP server |
+| `Contents/MacOS/cortland-telemetry` | 289K | `cortland-telemetry` | Stop-hook token/cost reporter |
 
 Five binaries, no more. The bundle embeds no frameworks and no third-party
 dylibs: `otool -L` on the main binary lists only `/usr/lib` and `/System`
@@ -103,8 +103,8 @@ Non-executable payload, sealed by the bundle signature:
 
 - `Contents/Info.plist`
 - `Contents/Resources/AppIcon.icns`
-- `Contents/Resources/skills/sidekick-panes/SKILL.md`
-- `Contents/Resources/skills/sidekick-panes/agents/openai.yaml`
+- `Contents/Resources/skills/cortland-panes/SKILL.md`
+- `Contents/Resources/skills/cortland-panes/agents/openai.yaml`
 
 The skill files must be copied in **before** the signing step, since signing
 seals `Contents/Resources`. `build-app.sh` already orders it that way.
@@ -114,7 +114,8 @@ seals `Contents/Resources`. `build-app.sh` already orders it that way.
 Described as-is. Nothing here was changed in this pass.
 
 - **Identity:** `Sidekick Dev`, a local self-signed codesigning certificate
-  created by `scripts/create-signing-cert.sh`. Overridable with the
+  created by `scripts/create-signing-cert.sh`. It keeps its pre-rename name so
+  the TCC grants bound to it survive. Overridable with the
   `SIGN_IDENTITY` environment variable. `TeamIdentifier=not set`, so the
   signature is developer-local: it survives rebuilds on this machine but means
   nothing to Gatekeeper elsewhere.
@@ -122,14 +123,14 @@ Described as-is. Nothing here was changed in this pass.
   the hash every build, and macOS then re-prompts for every TCC grant.
 - **Hardened runtime:** on. Both helpers and bundle are signed with
   `--options runtime`; `codesign -dv` reports `flags=0x10000(runtime)` on each.
-- **Entitlements:** `Sidekick.entitlements`, applied to helpers and bundle
+- **Entitlements:** `Cortland.entitlements`, applied to helpers and bundle
   alike. It sets exactly one key, `com.apple.security.app-sandbox = false`. A
   terminal must spawn arbitrary shells and read the whole filesystem, so the
   sandbox is off by design and the file/network entitlement keys are inert.
 - **Order:** the four helpers are signed first, then the bundle, then
   `codesign --verify --deep --strict` checks the result.
-- **Distribution artifacts:** `build/Sidekick.dmg` (4.6M, drag-to-Applications
-  layout) and `build/Sidekick.zip` (4.0M, `ditto --keepParent`).
+- **Distribution artifacts:** `build/Cortland.dmg` (4.6M, drag-to-Applications
+  layout) and `build/Cortland.zip` (4.0M, `ditto --keepParent`).
 
 A Developer ID certificate already exists in the keychain
 (`Developer ID Application: TRAVIS KEITH RODGERS (2UWZ923R8C)`), which is what
@@ -142,17 +143,17 @@ is a change of identity plus a `notarytool` submit and staple, not a rework.
 `./build-app.sh` run after the version split. Exit code 0.
 
 ```
-build/Sidekick.app: valid on disk
-build/Sidekick.app: satisfies its Designated Requirement
+build/Cortland.app: valid on disk
+build/Cortland.app: satisfies its Designated Requirement
 ✅ Signed. TCC grants will persist across rebuilds.
 ```
 
 Versions read back off the built bundle:
 
 ```
-$ plutil -extract CFBundleVersion raw build/Sidekick.app/Contents/Info.plist
+$ plutil -extract CFBundleVersion raw build/Cortland.app/Contents/Info.plist
 500
-$ plutil -extract CFBundleShortVersionString raw build/Sidekick.app/Contents/Info.plist
+$ plutil -extract CFBundleShortVersionString raw build/Cortland.app/Contents/Info.plist
 0.5.0
 ```
 
