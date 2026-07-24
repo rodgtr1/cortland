@@ -1,4 +1,5 @@
 import Cocoa
+import CortlandTelemetryCore
 import CortlandProInterface
 #if CORTLAND_PRO
 import CortlandPro
@@ -17,6 +18,7 @@ enum ProBridge {
     private static var themeObserver: ThemeObserver?
 
     static func bootstrap() {
+        installLogSink()
         publishTheme()
         themeObserver = ThemeObserver { publishTheme() }
 
@@ -24,6 +26,26 @@ enum ProBridge {
         CortlandPro.register()
         Log.info("Pro features registered", category: "app")
         #endif
+
+        // Handed over after registration, so a provider is there to receive it.
+        // Free builds register nothing and these are no-ops.
+        ProFeatures.costReporting?.install(formatting: ProCostFormatting(
+            cost: TelemetryFormat.cost,
+            tokens: TelemetryFormat.compactTokens,
+            shortModel: TelemetryFormat.shortModel
+        ))
+    }
+
+    /// Pro code logs through `ProLog`; route it into the app's own log file so
+    /// a Pro build produces one log, not two.
+    private static func installLogSink() {
+        ProLog.sink = { level, message, category in
+            switch level {
+            case .debug: Log.debug(message, category: category)
+            case .info: Log.info(message, category: category)
+            case .error: Log.error(message, category: category)
+            }
+        }
     }
 
     /// Mirrors `AppTheme`'s chrome roles into the seam. Pro views read

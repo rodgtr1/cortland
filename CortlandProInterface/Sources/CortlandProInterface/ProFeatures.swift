@@ -34,7 +34,7 @@ public enum ProFeatures {
 /// What the app does when a session is resumed from the Pro recall panel: open
 /// a new tab in `workingDirectory` running `command`. A nil directory falls
 /// back to the active pane's.
-public struct RecallResumeRequest: Sendable {
+public nonisolated struct RecallResumeRequest: Sendable {
     public var workingDirectory: String?
     public var command: [String]
 
@@ -67,7 +67,7 @@ public extension Notification.Name {
 
 /// The `[approval]` config slice the desk decides against, flattened to plain
 /// values so config parsing stays in the public app.
-public struct ApprovalSettings: Sendable {
+public nonisolated struct ApprovalSettings: Sendable {
     /// Globs that approve silently.
     public var autoAllow: [String]
     /// Globs that always force a human decision, outranking everything else.
@@ -169,37 +169,29 @@ public protocol ApprovalDeskProviding: AnyObject {
 
 // MARK: - Cost reporting
 
-/// One billed pane's usage, priced at its own model.
-public struct ProCostEntry: Sendable {
+/// One billed pane's spend, priced at that pane's own model and labelled with
+/// the row it belongs to ("api", or "api · pane 2" for a split tab).
+///
+/// The app decides what counts as billed and how rows are labelled — that is
+/// telemetry, which stays free — and hands over a flat list. Pro sums it,
+/// renders it, and writes the history.
+public nonisolated struct ProCostEntry: Sendable, Equatable {
+    public var title: String
     public var model: String?
     public var tokens: Int
     public var costUSD: Double?
-    /// False for a pane that has reported usage but never completed a turn;
-    /// those don't count toward a roll-up.
-    public var billed: Bool
 
-    public init(model: String?, tokens: Int, costUSD: Double?, billed: Bool) {
+    public init(title: String, model: String?, tokens: Int, costUSD: Double?) {
+        self.title = title
         self.model = model
         self.tokens = tokens
         self.costUSD = costUSD
-        self.billed = billed
-    }
-}
-
-/// One tab's billed panes.
-public struct ProCostTab: Sendable {
-    public var title: String
-    public var entries: [ProCostEntry]
-
-    public init(title: String, entries: [ProCostEntry]) {
-        self.title = title
-        self.entries = entries
     }
 }
 
 /// Number formatting the app already owns (`TelemetryFormat`), handed to Pro so
 /// the two render spend and tokens identically and neither has a second copy.
-public struct ProCostFormatting: Sendable {
+public nonisolated struct ProCostFormatting: Sendable {
     public var cost: @Sendable (Double) -> String
     public var tokens: @Sendable (Int) -> String
     public var shortModel: @Sendable (String) -> String
@@ -231,11 +223,11 @@ public protocol CostReportingProviding: AnyObject {
 
     /// The agents panel's bottom roll-up: the footer line and its per-model
     /// tooltip. Nil when nothing has billed a turn, which hides the footer.
-    func sessionFooter(_ tabs: [ProCostTab]) -> (line: String, tooltip: String)?
+    func sessionFooter(_ entries: [ProCostEntry]) -> (line: String, tooltip: String)?
 
     /// Appends a roll-up to the on-disk cost history (a closing tab's spend, or
-    /// everything still open at termination).
-    func recordCosts(_ tabs: [ProCostTab])
+    /// everything still open at termination). A no-op for an empty list.
+    func recordCosts(_ entries: [ProCostEntry])
 }
 
 // MARK: - One-step worktree launch

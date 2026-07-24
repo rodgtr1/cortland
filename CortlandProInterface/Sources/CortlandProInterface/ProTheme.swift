@@ -7,7 +7,7 @@ import AppKit
 /// Values rather than closures: views read a color when they build a cell, and
 /// every Pro surface rebuilds its cells on reload, so refreshing the struct on
 /// `themeDidChange` repaints them the same way `AppTheme` does today.
-public struct ProThemeColors: Sendable {
+public nonisolated struct ProThemeColors: Sendable {
     public var windowBackground: NSColor
     public var sidebarBackground: NSColor
     public var headerBackground: NSColor

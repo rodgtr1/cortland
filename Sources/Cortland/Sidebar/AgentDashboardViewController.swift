@@ -280,50 +280,17 @@ final class AgentDashboardViewController: NSViewController {
 
     /// Refreshes the bottom roll-up from the current tab set, hiding it when
     /// nothing has billed yet. Called on every reload (cheap: a sum over tabs).
+    /// The spend roll-up under the list. Cost reporting is Pro, so a free build
+    /// has no footer at all rather than a footer showing tokens without money.
     private func updateFooter(_ tabs: [TabModel]) {
-        guard let summary = Self.sessionSummary(tabs) else {
+        guard let costs = ProFeatures.costReporting,
+              let footer = costs.sessionFooter(TabController.costEntries(for: tabs)) else {
             footerContainer.isHidden = true
             return
         }
         footerContainer.isHidden = false
-        footerLabel.stringValue = "Session · \(TelemetryFormat.cost(summary.cost)) · \(TelemetryFormat.compactTokens(summary.tokens)) tokens"
-        footerLabel.toolTip = summary.byModel
-            .map { "\($0.model) · \(TelemetryFormat.cost($0.cost)) · \(TelemetryFormat.compactTokens($0.tokens)) tokens" }
-            .joined(separator: "\n")
-    }
-
-    /// Session roll-up across every reporting pane of every tab: total est-$
-    /// and total tokens, plus a per-model breakdown (highest spend first) for
-    /// the footer tooltip. Nil when nothing has billed a turn (footer stays
-    /// hidden). Panes with an unknown rate still contribute their tokens,
-    /// matching the JSONL history. Falls back to the tab-level primary usage
-    /// for a tab whose per-pane list hasn't populated. Internal (not private)
-    /// for unit tests.
-    static func sessionSummary(
-        _ tabs: [TabModel]
-    ) -> (cost: Double, tokens: Int, byModel: [(model: String, cost: Double, tokens: Int)])? {
-        var totalCost = 0.0
-        var totalTokens = 0
-        var byModel: [String: (cost: Double, tokens: Int)] = [:]
-        for tab in tabs {
-            let entries: [(usage: TranscriptUsage, cost: Double?)] = tab.paneTelemetries.isEmpty
-                ? (tab.telemetry.map { [($0, tab.telemetryCostUSD)] } ?? [])
-                : tab.paneTelemetries.map { ($0.usage, $0.costUSD) }
-            for entry in entries where entry.usage.assistantResponses > 0 {
-                totalTokens += entry.usage.totalTokens
-                totalCost += entry.cost ?? 0
-                let model = entry.usage.model.map(TelemetryFormat.shortModel) ?? "unknown"
-                var slot = byModel[model, default: (0, 0)]
-                slot.cost += entry.cost ?? 0
-                slot.tokens += entry.usage.totalTokens
-                byModel[model] = slot
-            }
-        }
-        guard !byModel.isEmpty else { return nil }
-        let breakdown = byModel
-            .map { (model: $0.key, cost: $0.value.cost, tokens: $0.value.tokens) }
-            .sorted { ($0.cost, $0.tokens) > ($1.cost, $1.tokens) }
-        return (totalCost, totalTokens, breakdown)
+        footerLabel.stringValue = footer.line
+        footerLabel.toolTip = footer.tooltip
     }
 
     /// Syncs the approvals section with the queue: cards for resolved entries
@@ -452,14 +419,15 @@ final class AgentDashboardViewController: NSViewController {
 
     // MARK: - Telemetry formatting
 
-    /// Compact one-line telemetry for a row: `opus-4.8 · $0.36 · 7t`. Cost and
-    /// turns are dropped when unavailable. Returns nil when there's nothing
-    /// billed yet to show.
-    fileprivate static func telemetryLine(_ usage: TranscriptUsage, cost: Double?) -> String? {
+    /// Compact one-line telemetry for a row: `opus-4.8 · $0.36 · 7t`. Turns are
+    /// dropped when unavailable, and the `$` only appears in a Pro build — free
+    /// keeps the model and the turn count, which is telemetry, not spend.
+    /// Returns nil when there's nothing billed yet to show.
+    static func telemetryLine(_ usage: TranscriptUsage, cost: Double?) -> String? {
         guard usage.assistantResponses > 0 else { return nil }
         var parts: [String] = []
         if let model = usage.model { parts.append(TelemetryFormat.shortModel(model)) }
-        if let cost { parts.append(TelemetryFormat.cost(cost)) }
+        if let costText = ProFeatures.costReporting?.rowCostText(cost) { parts.append(costText) }
         if usage.userPrompts > 0 { parts.append("\(usage.userPrompts)t") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }

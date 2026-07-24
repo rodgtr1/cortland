@@ -1,5 +1,6 @@
 import AppKit
 import CortlandTelemetryCore
+import CortlandProInterface
 
 /// The slice of the window controller `TabController` needs to host tabs: the
 /// content area a tab's split-controller view is pinned into, the live config
@@ -189,10 +190,7 @@ final class TabController: NSObject {
 
         // Capture this tab's spend before it's dropped: the termination roll-up
         // only sees tabs still open, so a closed agent's cost would be lost.
-        let costs = Self.tabCosts(for: tabToClose)
-        if !costs.isEmpty {
-            SessionCostStore.append(SessionCostRecord(timestamp: Date(), tabs: costs))
-        }
+        ProFeatures.costReporting?.recordCosts(Self.costEntries(for: tabToClose))
 
         // Kill every pane's shell before the models are dropped; nothing else
         // terminates them and orphaned shells outlive the tab otherwise.
@@ -336,11 +334,15 @@ final class TabController: NSObject {
     /// pane-suffixed titles when there's more than one. Empty when the tab
     /// never billed a turn. Falls back to the tab-level primary usage for a
     /// tab whose per-pane list hasn't populated.
-    private static func tabCosts(for tab: TabModel) -> [SessionTabCost] {
+    ///
+    /// Which telemetry counts and how a row is labelled is free-tier knowledge
+    /// of the tab tree; what's done with the money — the roll-up, the `$`, the
+    /// history — is `ProFeatures.costReporting`.
+    static func costEntries(for tab: TabModel) -> [ProCostEntry] {
         let billed = tab.paneTelemetries.filter { $0.usage.assistantResponses > 0 }
         guard !billed.isEmpty else {
             guard let usage = tab.telemetry, usage.assistantResponses > 0 else { return [] }
-            return [SessionTabCost(
+            return [ProCostEntry(
                 title: tab.title,
                 model: usage.model,
                 tokens: usage.totalTokens,
@@ -352,7 +354,7 @@ final class TabController: NSObject {
             if billed.count > 1, let index = tab.panes.firstIndex(where: { $0.id == pane.paneID }) {
                 title += " · pane \(index + 1)"
             }
-            return SessionTabCost(
+            return ProCostEntry(
                 title: title,
                 model: pane.usage.model,
                 tokens: pane.usage.totalTokens,
@@ -361,13 +363,16 @@ final class TabController: NSObject {
         }
     }
 
+    /// Every billed entry across `tabs`, in tab order.
+    static func costEntries(for tabs: [TabModel]) -> [ProCostEntry] {
+        tabs.flatMap(costEntries(for:))
+    }
+
     /// Appends one cost record covering every still-open tab that billed
     /// telemetry this session. Called at app termination; a no-op when nothing
-    /// billed.
+    /// billed, and in a free build, where no history is kept.
     func recordSessionCosts() {
-        let entries = tabs.flatMap(Self.tabCosts(for:))
-        guard !entries.isEmpty else { return }
-        SessionCostStore.append(SessionCostRecord(timestamp: Date(), tabs: entries))
+        ProFeatures.costReporting?.recordCosts(Self.costEntries(for: tabs))
     }
 
     private func restoreSession(_ session: SessionState) {
