@@ -1,4 +1,5 @@
 import Foundation
+import CortlandProInterface
 
 /// One agent edit awaiting review: the hook's proposed old/new content for
 /// `path`, the pane the edit hook ran in, and when it arrived.

@@ -52,9 +52,8 @@ nonisolated extension Notification.Name {
     /// An editor pane's modified state changed. `object` is the editor.
     static let editorModifiedStateChanged = Notification.Name("EditorModifiedStateChanged")
 
-    /// The pending diff-approval queue gained or lost entries. `object` is the
-    /// `ApprovalQueue`; read its `pending` list for the current state.
-    static let pendingApprovalsChanged = Notification.Name("PendingApprovalsChanged")
+    // `.pendingApprovalsChanged` lives in CortlandProInterface: the desk that
+    // posts it is Pro, the badge and dashboard that observe it are free.
 
     /// A pane was shut down (pane closed, tab closed). `object` is the
     /// `PaneModel`. The automation coordinator uses this to fail in-flight

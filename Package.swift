@@ -1,5 +1,38 @@
 // swift-tools-version: 6.2
 import PackageDescription
+import Foundation
+
+// Official builds link the private Pro package; a clone of this repo alone
+// builds the free app. `CORTLAND_PRO_PATH` is the whole switch: when it points
+// at a checkout of cortland-pro, the package dependency, the app-target
+// dependency, and the `CORTLAND_PRO` compilation condition all appear together.
+// When it is unset, none of them exist and nothing here names a private path.
+let proPath = ProcessInfo.processInfo.environment["CORTLAND_PRO_PATH"]
+    .map { NSString(string: $0).expandingTildeInPath }
+    .flatMap { $0.isEmpty ? nil : $0 }
+
+let proPackages: [Package.Dependency] = proPath.map { [.package(path: $0)] } ?? []
+let proAppDependencies: [Target.Dependency] = proPath == nil
+    ? []
+    : [.product(name: "CortlandPro", package: "cortland-pro")]
+let proSwiftSettings: [SwiftSetting] = proPath == nil ? [] : [.define("CORTLAND_PRO")]
+// SwiftPM won't run a dependency's tests, and it rejects a target path outside
+// the package root — so the private test target is reached through a symlink
+// (`Tests/CortlandProTests`, gitignored) that `scripts/test-all.sh` refreshes.
+// Guarded on the link existing, so a Pro build with no link still builds and
+// runs the public suite instead of failing on a missing directory.
+let proTestsLinked = proPath != nil && FileManager.default.fileExists(
+    atPath: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .appendingPathComponent("Tests/CortlandProTests").path
+)
+let proTestTargets: [Target] = proTestsLinked
+    ? [.testTarget(
+        name: "CortlandProTests",
+        dependencies: [.product(name: "CortlandPro", package: "cortland-pro")],
+        path: "Tests/CortlandProTests"
+    )]
+    : []
 
 let package = Package(
     name: "Cortland",
@@ -13,7 +46,12 @@ let package = Package(
         .executable(name: "cortland-mcp", targets: ["CortlandMCP"]),
         .executable(name: "cortland-telemetry", targets: ["CortlandTelemetry"]),
     ],
-    dependencies: [
+    dependencies: proPackages + [
+        // The free/Pro seam: the feature protocols, the `ProFeatures` registry,
+        // the shared panel chrome, and the session-log parsers the free teaser
+        // and the Pro recall panel both read. Its own package (not a target
+        // here) so cortland-pro can import it without a dependency cycle.
+        .package(path: "CortlandProInterface"),
         .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.13.0"),
         .package(url: "https://github.com/LebJe/TOMLKit", from: "0.5.0"),
         // Tree-sitter grammar-accurate syntax highlighting (replacing the regex
@@ -63,8 +101,9 @@ let package = Package(
         ),
         .executableTarget(
             name: "Cortland",
-            dependencies: [
+            dependencies: proAppDependencies + [
                 "SwiftTerm",
+                .product(name: "CortlandProInterface", package: "CortlandProInterface"),
                 "TOMLKit",
                 "CortlandTelemetryCore",
                 // The app parses what the CLI helpers send, so it shares their
@@ -87,7 +126,7 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/Cortland",
-            swiftSettings: [
+            swiftSettings: proSwiftSettings + [
                 // The app is overwhelmingly AppKit main-thread code, so the whole
                 // module defaults to the main actor; the genuinely-background
                 // types (GitService, WorktreeService, ProcessRunner, IPC value
@@ -156,8 +195,14 @@ let package = Package(
         ),
         .testTarget(
             name: "CortlandTests",
-            dependencies: ["Cortland", "CortlandTelemetryCore", "CortlandIPCCore", "CortlandMCPCore"],
+            dependencies: [
+                "Cortland",
+                "CortlandTelemetryCore",
+                "CortlandIPCCore",
+                "CortlandMCPCore",
+                .product(name: "CortlandProInterface", package: "CortlandProInterface"),
+            ],
             path: "Tests/CortlandTests"
         ),
-    ]
+    ] + proTestTargets
 )

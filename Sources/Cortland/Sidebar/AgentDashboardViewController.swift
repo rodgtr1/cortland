@@ -1,5 +1,6 @@
 import Cocoa
 import CortlandTelemetryCore
+import CortlandProInterface
 
 protocol AgentDashboardDelegate: AnyObject {
     func agentDashboardTabs(_ dashboard: AgentDashboardViewController) -> [TabModel]

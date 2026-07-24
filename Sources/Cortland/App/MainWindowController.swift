@@ -1,5 +1,6 @@
 import Cocoa
 import SwiftTerm
+import CortlandProInterface
 // UserNotifications isn't Sendable-audited for strict concurrency yet, so import
 // it @preconcurrency to downgrade its cross-actor Sendable diagnostics (e.g.
 // capturing UNUserNotificationCenter in the authorization completion handler).
