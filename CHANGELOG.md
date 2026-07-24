@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **`./install.sh` no longer breaks the app it installs**: the copy to `/Applications` used `cp -r`, whose legacy recursive mode follows symlinks into real copies. Sparkle.framework is the bundle's first symlinked framework, so the flattened copy failed its code-signature check and dyld killed the app at launch. The installer now copies with `ditto`, the same tool the build uses to embed the framework, for the same reason.
+
 ## 0.7.0 (2026-07-24)
 
 ### Renamed

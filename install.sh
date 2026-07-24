@@ -38,8 +38,10 @@ if [ -d "/Applications/${APP_NAME}" ]; then
     rm -rf "/Applications/${APP_NAME}" 2>/dev/null || sudo rm -rf "/Applications/${APP_NAME}"
 fi
 
-# Copy to Applications
-cp -r "${BUILD_DIR}/${APP_NAME}" /Applications/ 2>/dev/null || sudo cp -r "${BUILD_DIR}/${APP_NAME}" /Applications/
+# Copy to Applications. ditto, not cp: Sparkle.framework is a versioned bundle
+# held together by symlinks, and cp -r follows them into real copies, which
+# breaks the framework's code signature and kills the app at launch.
+ditto "${BUILD_DIR}/${APP_NAME}" "/Applications/${APP_NAME}" 2>/dev/null || sudo ditto "${BUILD_DIR}/${APP_NAME}" "/Applications/${APP_NAME}"
 
 echo "✅ Cortland installed to /Applications/"
 
