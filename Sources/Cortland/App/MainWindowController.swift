@@ -1016,8 +1016,8 @@ extension MainWindowController: SidebarContainerDelegate {
         worktreeFlowController.openWorktree(path: path)
     }
 
-    func sidebarContainer(_ container: SidebarContainerView, didRequestCreateWorktree branch: String, agent: WorktreeAgent) {
-        worktreeFlowController.createWorktree(branch: branch, agent: agent)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestCreateWorktree branch: String, command: [String]?) {
+        worktreeFlowController.createWorktree(branch: branch, command: command)
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestRemoveWorktree branch: String, force: Bool) {

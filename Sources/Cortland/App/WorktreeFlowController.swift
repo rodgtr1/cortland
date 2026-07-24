@@ -54,7 +54,10 @@ final class WorktreeFlowController {
         }
     }
 
-    func createWorktree(branch: String, agent: WorktreeAgent) {
+    /// Create the worktree and open a pane on it, running `command` there when
+    /// one was picked. Nil — always, without `ProFeatures.worktreeLaunch` —
+    /// opens a plain terminal, which is manual worktree creation.
+    func createWorktree(branch: String, command: [String]?) {
         guard let repoRoot = activeRepoRoot() else {
             presentWorktreeError("Worktrees need a pane inside a git repository.")
             return
@@ -67,7 +70,7 @@ final class WorktreeFlowController {
                 guard let self else { return }
                 switch result {
                 case .success(let path):
-                    self.host?.worktreeCreateTab(workingDirectory: path, command: agent.argv)
+                    self.host?.worktreeCreateTab(workingDirectory: path, command: command)
                     self.host?.worktreeRefreshPanel()
                 case .failure(let error):
                     self.presentWorktreeError(Self.worktreeErrorMessage(error))

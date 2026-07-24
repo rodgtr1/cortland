@@ -13,7 +13,7 @@ protocol SidebarContainerDelegate: AnyObject {
     /// Open or focus a pane sitting in the worktree at `path`.
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenWorktree path: String)
     /// Create a worktree for `branch`, optionally launching `agent` in its pane.
-    func sidebarContainer(_ container: SidebarContainerView, didRequestCreateWorktree branch: String, agent: WorktreeAgent)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestCreateWorktree branch: String, command: [String]?)
     /// Remove the worktree registered for `branch`; `force` overrides the guard.
     func sidebarContainer(_ container: SidebarContainerView, didRequestRemoveWorktree branch: String, force: Bool)
     /// Merge `branch`'s worktree into the repository's primary checkout.
@@ -333,8 +333,8 @@ extension SidebarContainerView: WorktreesPanelDelegate {
         delegate?.sidebarContainer(self, didRequestUncommittedChangesFor: path, focusedFilePath: nil)
     }
 
-    func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestCreateBranch branch: String, agent: WorktreeAgent) {
-        delegate?.sidebarContainer(self, didRequestCreateWorktree: branch, agent: agent)
+    func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestCreateBranch branch: String, command: [String]?) {
+        delegate?.sidebarContainer(self, didRequestCreateWorktree: branch, command: command)
     }
 
     func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestRemoveBranch branch: String, force: Bool) {
