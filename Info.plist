@@ -38,5 +38,15 @@
     <string></string>
     <key>LSUIElement</key>
     <false/>
+    <!-- Sparkle self-updates. The feed is the appcast.xml attached to the
+         newest GitHub release, so `…/releases/latest/download/` always
+         resolves to the current one and the URL never has to change.
+         SUPublicEDKey is the Ed25519 public half of the signing key; the
+         private half lives only in the release machine's login Keychain and
+         is never in this repo. See docs/release.md. -->
+    <key>SUFeedURL</key>
+    <string>https://github.com/rodgtr1/cortland/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>W5Jn7EJ/28kZ5Ml4wblCLvlr9N3Ih5pX2fs5SznPA98=</string>
 </dict>
 </plist>

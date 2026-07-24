@@ -36,6 +36,10 @@ let package = Package(
         // parser.c (no repo bloat) and supply the small external scanner via the
         // local `TreeSitterPythonScanner` C target below.
         .package(url: "https://github.com/tree-sitter/tree-sitter-python", from: "0.25.0"),
+        // In-app updates. Sparkle ships an XCFramework through SwiftPM, so
+        // build-app.sh embeds Sparkle.framework into Contents/Frameworks and
+        // repoints the binary's load command at @rpath.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.4"),
     ],
     targets: [
         .target(
@@ -79,6 +83,8 @@ let package = Package(
                 // local C target (works around the package's dropped scanner.c).
                 .product(name: "TreeSitterPython", package: "tree-sitter-python"),
                 "TreeSitterPythonScanner",
+                // Self-updates from the GitHub Releases appcast.
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/Cortland",
             swiftSettings: [
@@ -88,6 +94,13 @@ let package = Package(
                 // types, …) are marked nonisolated/Sendable individually.
                 .defaultIsolation(MainActor.self),
                 .unsafeFlags(["-swift-version", "6"])
+            ],
+            linkerSettings: [
+                // Sparkle links as @rpath/Sparkle.framework/…. SwiftPM's own
+                // @loader_path rpath finds it beside the binary in .build, but
+                // in the bundle the binary sits in Contents/MacOS and the
+                // framework in Contents/Frameworks, so add that hop too.
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@loader_path/../Frameworks"])
             ]
         ),
         // Shared Unix-socket client for the CLI helpers (one correct copy of the

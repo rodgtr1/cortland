@@ -60,6 +60,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         setupMenuBar()
         Log.debug("✅ Menu bar setup completed", category: "app")
 
+        // In-app updates. Starts Sparkle's own scheduling, which asks for
+        // consent before its first automatic check; nothing installs silently.
+        SoftwareUpdater.shared.start()
+
         mainWindowController = MainWindowController()
         Log.debug("✅ MainWindowController created", category: "app")
 
@@ -117,6 +121,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // About Cortland
         let aboutItem = NSMenuItem(title: "About Cortland", action: nil, keyEquivalent: "")
         appMenu.addItem(aboutItem)
+
+        // Check for Updates… — standard position, right under About. Disabled
+        // in builds with no update feed (see SoftwareUpdater), and by Sparkle
+        // itself while a check is already in flight.
+        let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(AppDelegate.checkForUpdates), keyEquivalent: "")
+        updatesItem.target = self
+        appMenu.addItem(updatesItem)
 
         appMenu.addItem(NSMenuItem.separator())
 
@@ -306,7 +317,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if menuItem.action == #selector(toggleAutoApproveEdits) {
             menuItem.state = (mainWindowController?.shouldAutoApproveEdits ?? false) ? .on : .off
         }
+        if menuItem.action == #selector(checkForUpdates) {
+            return SoftwareUpdater.shared.canCheckForUpdates
+        }
         return true
+    }
+
+    @objc private func checkForUpdates() {
+        SoftwareUpdater.shared.checkForUpdates()
     }
 
     @objc private func newTab() {

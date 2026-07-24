@@ -20,6 +20,7 @@ echo "📦 Creating app bundle structure..."
 rm -rf "${BUILD_DIR}/${BUNDLE_NAME}"
 mkdir -p "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS"
 mkdir -p "${BUILD_DIR}/${BUNDLE_NAME}/Contents/Resources"
+mkdir -p "${BUILD_DIR}/${BUNDLE_NAME}/Contents/Frameworks"
 
 # Copy executable
 echo "📋 Copying executable..."
@@ -28,6 +29,19 @@ cp ".build/release/${APP_NAME}" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/${AP
 # Copy Info.plist
 echo "📋 Copying Info.plist..."
 cp "Info.plist" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/Info.plist"
+
+# Embed Sparkle. SwiftPM links the XCFramework but does not embed it, so the
+# framework is copied in by hand; ditto (not cp) because the framework is a
+# versioned bundle held together by symlinks. The main binary already carries
+# an @loader_path/../Frameworks rpath (see Package.swift) so it resolves here.
+echo "📋 Embedding Sparkle.framework..."
+SPARKLE_FRAMEWORK=".build/release/Sparkle.framework"
+if [ ! -d "${SPARKLE_FRAMEWORK}" ]; then
+    echo "❌ ${SPARKLE_FRAMEWORK} not found — run swift build --configuration release first."
+    exit 1
+fi
+rm -rf "${BUILD_DIR}/${BUNDLE_NAME}/Contents/Frameworks/Sparkle.framework"
+ditto "${SPARKLE_FRAMEWORK}" "${BUILD_DIR}/${BUNDLE_NAME}/Contents/Frameworks/Sparkle.framework"
 
 # Copy app icon
 echo "🎨 Copying app icon..."
@@ -112,6 +126,27 @@ cp "${SKILL_SOURCE}/agents/openai.yaml" "${SKILL_DEST}/agents/openai.yaml"
 # Code-sign the bundle (helpers first, main app last) with a stable identity.
 if security find-identity -p codesigning -v 2>/dev/null | grep -q "${SIGN_IDENTITY}"; then
     echo "🔏 Signing with '${SIGN_IDENTITY}'..."
+    # Sparkle arrives signed by the Sparkle project, so re-sign it with our
+    # identity, innermost first. Its helpers keep their own entitlements
+    # (--preserve-metadata) rather than inheriting Cortland's: Autoupdate
+    # carries a Sparkle application-identifier that is not ours to rewrite.
+    SPARKLE_VERSION_DIR="${BUILD_DIR}/${BUNDLE_NAME}/Contents/Frameworks/Sparkle.framework/Versions/B"
+    for SPARKLE_PART in \
+        "XPCServices/Downloader.xpc" \
+        "XPCServices/Installer.xpc" \
+        "Autoupdate" \
+        "Updater.app"; do
+        if [ -e "${SPARKLE_VERSION_DIR}/${SPARKLE_PART}" ]; then
+            codesign --force --options runtime ${TIMESTAMP_FLAG} \
+                --preserve-metadata=entitlements \
+                --sign "${SIGN_IDENTITY}" \
+                "${SPARKLE_VERSION_DIR}/${SPARKLE_PART}"
+        fi
+    done
+    codesign --force --options runtime ${TIMESTAMP_FLAG} \
+        --sign "${SIGN_IDENTITY}" \
+        "${BUILD_DIR}/${BUNDLE_NAME}/Contents/Frameworks/Sparkle.framework"
+
     for HELPER in cortland-ctl cortland-agent-status cortland-mcp cortland-telemetry; do
         codesign --force --options runtime ${TIMESTAMP_FLAG} \
             --entitlements Cortland.entitlements \
