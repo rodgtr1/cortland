@@ -6,7 +6,8 @@ protocol SessionsPanelDelegate: AnyObject {
 }
 
 /// ⌃⇧S Session Recall: lists past Claude/Codex sessions newest-first,
-/// filters as you type, and on Enter resumes the selected one in a new tab.
+/// filters as you type (with an All/Claude/Codex agent filter, ⌘1-⌘3), and on
+/// Enter resumes the selected one in a new tab.
 /// The panel chrome (search field, table, key handling) lives in
 /// `FilterableListPanel`; this subclass supplies the records and the async
 /// cache load. Data (parse/cache/query) lives in the rest of `SessionRecall/`.
@@ -70,6 +71,27 @@ final class SessionsPanel: FilterableListPanel {
         button.font = NSFont.systemFont(ofSize: 12)
         return button
     }()
+
+    // MARK: - Agent filter (All / Claude / Codex)
+
+    /// When set, only this agent's sessions are shown; nil shows every agent.
+    /// Applied before the text query in both shallow and deep mode.
+    private var agentFilter: SessionAgent?
+    /// The segment order mirrored by ⌘1/⌘2/⌘3. Index 0 is "All" (nil filter).
+    private static let agentSegments: [SessionAgent?] = [nil, .claude, .codex]
+    /// The "All | Claude | Codex" control beside the Deep toggle.
+    private lazy var agentControl: NSSegmentedControl = {
+        let control = NSSegmentedControl(
+            labels: ["All", "Claude", "Codex"],
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(agentFilterChanged(_:))
+        )
+        control.controlSize = .small
+        control.selectedSegment = 0
+        control.toolTip = "Filter by agent (⌘1 all, ⌘2 claude, ⌘3 codex)"
+        return control
+    }()
     /// Footer status line ("50 of 334 · keep typing to narrow"). The window
     /// title can't carry this — the panel hides its title bar — so it lives
     /// visibly under the list instead.
@@ -93,7 +115,11 @@ final class SessionsPanel: FilterableListPanel {
             // single-line default, or the subtitle clips into the next row.
             rowHeight: 46
         ))
-        installHeaderAccessory(deepToggle)
+        // One accessory slot: stack the agent filter and the Deep toggle.
+        let accessories = NSStackView(views: [agentControl, deepToggle])
+        accessories.orientation = .horizontal
+        accessories.spacing = 10
+        installHeaderAccessory(accessories)
         installFooter(footerLabel)
     }
 
@@ -130,6 +156,13 @@ final class SessionsPanel: FilterableListPanel {
             previewSelectedRow()
             return true
         }
+        // ⌘1/⌘2/⌘3 pick the agent filter segment (All / Claude / Codex).
+        if event.modifierFlags.contains(.command),
+           let digit = event.charactersIgnoringModifiers.flatMap(Int.init),
+           (1...Self.agentSegments.count).contains(digit) {
+            selectAgentSegment(digit - 1)
+            return true
+        }
         return super.performKeyEquivalent(with: event)
     }
 
@@ -154,7 +187,7 @@ final class SessionsPanel: FilterableListPanel {
     /// hits). Newest-first is preserved within each group.
     private func applyShallowFilter() {
         snippets = [:]
-        let matches = SessionQuery.run(all, search: currentQuery.isEmpty ? nil : currentQuery)
+        let matches = SessionQuery.run(all, agent: agentFilter, search: currentQuery.isEmpty ? nil : currentQuery)
         if currentQuery.isEmpty {
             filtered = Array(matches.prefix(displayLimit))
         } else {
@@ -186,6 +219,7 @@ final class SessionsPanel: FilterableListPanel {
         guard let deepIndex else {
             filtered = SessionQuery.run(
                 all,
+                agent: agentFilter,
                 search: currentQuery.isEmpty ? nil : currentQuery,
                 limit: displayLimit
             )
@@ -198,13 +232,15 @@ final class SessionsPanel: FilterableListPanel {
         // No phrase yet: nothing to match inside bodies — just show newest.
         guard !currentQuery.isEmpty else {
             snippets = [:]
-            filtered = SessionQuery.run(all, limit: displayLimit)
-            updateFooter(shown: filtered.count, total: all.count)
+            let matches = SessionQuery.run(all, agent: agentFilter)
+            filtered = Array(matches.prefix(displayLimit))
+            updateFooter(shown: filtered.count, total: matches.count)
             return
         }
 
-        // Search across all sessions, newest-first, then cap for display.
-        let ordered = SessionQuery.run(all)
+        // Search across the (agent-filtered) sessions, newest-first, then cap
+        // for display.
+        let ordered = SessionQuery.run(all, agent: agentFilter)
         let matches = SessionDeepSearch.search(currentQuery, in: ordered, index: deepIndex)
         let shown = Array(matches.prefix(displayLimit))
         filtered = shown.map(\.record)
@@ -248,6 +284,23 @@ final class SessionsPanel: FilterableListPanel {
         reloadAndSelectFirst()
         // Toggling steals first responder; hand it back so typing keeps filtering.
         searchField.becomeFirstResponder()
+    }
+
+    @objc private func agentFilterChanged(_ sender: NSSegmentedControl) {
+        let segment = sender.selectedSegment
+        guard segment >= 0, segment < Self.agentSegments.count else { return }
+        agentFilter = Self.agentSegments[segment]
+        applyFilter()
+        reloadAndSelectFirst()
+        // Clicking steals first responder; hand it back so typing keeps filtering.
+        searchField.becomeFirstResponder()
+    }
+
+    /// Select the agent segment for a ⌘1/⌘2/⌘3 press, mirroring a click.
+    private func selectAgentSegment(_ segment: Int) {
+        guard segment < Self.agentSegments.count else { return }
+        agentControl.selectedSegment = segment
+        agentFilterChanged(agentControl)
     }
 
     /// The panel is retained by `MainWindowController`, so `close()` only orders

@@ -98,12 +98,31 @@ class PreferencesWindowController: NSWindowController {
             guard let paneView = item.viewController?.view else { continue }
             paneView.wantsLayer = true
             paneView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+            repaintBackgrounds(in: paneView)
             recolorLabels(in: paneView, color: AppTheme.primaryText)
         }
         [opacityLabel, fontSizeLabel, editorFontSizeLabel, shellIntegrationStatusLabel].forEach {
             $0?.textColor = AppTheme.secondaryText
         }
         agentStatusLabels.values.forEach { $0.textColor = AppTheme.secondaryText }
+    }
+
+    /// Repaint the container backgrounds a live theme switch would otherwise
+    /// miss. Each pane is a scroll view whose own `backgroundColor`, clip view,
+    /// and flipped document view were coloured once at setup — recolouring only
+    /// the pane's outer layer left that scrolled area showing the old theme (a
+    /// white body under a dark toolbar). Walks the whole subtree so nested
+    /// scroll views repaint too.
+    private func repaintBackgrounds(in view: NSView) {
+        if let scroll = view as? NSScrollView {
+            scroll.backgroundColor = AppTheme.windowBackground
+            scroll.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+            scroll.contentView.backgroundColor = AppTheme.windowBackground
+            scroll.documentView?.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+        }
+        for sub in view.subviews {
+            repaintBackgrounds(in: sub)
+        }
     }
 
     private func recolorLabels(in view: NSView?, color: NSColor) {
