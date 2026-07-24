@@ -1,4 +1,5 @@
 import Cocoa
+import CortlandProInterface
 @preconcurrency import UserNotifications
 
 class PreferencesWindowController: NSWindowController {
@@ -50,9 +51,12 @@ class PreferencesWindowController: NSWindowController {
 
     // Approvals Tab
     private var approvalModePopup: NSPopUpButton!
-    private var autoAllowField: NSTextField!
-    private var alwaysAskField: NSTextField!
-    private var worktreeAutoApproveCheckbox: NSButton!
+    /// The three desk rules. Nil in a build with no approval desk, where they
+    /// would be settings that quietly govern nothing — the config keys still
+    /// round-trip, they just have no reader. See `docs/pro-split.md`.
+    private var autoAllowField: NSTextField?
+    private var alwaysAskField: NSTextField?
+    private var worktreeAutoApproveCheckbox: NSButton?
 
     // Extras Tab
     private var arcadeEnabledCheckbox: NSButton!
@@ -418,57 +422,76 @@ class PreferencesWindowController: NSWindowController {
             preferredWidth: 420
         )
 
-        autoAllowField = NSTextField()
-        autoAllowField.placeholderString = "Sources/**, docs/**"
-        autoAllowField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        autoAllowField.target = self
-        autoAllowField.action = #selector(autoAllowChanged(_:))
-
-        let autoAllowHelp = Self.wrappingLabel(
-            "Approval-desk rule for Claude and Pi edits. Codex does not expose auto-applied edits to Cortland's diff desk.",
-            fontSize: 11,
-            maxLines: 3,
-            preferredWidth: 420
-        )
-
-        alwaysAskField = NSTextField()
-        alwaysAskField.placeholderString = ".env, **/secrets/**, *.pem"
-        alwaysAskField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        alwaysAskField.target = self
-        alwaysAskField.action = #selector(alwaysAskChanged(_:))
-
-        let alwaysAskHelp = Self.wrappingLabel(
-            "Approval-desk rule for Claude and Pi. Highest precedence there, but it cannot override Codex's own sandbox/reviewer.",
-            fontSize: 11,
-            maxLines: 3,
-            preferredWidth: 420
-        )
-
-        worktreeAutoApproveCheckbox = NSButton(
-            checkboxWithTitle: "Auto-approve edits inside registered worktrees",
-            target: self,
-            action: #selector(worktreeAutoApproveChanged(_:))
-        )
-        worktreeAutoApproveCheckbox.font = NSFont.systemFont(ofSize: 13)
-
-        let worktreeAutoApproveHelp = Self.wrappingLabel(
-            "For Claude and Pi's approval desk: edits inside the pane's registered worktree apply automatically. Codex workspace scope already follows the directory it launches in.",
-            fontSize: 11,
-            maxLines: 4,
-            preferredWidth: 420
-        )
-
         form.fieldLabel("Agent Permissions:", gapAbove: 30)
         form.leadingControl(approvalModePopup, gapAbove: 10, width: 240)
         form.fullWidth(modeHelp, gapAbove: 6)
-        form.fieldLabel("Always Allow (comma-separated globs):", gapAbove: 22)
-        form.fullWidth(autoAllowField, gapAbove: 8)
-        form.fullWidth(autoAllowHelp, gapAbove: 6)
-        form.fieldLabel("Always Ask (comma-separated globs):", gapAbove: 22)
-        form.fullWidth(alwaysAskField, gapAbove: 8)
-        form.fullWidth(alwaysAskHelp, gapAbove: 6)
-        form.checkbox(worktreeAutoApproveCheckbox, gapAbove: 22)
-        form.fullWidth(worktreeAutoApproveHelp, gapAbove: 6)
+
+        // The rules below are read by the approval desk and by nothing else, so
+        // a build without one shows the permission mode (which every build
+        // honors, because it is passed to the agent itself) and stops there.
+        if ProFeatures.approvalDesk != nil {
+            let autoAllow = NSTextField()
+            autoAllow.placeholderString = "Sources/**, docs/**"
+            autoAllow.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            autoAllow.target = self
+            autoAllow.action = #selector(autoAllowChanged(_:))
+            autoAllowField = autoAllow
+
+            let autoAllowHelp = Self.wrappingLabel(
+                "Approval-desk rule for Claude and Pi edits. Codex does not expose auto-applied edits to Cortland's diff desk.",
+                fontSize: 11,
+                maxLines: 3,
+                preferredWidth: 420
+            )
+
+            let alwaysAsk = NSTextField()
+            alwaysAsk.placeholderString = ".env, **/secrets/**, *.pem"
+            alwaysAsk.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            alwaysAsk.target = self
+            alwaysAsk.action = #selector(alwaysAskChanged(_:))
+            alwaysAskField = alwaysAsk
+
+            let alwaysAskHelp = Self.wrappingLabel(
+                "Approval-desk rule for Claude and Pi. Highest precedence there, but it cannot override Codex's own sandbox/reviewer.",
+                fontSize: 11,
+                maxLines: 3,
+                preferredWidth: 420
+            )
+
+            let worktreeAutoApprove = NSButton(
+                checkboxWithTitle: "Auto-approve edits inside registered worktrees",
+                target: self,
+                action: #selector(worktreeAutoApproveChanged(_:))
+            )
+            worktreeAutoApprove.font = NSFont.systemFont(ofSize: 13)
+            worktreeAutoApproveCheckbox = worktreeAutoApprove
+
+            let worktreeAutoApproveHelp = Self.wrappingLabel(
+                "For Claude and Pi's approval desk: edits inside the pane's registered worktree apply automatically. Codex workspace scope already follows the directory it launches in.",
+                fontSize: 11,
+                maxLines: 4,
+                preferredWidth: 420
+            )
+
+            form.fieldLabel("Always Allow (comma-separated globs):", gapAbove: 22)
+            form.fullWidth(autoAllow, gapAbove: 8)
+            form.fullWidth(autoAllowHelp, gapAbove: 6)
+            form.fieldLabel("Always Ask (comma-separated globs):", gapAbove: 22)
+            form.fullWidth(alwaysAsk, gapAbove: 8)
+            form.fullWidth(alwaysAskHelp, gapAbove: 6)
+            form.checkbox(worktreeAutoApprove, gapAbove: 22)
+            form.fullWidth(worktreeAutoApproveHelp, gapAbove: 6)
+        } else {
+            form.fullWidth(
+                Self.wrappingLabel(
+                    "Path rules that hold an edit for review — always-allow and always-ask globs, and auto-approval inside a worktree — belong to Cortland's approval desk, which this build does not include. Edits are decided by each agent's own prompt.",
+                    fontSize: 11,
+                    maxLines: 5,
+                    preferredWidth: 420
+                ),
+                gapAbove: 22
+            )
+        }
         form.finish()
 
         addTab(approvalsView, identifier: "approvals", label: "Approvals", symbol: "checkmark.shield")
@@ -727,9 +750,9 @@ class PreferencesWindowController: NSWindowController {
         // Load approval settings (defaults when the section is absent).
         let approval = config.approval ?? ApprovalConfig()
         approvalModePopup.selectItem(at: Self.approvalModeIndex(approval.mode))
-        autoAllowField.stringValue = approval.autoAllow.joined(separator: ", ")
-        alwaysAskField.stringValue = approval.alwaysAsk.joined(separator: ", ")
-        worktreeAutoApproveCheckbox.state = approval.worktreeAutoApprove ? .on : .off
+        autoAllowField?.stringValue = approval.autoAllow.joined(separator: ", ")
+        alwaysAskField?.stringValue = approval.alwaysAsk.joined(separator: ", ")
+        worktreeAutoApproveCheckbox?.state = approval.worktreeAutoApprove ? .on : .off
 
         // Load notification settings (defaults when the section is absent).
         let notifications = config.notifications ?? NotificationsConfig()
