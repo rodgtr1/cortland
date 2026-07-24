@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## Unreleased (0.7.0)
+
+### New features
+
+- **Cortland updates itself.** The app embeds Sparkle 2.9.4 and checks a feed published with each GitHub release, so an installed copy no longer has to be replaced by hand. Nothing installs behind your back: Sparkle asks once whether it may check at all, and every update it finds is shown with its version and release notes and waits for you to press Install. "Check for Updates…" sits under About in the Cortland menu for checking on demand, and stays disabled in builds that carry no feed (an unbundled `swift run`, for instance) rather than failing when clicked.
+- **Updates are signed, so a public feed is safe.** Every release archive is signed with an Ed25519 key whose private half never leaves the release machine's Keychain, and each build verifies the download against the public half baked into its `Info.plist`. Whoever controls the download URL cannot substitute an archive: a tampered one is refused before anything is installed. The whole path — feed fetched, update found, archive downloaded, signature checked, app replaced in place — was run end to end over a local server before shipping, including the rejection case.
+- **The release flow generates the feed.** `scripts/make-appcast.sh` reads the version off the built bundle (so the feed cannot disagree with what it ships), signs the notarized DMG, and writes `build/appcast.xml`, refusing to finish if the result is unsigned or names the wrong build. `docs/release.md` now carries the full procedure through `gh release create`, including which three files have to be attached and why renaming any of them breaks updates for everyone already running Cortland.
 
 ### Renamed
 
