@@ -1,4 +1,5 @@
 import Cocoa
+import CortlandProInterface
 import CortlandIPCCore
 import SwiftTerm
 

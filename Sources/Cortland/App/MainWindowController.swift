@@ -148,9 +148,10 @@ class MainWindowController: NSWindowController {
     private var activeTabIndex: Int { tabController.activeTabIndex }
     private var currentPaneSplitController: PaneSplitController? { tabController.currentSplitController }
     private var quickOpenPanel: QuickOpenPanel?
-    /// Retained so ⌃⇧S reuses one Session Recall panel instead of stacking
-    /// duplicates, mirroring `quickOpenPanel`.
-    private var sessionsPanel: SessionsPanel?
+    /// The free Session Recall teaser, retained so ⌃⇧S reuses one panel instead
+    /// of stacking duplicates, mirroring `quickOpenPanel`. Nil in a Pro build:
+    /// `ProFeatures.recall` owns its own panel and this is never built.
+    private var sessionsTeaserPanel: SessionsTeaserPanel?
     private var preferencesWindowController: PreferencesWindowController?
     // Set on the main actor; removed in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var keyEventMonitor: Any?
@@ -1161,13 +1162,24 @@ extension MainWindowController: SidebarContainerDelegate {
     func showSessions() {
         guard let window = window else { return }
 
-        // Create or reuse the Session Recall panel.
-        if sessionsPanel == nil {
-            sessionsPanel = SessionsPanel()
-            sessionsPanel?.sessionsDelegate = self
+        // The Pro panel owns its own window and reuses it across opens, so this
+        // hands off wholesale. Resuming comes back through the closure: the cwd
+        // goes via workingDirectory (not a `cd`) and the resume ARGV via
+        // command:, so the existing claude/codex approval-flag injection
+        // applies. A nil cwd falls back to the active pane's directory.
+        if let recall = ProFeatures.recall {
+            recall.showRecall(relativeTo: window) { [weak self] request in
+                self?.createNewTab(workingDirectory: request.workingDirectory, command: request.command)
+            }
+            return
         }
 
-        sessionsPanel?.show(relativeTo: window)
+        // Free: the read-only teaser. Retained so ⌃⇧S reuses one panel instead
+        // of stacking duplicates, mirroring `quickOpenPanel`.
+        if sessionsTeaserPanel == nil {
+            sessionsTeaserPanel = SessionsTeaserPanel()
+        }
+        sessionsTeaserPanel?.show(relativeTo: window)
     }
 
     func showPreferences() {
@@ -1252,17 +1264,6 @@ extension MainWindowController: QuickOpenPanelDelegate {
     func quickOpenPanel(_ panel: QuickOpenPanel, didSelectFile filePath: String) {
         let url = URL(fileURLWithPath: filePath)
         openFileInEditor(url)
-    }
-}
-
-// MARK: - SessionsPanelDelegate
-extension MainWindowController: SessionsPanelDelegate {
-    func sessionsPanel(_ panel: SessionsPanel, didSelect record: SessionRecord) {
-        // Resume in a NEW tab: the cwd goes via workingDirectory (not a `cd`),
-        // and the resume ARGV via command: so the app's existing claude/codex
-        // approval-flag injection applies. A nil cwd falls back to the active
-        // pane's directory.
-        createNewTab(workingDirectory: record.cwd, command: record.resumeArgv)
     }
 }
 

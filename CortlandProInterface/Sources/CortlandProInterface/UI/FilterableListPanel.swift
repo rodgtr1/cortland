@@ -6,8 +6,8 @@ import Cocoa
 /// Returns nil when the query isn't a subsequence of the candidate.
 ///
 /// `nonisolated` so Quick Open can score candidate paths on a background queue.
-enum FuzzyScorer {
-    nonisolated static func score(candidate: String, query: String) -> Int? {
+public enum FuzzyScorer {
+    public nonisolated static func score(candidate: String, query: String) -> Int? {
         let lowerCandidate = candidate.lowercased()
         let lowerQuery = query.lowercased()
 
@@ -32,10 +32,10 @@ enum FuzzyScorer {
 /// search field, results table, scroll view, key handling, and selection
 /// movement; subclasses supply the row data and per-row cell, and react to
 /// query changes and row activation.
-class FilterableListPanel: NSPanel {
-    let searchField = NSSearchField()
-    let scrollView = NSScrollView()
-    let tableView = NSTableView()
+open class FilterableListPanel: NSPanel {
+    public let searchField = NSSearchField()
+    public let scrollView = NSScrollView()
+    public let tableView = NSTableView()
     private var searchFieldDelegate: SearchFieldDelegate?
     /// The search field's trailing constraint, held so an optional header
     /// accessory can be inserted at the trailing edge of the search-field row
@@ -49,20 +49,36 @@ class FilterableListPanel: NSPanel {
     private let rowHeight: CGFloat
 
     /// Per-panel appearance and behavior supplied by the subclass.
-    struct Chrome {
-        let title: String
-        let placeholder: String
-        let size: NSSize
-        let columnIdentifier: String
+    public struct Chrome {
+        public let title: String
+        public let placeholder: String
+        public let size: NSSize
+        public let columnIdentifier: String
         /// Quick Open stays up while other tasks run; the palette dismisses on
         /// deactivation.
-        let hidesOnDeactivate: Bool
+        public let hidesOnDeactivate: Bool
         /// Row height. Defaults to 32 (single-line rows); two-line rows should
         /// pass a taller value.
-        var rowHeight: CGFloat = 32
+        public var rowHeight: CGFloat = 32
+
+        public init(
+            title: String,
+            placeholder: String,
+            size: NSSize,
+            columnIdentifier: String,
+            hidesOnDeactivate: Bool,
+            rowHeight: CGFloat = 32
+        ) {
+            self.title = title
+            self.placeholder = placeholder
+            self.size = size
+            self.columnIdentifier = columnIdentifier
+            self.hidesOnDeactivate = hidesOnDeactivate
+            self.rowHeight = rowHeight
+        }
     }
 
-    init(chrome: Chrome) {
+    public init(chrome: Chrome) {
         rowHeight = chrome.rowHeight
         super.init(
             contentRect: NSRect(origin: .zero, size: chrome.size),
@@ -74,8 +90,8 @@ class FilterableListPanel: NSPanel {
         setupUI(chrome)
     }
 
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
+    open override var canBecomeKey: Bool { true }
+    open override var canBecomeMain: Bool { false }
 
     private func setupPanel(_ chrome: Chrome) {
         title = chrome.title
@@ -93,7 +109,7 @@ class FilterableListPanel: NSPanel {
 
         let containerView = NSView()
         containerView.wantsLayer = true
-        containerView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+        containerView.layer?.backgroundColor = ProTheme.colors.windowBackground.cgColor
         containerView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(containerView)
 
@@ -170,7 +186,7 @@ class FilterableListPanel: NSPanel {
 
     // MARK: - Key handling & selection
 
-    override func keyDown(with event: NSEvent) {
+    open override func keyDown(with event: NSEvent) {
         switch event.keyCode {
         case 53: // Escape
             close()
@@ -185,7 +201,7 @@ class FilterableListPanel: NSPanel {
         }
     }
 
-    func moveSelection(by delta: Int) {
+    public func moveSelection(by delta: Int) {
         let next = tableView.selectedRow + delta
         guard next >= 0, next < itemCount else { return }
         tableView.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
@@ -199,7 +215,7 @@ class FilterableListPanel: NSPanel {
     }
 
     /// Reload the table and auto-select the first row, if any.
-    func reloadAndSelectFirst() {
+    public func reloadAndSelectFirst() {
         tableView.reloadData()
         if itemCount > 0 {
             tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
@@ -221,7 +237,7 @@ class FilterableListPanel: NSPanel {
     /// `init` (once `self` exists, so the control can target it). Panels that
     /// never call it — Quick Open, the command palette — keep the original
     /// full-width search field, unchanged.
-    func installHeaderAccessory(_ view: NSView) {
+    public func installHeaderAccessory(_ view: NSView) {
         guard let containerView = searchField.superview,
               let searchFieldTrailing else { return }
         view.translatesAutoresizingMaskIntoConstraints = false
@@ -242,7 +258,7 @@ class FilterableListPanel: NSPanel {
     /// Insert a footer view beneath the list, shrinking the scroll view to make
     /// room. Panels that never call this — Quick Open, the command palette —
     /// keep the original full-height list, unchanged.
-    func installFooter(_ view: NSView) {
+    public func installFooter(_ view: NSView) {
         guard let containerView = scrollView.superview,
               let scrollViewBottom else { return }
         view.translatesAutoresizingMaskIntoConstraints = false
@@ -262,43 +278,45 @@ class FilterableListPanel: NSPanel {
     // MARK: - Subclass hooks
 
     /// Number of rows currently displayed. Override.
-    var itemCount: Int { 0 }
+    open var itemCount: Int { 0 }
 
     /// Cell view for `row`. Override.
-    func cellView(forRow row: Int) -> NSView? { nil }
+    open func cellView(forRow row: Int) -> NSView? { nil }
 
     /// The (trimmed) search query changed. Override to refilter / kick off a
     /// search.
-    func queryChanged(_ query: String) {}
+    open func queryChanged(_ query: String) {}
 
     /// A row was chosen (Return or double-click). Override to act on it.
-    func activateRow(_ row: Int) {}
+    open func activateRow(_ row: Int) {}
 }
 
 extension FilterableListPanel: NSTableViewDataSource {
-    func numberOfRows(in tableView: NSTableView) -> Int { itemCount }
+    public func numberOfRows(in tableView: NSTableView) -> Int { itemCount }
 }
 
 extension FilterableListPanel: NSTableViewDelegate {
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+    public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard row < itemCount else { return nil }
         return cellView(forRow: row)
     }
 
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rowHeight }
+    public func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rowHeight }
 }
 
 // MARK: - Search Field Delegate
 
 /// Routes keys the field editor would otherwise swallow (escape, arrows,
 /// enter) back to the owning panel so list navigation works while typing.
-class SearchFieldDelegate: NSObject, NSSearchFieldDelegate {
-    var escapeHandler: (() -> Void)?
-    var moveUpHandler: (() -> Void)?
-    var moveDownHandler: (() -> Void)?
-    var enterHandler: (() -> Void)?
+public class SearchFieldDelegate: NSObject, NSSearchFieldDelegate {
+    public var escapeHandler: (() -> Void)?
+    public var moveUpHandler: (() -> Void)?
+    public var moveDownHandler: (() -> Void)?
+    public var enterHandler: (() -> Void)?
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+    public override init() { super.init() }
+
+    public func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
             escapeHandler?()
             return true

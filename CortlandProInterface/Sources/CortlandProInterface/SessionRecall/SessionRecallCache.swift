@@ -10,27 +10,34 @@ import Foundation
 /// though the `Cortland` module defaults to `@MainActor` (see `Package.swift`
 /// `.defaultIsolation(MainActor.self)`). It builds ON `SessionLogScanner` and
 /// never duplicates the JSONL parsing.
-nonisolated enum SessionRecallCache {
+public nonisolated enum SessionRecallCache {
     /// One cached session: the parsed `SessionRecord` plus the source log
     /// file's path and last-seen modification time, which is the freshness key.
-    nonisolated struct Entry: Codable, Sendable, Equatable {
-        var path: String
-        var mtime: Date
-        var record: SessionRecord
+    public nonisolated struct Entry: Codable, Sendable, Equatable {
+        public var path: String
+        public var mtime: Date
+        public var record: SessionRecord
         /// A locally-generated title for this session (Codex only), persisted
         /// separately from the parsed `record` so it survives re-parses and can
         /// be set without re-scanning. Overlaid onto `record.generatedTitle`
         /// when the cache hands records back. Optional, so caches written before
         /// this field still decode (missing key → nil).
-        var generatedTitle: String? = nil
+        public var generatedTitle: String? = nil
+
+        public init(path: String, mtime: Date, record: SessionRecord, generatedTitle: String? = nil) {
+            self.path = path
+            self.mtime = mtime
+            self.record = record
+            self.generatedTitle = generatedTitle
+        }
     }
 
     /// The whole persisted cache. A wrapper struct (rather than a bare array)
     /// leaves room to bump a schema version later without breaking decoding.
-    nonisolated struct Snapshot: Codable, Sendable, Equatable {
-        var entries: [Entry]
+    public nonisolated struct Snapshot: Codable, Sendable, Equatable {
+        public var entries: [Entry]
 
-        init(entries: [Entry] = []) {
+        public init(entries: [Entry] = []) {
             self.entries = entries
         }
     }
@@ -45,7 +52,7 @@ nonisolated enum SessionRecallCache {
     ///
     /// The updated cache is written back to `cacheURL` and the fresh unified
     /// list is returned.
-    static func refresh(
+    public static func refresh(
         claudeProjectsRoot: URL,
         codexSessionsRoot: URL,
         cacheURL: URL,
@@ -88,7 +95,7 @@ nonisolated enum SessionRecallCache {
     /// log was deleted between scan and title generation). Cheap read-modify-
     /// write of the whole snapshot: the file is small and titling is a rare,
     /// background trickle, so there's no need for anything finer-grained.
-    static func storeGeneratedTitle(
+    public static func storeGeneratedTitle(
         _ title: String,
         forLogPath logPath: String,
         cacheURL: URL,
@@ -113,7 +120,7 @@ nonisolated enum SessionRecallCache {
     /// Decode the persisted cache, or an empty snapshot when the file is absent
     /// or unreadable/corrupt (a bad cache should degrade to a full re-parse,
     /// never crash).
-    static func load(from cacheURL: URL, fileManager: FileManager = .default) -> Snapshot {
+    public static func load(from cacheURL: URL, fileManager: FileManager = .default) -> Snapshot {
         guard let data = try? Data(contentsOf: cacheURL),
               let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data)
         else { return Snapshot() }
@@ -122,7 +129,7 @@ nonisolated enum SessionRecallCache {
 
     /// A default cache location under the user's Application Support directory,
     /// for real (non-test) use. Tests pass their own temp `URL`.
-    static func defaultCacheURL(fileManager: FileManager = .default) -> URL {
+    public static func defaultCacheURL(fileManager: FileManager = .default) -> URL {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.temporaryDirectory
         return base

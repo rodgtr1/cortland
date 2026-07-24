@@ -1,4 +1,5 @@
 import XCTest
+import CortlandProInterface
 @testable import Cortland
 
 final class QuickOpenFuzzyTests: XCTestCase {

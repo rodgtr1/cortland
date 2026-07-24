@@ -1,4 +1,5 @@
 import Cocoa
+import CortlandProInterface
 
 protocol QuickOpenPanelDelegate: AnyObject {
     func quickOpenPanel(_ panel: QuickOpenPanel, didSelectFile filePath: String)

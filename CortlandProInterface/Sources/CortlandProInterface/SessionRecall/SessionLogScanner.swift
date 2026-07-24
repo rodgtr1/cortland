@@ -10,7 +10,7 @@ import Foundation
 /// `Tests/Fixtures/SessionRecall/`. It is a `nonisolated enum` of static
 /// methods (matching `CodexTranscriptParser`) so scanning can run off the main
 /// thread despite the module's `@MainActor` default isolation.
-nonisolated enum SessionLogScanner {
+public nonisolated enum SessionLogScanner {
     /// Read at most this many lines per file while hunting for cwd + timestamp
     /// + the first genuine human prompt. Mirrors the prototype's cap; the data
     /// we need is almost always in the first handful of lines.
@@ -29,7 +29,7 @@ nonisolated enum SessionLogScanner {
     // MARK: - Public API
 
     /// Parse a single Claude session file into a record, or nil if unreadable.
-    static func parseClaudeSession(at url: URL, fileManager: FileManager = .default) -> SessionRecord? {
+    public static func parseClaudeSession(at url: URL, fileManager: FileManager = .default) -> SessionRecord? {
         guard let lines = jsonLines(at: url) else { return nil }
 
         let sessionID = url.deletingPathExtension().lastPathComponent
@@ -82,7 +82,7 @@ nonisolated enum SessionLogScanner {
     }
 
     /// Parse a single Codex rollout file into a record, or nil if unreadable.
-    static func parseCodexRollout(at url: URL, fileManager: FileManager = .default) -> SessionRecord? {
+    public static func parseCodexRollout(at url: URL, fileManager: FileManager = .default) -> SessionRecord? {
         guard let lines = jsonLines(at: url) else { return nil }
 
         var cwd: String?
@@ -172,15 +172,20 @@ nonisolated enum SessionLogScanner {
     /// One discovered log file paired with the agent that wrote it, so callers
     /// can decide *whether* to parse it (e.g. the incremental cache compares
     /// mtimes) before dispatching to the right parser.
-    nonisolated struct DiscoveredLog: Sendable, Equatable {
-        let url: URL
-        let agent: SessionAgent
+    public nonisolated struct DiscoveredLog: Sendable, Equatable {
+        public let url: URL
+        public let agent: SessionAgent
+
+        public init(url: URL, agent: SessionAgent) {
+            self.url = url
+            self.agent = agent
+        }
     }
 
     /// Scan a Claude projects root and a Codex sessions root into a combined
     /// list of records. Roots are explicit `URL`s so tests can point at a
     /// fixture tree; missing roots contribute nothing.
-    static func scan(
+    public static func scan(
         claudeProjectsRoot: URL,
         codexSessionsRoot: URL,
         fileManager: FileManager = .default
@@ -196,7 +201,7 @@ nonisolated enum SessionLogScanner {
     /// parsing them. Split out from `scan` so the cache can stat each file and
     /// re-parse only the ones whose mtime changed. Order is Claude-then-Codex,
     /// matching the pre-split `scan`.
-    static func discoverLogs(
+    public static func discoverLogs(
         claudeProjectsRoot: URL,
         codexSessionsRoot: URL,
         fileManager: FileManager = .default
@@ -210,7 +215,7 @@ nonisolated enum SessionLogScanner {
     }
 
     /// Parse a single discovered log with the parser its agent demands.
-    static func parse(_ log: DiscoveredLog, fileManager: FileManager = .default) -> SessionRecord? {
+    public static func parse(_ log: DiscoveredLog, fileManager: FileManager = .default) -> SessionRecord? {
         switch log.agent {
         case .claude: return parseClaudeSession(at: log.url, fileManager: fileManager)
         case .codex: return parseCodexRollout(at: log.url, fileManager: fileManager)
@@ -219,7 +224,7 @@ nonisolated enum SessionLogScanner {
 
     /// Convenience that scans the real `~/.claude/projects` and
     /// `~/.codex/sessions` roots.
-    static func scanDefaultRoots(fileManager: FileManager = .default) -> [SessionRecord] {
+    public static func scanDefaultRoots(fileManager: FileManager = .default) -> [SessionRecord] {
         let home = fileManager.homeDirectoryForCurrentUser
         return scan(
             claudeProjectsRoot: home.appendingPathComponent(".claude/projects"),

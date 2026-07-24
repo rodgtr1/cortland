@@ -1,4 +1,5 @@
 import Cocoa
+import CortlandProInterface
 
 /// One executable action in the command palette.
 struct PaletteAction {
