@@ -861,7 +861,7 @@ class MainWindowController: NSWindowController {
     /// tabs whose agent needs input, plus edits queued for approval.
     func refreshAgentsBadge() {
         let waiting = tabs.filter { $0.agentState == .ready }.count
-        activityBarView.updateAgentsBadge(count: waiting + ApprovalQueue.shared.pending.count)
+        activityBarView.updateAgentsBadge(count: waiting + (ProFeatures.approvalDesk?.pendingCount ?? 0))
     }
 
     /// The last pending-approval count, so queue-change notifications can tell
@@ -872,16 +872,16 @@ class MainWindowController: NSWindowController {
     /// call for attention the way a blocked agent does — dock bounce, plus a
     /// user notification when Cortland isn't frontmost.
     @objc private func pendingApprovalsChanged(_ notification: Notification) {
-        let pending = ApprovalQueue.shared.pending
-        defer { lastPendingApprovalCount = pending.count }
+        let count = ProFeatures.approvalDesk?.pendingCount ?? 0
+        defer { lastPendingApprovalCount = count }
         refreshAgentsBadge()
 
-        guard pending.count > lastPendingApprovalCount else { return }
+        guard count > lastPendingApprovalCount else { return }
         NSApp.requestUserAttention(.informationalRequest)
-        if !NSApp.isActive, let newest = pending.last {
+        if !NSApp.isActive, let path = notification.userInfo?["path"] as? String {
             postUserNotification(
                 title: "Agent waiting for edit approval",
-                body: (newest.path as NSString).lastPathComponent,
+                body: (path as NSString).lastPathComponent,
                 playSound: true
             )
         }

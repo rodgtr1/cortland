@@ -109,6 +109,15 @@ public struct ApprovalDeskContext {
     public var emitEvent: (_ path: String, _ decision: String) -> Void
     /// Flips a pane's agent status while its edit is parked at the desk.
     public var setPaneParked: (_ paneID: UUID, _ parked: Bool) -> Void
+    /// Renders an expanded card's inline diff. Computing it shells out to
+    /// /usr/bin/diff and highlighting it needs the syntax engine, both of which
+    /// are the app's; the desk asks and gets the result back on the main actor.
+    public var renderDiff: (
+        _ old: String,
+        _ new: String,
+        _ path: String,
+        _ completion: @escaping @MainActor (NSAttributedString) -> Void
+    ) -> Void
 
     public init(
         settings: @escaping () -> ApprovalSettings,
@@ -116,7 +125,8 @@ public struct ApprovalDeskContext {
         worktreeRoot: @escaping (UUID?) -> String?,
         paneLabel: @escaping (UUID?) -> String,
         emitEvent: @escaping (_ path: String, _ decision: String) -> Void,
-        setPaneParked: @escaping (_ paneID: UUID, _ parked: Bool) -> Void
+        setPaneParked: @escaping (_ paneID: UUID, _ parked: Bool) -> Void,
+        renderDiff: @escaping (String, String, String, @escaping @MainActor (NSAttributedString) -> Void) -> Void
     ) {
         self.settings = settings
         self.reviewWindow = reviewWindow
@@ -124,6 +134,7 @@ public struct ApprovalDeskContext {
         self.paneLabel = paneLabel
         self.emitEvent = emitEvent
         self.setPaneParked = setPaneParked
+        self.renderDiff = renderDiff
     }
 }
 
@@ -164,7 +175,13 @@ public protocol ApprovalDeskProviding: AnyObject {
     func makeDeskSection() -> NSView
     /// Re-syncs the section with the queue. Called on queue changes and on the
     /// panel's per-second tick (which also advances each card's elapsed time).
+    /// Surviving cards are left alone so an expanded diff isn't collapsed
+    /// mid-review.
     func refreshDeskSection()
+    /// Rebuilds every card. Cards bake theme colors in at construction, so the
+    /// panel calls this when the theme changes — at the cost of collapsing an
+    /// expanded diff, which is a rare event.
+    func rebuildDeskSection()
 }
 
 // MARK: - Cost reporting
