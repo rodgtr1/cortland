@@ -99,8 +99,10 @@ final class TerminalTranscriptTests: XCTestCase {
         XCTAssertEqual(read.cursor, "\(gen):\(snap.total)")
     }
 
-    func testFullReadFallsBackToTheRawStreamOnTheAlternateScreen() {
-        // Alt screen: no scrollback, so history exists only in the raw stream.
+    func testFullReadFallsBackToTheRawStreamWithNoInterpretedText() {
+        // A snapshot carrying neither a screen nor an alternate-screen frame: the
+        // raw stream is all there is. TerminalAlternateScreenReadTests covers the
+        // alternate screen itself, which is served from the emulator.
         let snap = snapshot(raw: spinnerFrame("|", "Working") + "\u{001B}[2KDone\n", screen: nil)
         let read = TerminalText.recentRead(snap, since: nil, lineLimit: 20)
         XCTAssertEqual(read.text, "Done\n", "the fallback normalizes the raw stream the same way")
@@ -130,7 +132,7 @@ final class TerminalTranscriptTests: XCTestCase {
         }
     }
 
-    func testStaleCursorOnTheAlternateScreenResyncsFromTheRawStream() {
+    func testStaleCursorWithNoInterpretedTextResyncsFromTheRawStream() {
         let snap = snapshot(raw: "line one\nline two\n", screen: nil)
         let read = TerminalText.recentRead(snap, since: "\(gen + 1):0", lineLimit: 20)
         XCTAssertTrue(read.truncated)

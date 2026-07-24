@@ -1516,26 +1516,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// shell reads as truncated) plus the interpreted line buffer. See
     /// `TerminalText.recentRead` for the delta/truncation semantics.
     func recentReadSnapshot() -> TerminalText.RecentReadSnapshot {
-        TerminalText.RecentReadSnapshot(
-            screen: interpretedBufferText(),
+        TerminalText.recentReadSnapshot(
+            terminal: terminalView.getTerminal(),
             buffer: automationOutput,
             total: automationOutputTotalBytes,
             dropped: automationOutputDroppedBytes,
             generation: Int(shellPID))
-    }
-
-    /// The terminal's interpreted line buffer (scrollback + screen) as plain rows,
-    /// or nil on the alternate screen, which by definition keeps no scrollback: a
-    /// full-screen TUI's history exists only in the raw output stream.
-    ///
-    /// SwiftTerm exposes scrollback rows only as a whole-buffer dump (`buffer.lines`
-    /// itself is internal), so this walks the buffer rather than just its tail. It
-    /// is bounded by the scrollback cap, and it is the only main-thread work a
-    /// recent read now does — the strips and the line cap run against this copy.
-    private func interpretedBufferText() -> String? {
-        let terminal = terminalView.getTerminal()
-        guard !terminal.isCurrentBufferAlternate else { return nil }
-        return String(decoding: terminal.getBufferAsData(), as: UTF8.self)
     }
 
     /// The recent-output buffer with just the CSI escapes stripped — the shape the

@@ -376,6 +376,11 @@ struct CortlandCtl {
                               progress. --source recent is the scrollback transcript
                               --since returns only recent output after a prior read's
                               cursor (printed to stderr); re-reads in full on a stale one
+                              On a pane running a full-screen program (an agent CLI,
+                              vim), recent returns the scrollback from before it started
+                              plus the current screen, and --since returns that screen
+                              when anything has been written since the cursor — a
+                              repaint overwrites cells, so there is no line-by-line delta
           wait agent-status <pane-id> <idle|working|ready|done> [--timeout ms]
           wait output <pane-id> <text> [--timeout ms]
           wait event [--pane id] [--type agent_state|command|diff|telemetry] [--timeout ms]

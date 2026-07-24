@@ -83,6 +83,13 @@ cortland-ctl pane read "$WORKER_PANE" --source recent --lines 200
 cortland-ctl pane read "$WORKER_PANE" --source recent --since "$CURSOR"
 ```
 
+A worker pane usually *is* a full-screen program — Claude and Codex both take
+over the alternate screen. There a `recent` read is the scrollback from before
+the CLI started plus the current screen, and a `--since` read is that screen
+whenever anything has been written since the cursor (empty when nothing has).
+A repaint overwrites cells in place, so the alternate screen has no line-by-line
+history to hand back; the screen itself is the answer.
+
 For structured command history instead of a raw screen scrape, add `--json`. It
 returns recently finished commands in that pane as records — command line, exit
 code, duration, and output — which are easier to reason over than ANSI text.

@@ -315,7 +315,9 @@ cortland-ctl wait agent-status "$PANE_ID" done --timeout 600000
 cortland-ctl pane read "$PANE_ID" --source visible --lines 60
 
 # Need history rather than a progress peek? Read the scrollback transcript, and
-# pass the cursor it prints back as --since so the next read is only the delta
+# pass the cursor it prints back as --since so the next read is only the delta.
+# On a pane running an agent CLI or any other full-screen program, this is the
+# scrollback from before it started plus the screen as it now stands
 cortland-ctl pane read "$PANE_ID" --source recent --lines 200
 
 # Subscribe to a live JSONL event stream: agent-state transitions,

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftTerm
 
 /// Shared text plumbing for the terminal output pipeline: ANSI/OSC escape
 /// stripping and the amortized bounded-append used by every rolling output
@@ -98,12 +99,39 @@ nonisolated enum TerminalText {
     /// so this only drops the blank rows the screen keeps below the cursor, which
     /// would otherwise eat the line budget, and applies the cap.
     static func transcript(screen: String, limit lineLimit: Int?) -> String {
+        var rows = trimmedRows(of: screen)
+        if let lineLimit, lineLimit > 0 {
+            rows = rows.suffix(lineLimit)
+        }
+        return rows.joined(separator: "\n")
+    }
+
+    /// A buffer dump split into rows with the trailing blank ones dropped — the
+    /// rows a screen pads below the cursor, which carry no output and would
+    /// otherwise spend the whole line budget.
+    private static func trimmedRows(of screen: String) -> ArraySlice<Substring> {
         var rows = screen.split(separator: "\n", omittingEmptySubsequences: false)[...]
         while let last = rows.last, last.allSatisfy(\.isWhitespace) {
             rows = rows.dropLast()
         }
+        return rows
+    }
+
+    /// A full read of a pane whose foreground program is on the alternate screen
+    /// (an agent CLI, vim, lazygit): the main screen's retained scrollback —
+    /// everything printed before the TUI took over — followed by the current
+    /// interpreted alternate-screen frame.
+    ///
+    /// Both halves come from the emulator, so both are already free of the
+    /// cursor-positioning repaints that make the raw byte stream unreadable here.
+    /// The cap is applied last, over the joined text, so a tight `--lines` budget
+    /// spends itself on the frame the user is actually looking at and drops the
+    /// older scrollback above it.
+    static func transcript(scrollback: String?, frame: String, limit lineLimit: Int?) -> String {
+        var rows = scrollback.map { Array(trimmedRows(of: $0)) } ?? []
+        rows.append(contentsOf: trimmedRows(of: frame))
         if let lineLimit, lineLimit > 0 {
-            rows = rows.suffix(lineLimit)
+            rows = Array(rows.suffix(lineLimit))
         }
         return rows.joined(separator: "\n")
     }
@@ -157,15 +185,67 @@ nonisolated enum TerminalText {
 
     /// Everything a `recent` pane read needs, copied off the terminal on the main
     /// thread so the normalization (two regex passes, the redraw collapse, the
-    /// line cap) can run on a background queue. `screen` is the interpreted line
-    /// buffer (scrollback + screen), nil on the alternate screen — a full-screen
-    /// TUI's buffer holds no history, so there only the raw stream has one.
+    /// line cap) can run on a background queue.
+    ///
+    /// `screen` is the interpreted *main-screen* line buffer (scrollback +
+    /// screen). The emulator keeps it intact while a program runs on the alternate
+    /// screen, so it is the pre-TUI history even then.
+    ///
+    /// `alternateFrame` is the interpreted alternate-screen buffer, non-nil only
+    /// while a full-screen program is actually on it. That buffer is one viewport
+    /// with no scrollback of its own — it is the frame a human is looking at.
     struct RecentReadSnapshot: Sendable {
         let screen: String?
+        let alternateFrame: String?
         let buffer: String
         let total: Int
         let dropped: Int
         let generation: Int
+
+        init(screen: String?,
+             alternateFrame: String? = nil,
+             buffer: String,
+             total: Int,
+             dropped: Int,
+             generation: Int) {
+            self.screen = screen
+            self.alternateFrame = alternateFrame
+            self.buffer = buffer
+            self.total = total
+            self.dropped = dropped
+            self.generation = generation
+        }
+    }
+
+    /// Copies what a `recent` read needs off a terminal, cheaply, so the caller can
+    /// normalize it on a background queue. This is the only main-thread work a
+    /// recent read does — the strips and the line cap run against these copies.
+    ///
+    /// SwiftTerm exposes buffer rows only as a whole-buffer dump (`buffer.lines`
+    /// itself is internal), so this walks each buffer rather than just its tail;
+    /// both are bounded, the main screen by the scrollback cap and the alternate
+    /// one by the viewport.
+    ///
+    /// Reading `.normal` rather than `.active` is what makes an alternate-screen
+    /// pane readable: the emulator keeps the main-screen buffer intact while a TUI
+    /// runs, so it still holds everything printed before the TUI took over.
+    static func recentReadSnapshot(
+        terminal: Terminal,
+        buffer: String,
+        total: Int,
+        dropped: Int,
+        generation: Int
+    ) -> RecentReadSnapshot {
+        let onAlternateScreen = terminal.isCurrentBufferAlternate
+        return RecentReadSnapshot(
+            screen: String(decoding: terminal.getBufferAsData(kind: .normal), as: UTF8.self),
+            alternateFrame: onAlternateScreen
+                ? String(decoding: terminal.getBufferAsData(kind: .alt), as: UTF8.self)
+                : nil,
+            buffer: buffer,
+            total: total,
+            dropped: dropped,
+            generation: generation)
     }
 
     /// Resolves a `recent` read from a `RecentReadSnapshot`, off the main thread.
@@ -183,6 +263,13 @@ nonisolated enum TerminalText {
     /// two fields it did contribute are recomputed here directly, both trivially:
     /// the cursor is `generation:total`, and `truncated` is whether `since` failed
     /// to resolve.
+    ///
+    /// A pane on the alternate screen takes neither route. Its raw stream is not a
+    /// transcript at all: a full-screen program repaints by moving the cursor and
+    /// rewriting cells, emitting almost no newlines, so stripping the escapes
+    /// welds thousands of frames into one line and the redraw collapse then keeps
+    /// only the last fragment of it. Both reads are served from the emulator
+    /// instead — see `alternateScreenRead`.
     static func recentRead(_ snapshot: RecentReadSnapshot, since: String?, lineLimit: Int?) -> RecentDelta {
         // Same staleness rule `recentDelta` applies: a cursor is usable only when
         // it parses, names this generation, and still points inside the retained
@@ -193,6 +280,11 @@ nonisolated enum TerminalText {
         } ?? false
         let isFullRead = since == nil || staleCursor
 
+        if let frame = snapshot.alternateFrame {
+            return alternateScreenRead(snapshot, frame: frame, since: since,
+                                       isFullRead: isFullRead, staleCursor: staleCursor,
+                                       lineLimit: lineLimit)
+        }
         if isFullRead, let screen = snapshot.screen {
             return RecentDelta(text: transcript(screen: screen, limit: lineLimit),
                                cursor: "\(snapshot.generation):\(snapshot.total)",
@@ -205,6 +297,47 @@ nonisolated enum TerminalText {
             generation: snapshot.generation,
             since: since,
             lineLimit: lineLimit)
+    }
+
+    /// Resolves a `recent` read of a pane whose foreground program is on the
+    /// alternate screen. Both reads come from the emulator, never the raw stream.
+    ///
+    /// A full read is the retained main-screen scrollback plus the current frame.
+    ///
+    /// A delta read is the current frame when bytes have arrived since the cursor,
+    /// and empty text when none have. The alternate screen keeps no history to
+    /// diff against — a repaint overwrites cells in place, so "what is new" simply
+    /// does not exist there as text. Serving the whole frame is the honest answer
+    /// to "show me what changed": it is bounded by the viewport, it is what a
+    /// human would see, and a caller polling a worker pane gets a fresh frame
+    /// exactly when the worker wrote something. The byte cursor keeps its usual
+    /// job — it still advances with the raw stream, so it detects *that* output
+    /// happened even though it can no longer say *which* of it is new.
+    ///
+    /// Cursor grammar and staleness rules are untouched: the returned cursor is
+    /// `generation:total` and a stale one re-syncs as a truncated full read.
+    private static func alternateScreenRead(
+        _ snapshot: RecentReadSnapshot,
+        frame: String,
+        since: String?,
+        isFullRead: Bool,
+        staleCursor: Bool,
+        lineLimit: Int?
+    ) -> RecentDelta {
+        let cursor = "\(snapshot.generation):\(snapshot.total)"
+        if isFullRead {
+            return RecentDelta(
+                text: transcript(scrollback: snapshot.screen, frame: frame, limit: lineLimit),
+                cursor: cursor,
+                truncated: staleCursor)
+        }
+        // Live cursor (isFullRead is false only when `since` parsed and resolved).
+        let caughtUp = since
+            .flatMap { parseRecentCursor($0, generation: snapshot.generation) }
+            .map { $0 >= snapshot.total } ?? false
+        return RecentDelta(text: caughtUp ? "" : transcript(screen: frame, limit: lineLimit),
+                           cursor: cursor,
+                           truncated: false)
     }
 
     /// Parses a `"<generation>:<offset>"` cursor, returning the byte offset only
