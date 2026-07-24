@@ -1,5 +1,22 @@
 import Cocoa
-import CortlandProInterface
+
+/// Agent a new worktree can be launched with from the create sheet. `argv` is
+/// the command typed into the new pane, or nil for a plain terminal.
+enum WorktreeAgent: String, CaseIterable {
+    case none = "None"
+    case claude = "Claude"
+    case codex = "Codex"
+    case pi = "Pi"
+
+    var argv: [String]? {
+        switch self {
+        case .none: return nil
+        case .claude: return ["claude"]
+        case .codex: return ["codex"]
+        case .pi: return ["pi"]
+        }
+    }
+}
 
 protocol WorktreesPanelDelegate: AnyObject {
     /// Repository root for the active tab's pane, or nil when it isn't in a git
@@ -11,10 +28,8 @@ protocol WorktreesPanelDelegate: AnyObject {
     func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestOpenWorktree path: String)
     /// Open the uncommitted-changes view for the worktree at `path`.
     func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestDiffForWorktree path: String)
-    /// Create a worktree for `branch`, running `command` in its pane. Nil means
-    /// a plain terminal — always the case without `ProFeatures.worktreeLaunch`,
-    /// which is what supplies the sheet's agent picker.
-    func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestCreateBranch branch: String, command: [String]?)
+    /// Create a worktree for `branch`, optionally launching `agent` in its pane.
+    func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestCreateBranch branch: String, agent: WorktreeAgent)
     /// Remove the worktree registered for `branch`; `force` overrides the
     /// dirty/locked guard. The panel has already confirmed with the user.
     func worktreesPanel(_ panel: WorktreesPanelViewController, didRequestRemoveBranch branch: String, force: Bool)
@@ -350,36 +365,26 @@ final class WorktreesPanelViewController: NSViewController {
         guard let window = view.window else { return }
         let alert = NSAlert()
         alert.messageText = "New Worktree"
-        // The agent picker is the one-step-launch feature; without it the sheet
-        // is a branch name and nothing else, and creating opens a terminal.
-        let launch = ProFeatures.worktreeLaunch
-        alert.informativeText = launch == nil
-            ? "Create a git worktree on a new or existing branch."
-            : "Create a git worktree on a new or existing branch, optionally launching an agent in it."
+        alert.informativeText = "Create a git worktree on a new or existing branch, optionally launching an agent in it."
         alert.addButton(withTitle: "Create")
         alert.addButton(withTitle: "Cancel")
 
-        let field = NSTextField(frame: NSRect(x: 0, y: launch == nil ? 0 : 30, width: 260, height: 24))
+        let field = NSTextField(frame: NSRect(x: 0, y: 30, width: 260, height: 24))
         field.placeholderString = "branch name (e.g. feature/x)"
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
+        popup.addItems(withTitles: WorktreeAgent.allCases.map(\.rawValue))
 
-        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: launch == nil ? 24 : 62))
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 62))
         accessory.addSubview(field)
-
-        var popup: NSPopUpButton?
-        if let launch {
-            let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
-            picker.addItems(withTitles: launch.agentChoices)
-            accessory.addSubview(picker)
-            popup = picker
-        }
+        accessory.addSubview(popup)
         alert.accessoryView = accessory
 
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
             let branch = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !branch.isEmpty else { return }
-            let command = popup?.titleOfSelectedItem.flatMap { launch?.launchCommand(for: $0) }
-            self.delegate?.worktreesPanel(self, didRequestCreateBranch: branch, command: command)
+            let agent = WorktreeAgent(rawValue: popup.titleOfSelectedItem ?? "None") ?? .none
+            self.delegate?.worktreesPanel(self, didRequestCreateBranch: branch, agent: agent)
         }
     }
 

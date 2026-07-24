@@ -1,5 +1,4 @@
 import XCTest
-import CortlandProInterface
 @testable import Cortland
 
 /// Covers the Session Recall launch ledger: authoritative launch recording

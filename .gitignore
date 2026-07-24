@@ -1,5 +1,5 @@
 .DS_Store
-.build/
+/.build
 /Packages
 xcuserdata/
 DerivedData/
@@ -22,9 +22,5 @@ Package-*.swift
 
 # Test files
 test-*.swift
-
-# Symlink to the private Pro package's test target, so one `swift test` covers
-# both suites. Created by scripts/test-all.sh; never part of the public repo.
-/Tests/CortlandProTests
 
 .lavish/

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Which agent CLI produced a session log.
-public nonisolated enum SessionAgent: String, Codable, Sendable {
+nonisolated enum SessionAgent: String, Codable, Sendable {
     case claude
     case codex
 }
@@ -15,34 +15,34 @@ public nonisolated enum SessionAgent: String, Codable, Sendable {
 ///
 /// `Codable` so `SessionRecallCache` can persist records to (and reload them
 /// from) an on-disk JSON cache without re-parsing every log file.
-public nonisolated struct SessionRecord: Codable, Sendable, Equatable {
+nonisolated struct SessionRecord: Codable, Sendable, Equatable {
     /// The agent CLI that wrote the log.
-    public let agent: SessionAgent
+    let agent: SessionAgent
     /// The session's working directory, taken ONLY from an in-record field.
     /// Nil when the log never recorded it — the encoded project dir name is a
     /// lossy source (`/`→`-`) and is never decoded back into a cwd.
-    public let cwd: String?
+    let cwd: String?
     /// Last path component of `cwd`, or nil when `cwd` is nil.
-    public let repo: String?
+    let repo: String?
     /// The agent's own session identifier (Claude filename stem; Codex
     /// `session_id`). Falls back to `resumeID` for Codex when absent.
-    public let sessionID: String
+    let sessionID: String
     /// The id used to resume the session (`claude --resume <id>` /
     /// `codex resume <id>`). For Codex this is the rollout uuid.
-    public let resumeID: String
+    let resumeID: String
     /// Session start time, preferring the in-record/session_meta timestamp.
-    public let timestamp: Date?
+    let timestamp: Date?
     /// The first genuine human prompt (wrapper/injected text skipped),
     /// whitespace-collapsed and truncated to 100 chars, or "(no prompt found)".
-    public let title: String
+    let title: String
     /// Claude's own generated title (`ai-title` line), when present. Always
     /// nil for Codex.
-    public let aiTitle: String?
+    let aiTitle: String?
     /// A ready-to-run shell command that resumes the session, prefixed with a
     /// `cd <cwd>` only when the cwd is known.
-    public let resumeCommand: String
+    let resumeCommand: String
     /// Absolute path to the source log file.
-    public let logPath: String
+    let logPath: String
     /// Whether this record is the *root* thread of its logical session. True for
     /// every Claude record (each log is its own session) and for Codex rollouts
     /// whose `id == session_id` or whose `thread_source == "user"`. False for
@@ -53,41 +53,12 @@ public nonisolated struct SessionRecord: Codable, Sendable, Equatable {
     /// `var` with a default so old on-disk caches (whose JSON predates this
     /// field) still decode — see the custom `Codable` conformance below, which
     /// decodes it as `decodeIfPresent ?? true`.
-    public var isRootThread: Bool = true
-    /// A locally-generated one-line title for a Codex session, which has no
-    /// `aiTitle` of its own. Preferred over the raw first prompt for display,
-    /// but below Claude's `aiTitle`. Nil until titled; persisted in the cache so
-    /// a session is titled at most once ever. Pro generates these (through a
-    /// local Ollama model); every reader, free or not, displays what it finds.
-    public var generatedTitle: String? = nil
-
-    public init(
-        agent: SessionAgent,
-        cwd: String?,
-        repo: String?,
-        sessionID: String,
-        resumeID: String,
-        timestamp: Date?,
-        title: String,
-        aiTitle: String?,
-        resumeCommand: String,
-        logPath: String,
-        isRootThread: Bool = true,
-        generatedTitle: String? = nil
-    ) {
-        self.agent = agent
-        self.cwd = cwd
-        self.repo = repo
-        self.sessionID = sessionID
-        self.resumeID = resumeID
-        self.timestamp = timestamp
-        self.title = title
-        self.aiTitle = aiTitle
-        self.resumeCommand = resumeCommand
-        self.logPath = logPath
-        self.isRootThread = isRootThread
-        self.generatedTitle = generatedTitle
-    }
+    var isRootThread: Bool = true
+    /// A locally-generated one-line title (via `SessionTitler`/Ollama) for Codex
+    /// sessions, which have no `aiTitle` of their own. Preferred over the raw
+    /// first prompt for display, but below Claude's `aiTitle`. Nil until titled;
+    /// persisted in the cache so a session is titled at most once ever.
+    var generatedTitle: String? = nil
 
     /// The bare ARGV that resumes this session, for launching a process
     /// directly (a new tab's `command:`) rather than pasting a shell string.
@@ -97,7 +68,7 @@ public nonisolated struct SessionRecord: Codable, Sendable, Equatable {
     ///
     /// `nonisolated` (inherited from the type) so it is safe to read off the
     /// main thread; it is the correctness-critical bit and is unit-tested.
-    public var resumeArgv: [String] {
+    var resumeArgv: [String] {
         switch agent {
         case .claude: return ["claude", "--resume", resumeID]
         case .codex: return ["codex", "resume", resumeID]
@@ -119,7 +90,7 @@ extension SessionRecord {
         case resumeCommand, logPath, isRootThread, generatedTitle
     }
 
-    public nonisolated init(from decoder: Decoder) throws {
+    nonisolated init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         agent = try container.decode(SessionAgent.self, forKey: .agent)
         cwd = try container.decodeIfPresent(String.self, forKey: .cwd)

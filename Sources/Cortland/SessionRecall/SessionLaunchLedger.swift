@@ -7,42 +7,35 @@ import Foundation
 ///
 /// Pure value type, `nonisolated`/`Sendable`: it is produced and consumed off
 /// the main thread even though the module defaults to `@MainActor`.
-public nonisolated struct SessionLaunchLedgerEntry: Codable, Sendable, Equatable {
+nonisolated struct SessionLaunchLedgerEntry: Codable, Sendable, Equatable {
     /// "claude" or "codex" — argv[0]'s basename at launch.
-    public var agent: String
+    var agent: String
     /// The directory the process was launched in.
-    public var cwd: String
+    var cwd: String
     /// The git branch at launch, best-effort (nil when not a repo / lookup
     /// failed or timed out). Carried for future use; backfill only needs cwd.
-    public var branch: String?
+    var branch: String?
     /// When the launch happened.
-    public var timestamp: Date
-
-    public init(agent: String, cwd: String, branch: String?, timestamp: Date) {
-        self.agent = agent
-        self.cwd = cwd
-        self.branch = branch
-        self.timestamp = timestamp
-    }
+    var timestamp: Date
 }
 
 /// An append-only JSONL ledger of agent launches, alongside the Session Recall
 /// cache. Written fire-and-forget on a background queue so it never sits on the
-/// pane-launch path, and read (off-main) by the recall panels to backfill the
-/// one blind spot the log scanner has: sessions whose log never recorded a cwd.
+/// pane-launch path, and read (off-main) by `SessionsPanel` to backfill the one
+/// blind spot the log scanner has: sessions whose log never recorded a cwd.
 ///
 /// `nonisolated enum` of statics — no shared mutable state, safe off the main
 /// thread. Single-process writer, so an atomic `seekToEnd`+`write` append is
 /// sufficient; there is no cross-process locking.
-public nonisolated enum SessionLaunchLedger {
+nonisolated enum SessionLaunchLedger {
     /// Above this many entries, a read rewrites the file down to `trimTo` newest
     /// entries. Keeps an always-appended file from growing without bound while
     /// staying dead simple (no rotation, no index).
-    public static let maxEntries = 2000
-    public static let trimTo = 1000
+    static let maxEntries = 2000
+    static let trimTo = 1000
 
     /// The default ±window (seconds) for matching a nil-cwd record to a launch.
-    public static let matchWindow: TimeInterval = 180
+    static let matchWindow: TimeInterval = 180
 
     /// Serializes the (branch-resolve + append) work off the launch path. Utility
     /// QoS: recording a launch is a background nicety, never latency-critical.
@@ -62,7 +55,7 @@ public nonisolated enum SessionLaunchLedger {
     }
 
     /// The ledger file, next to the Session Recall cache.
-    public static func defaultLedgerURL(fileManager: FileManager = .default) -> URL {
+    static func defaultLedgerURL(fileManager: FileManager = .default) -> URL {
         SessionRecallCache.defaultCacheURL(fileManager: fileManager)
             .deletingLastPathComponent()
             .appendingPathComponent("session-launch-ledger.jsonl")
@@ -74,7 +67,7 @@ public nonisolated enum SessionLaunchLedger {
     /// `claude`/`codex` launches are recorded; anything else is a no-op. All work
     /// (branch resolution + the file append) runs on a background queue so the
     /// caller (the pane-launch path) never blocks.
-    public static func record(
+    static func record(
         command: [String],
         cwd: String,
         at url: URL = SessionLaunchLedger.defaultLedgerURL()
@@ -95,7 +88,7 @@ public nonisolated enum SessionLaunchLedger {
     /// is not an agent launch. `now`/`resolveBranch` are injectable so tests can
     /// pin the timestamp and avoid spawning git.
     @discardableResult
-    public static func recordSync(
+    static func recordSync(
         command: [String],
         cwd: String,
         at url: URL,
@@ -115,7 +108,7 @@ public nonisolated enum SessionLaunchLedger {
     }
 
     /// "claude"/"codex" from argv[0]'s basename, else nil.
-    public static func agentName(for command: [String]) -> String? {
+    static func agentName(for command: [String]) -> String? {
         guard let first = command.first, !first.isEmpty else { return nil }
         let base = (first as NSString).lastPathComponent
         return (base == "claude" || base == "codex") ? base : nil
@@ -126,7 +119,7 @@ public nonisolated enum SessionLaunchLedger {
     /// Read every entry, skipping malformed lines. Missing/empty file → `[]`.
     /// When the file exceeds `maxEntries`, it is rewritten in place to the newest
     /// `trimTo` entries (bounding growth), and those are returned.
-    public static func entries(at url: URL = SessionLaunchLedger.defaultLedgerURL(), fileManager: FileManager = .default) -> [SessionLaunchLedgerEntry] {
+    static func entries(at url: URL = SessionLaunchLedger.defaultLedgerURL(), fileManager: FileManager = .default) -> [SessionLaunchLedgerEntry] {
         guard let data = try? Data(contentsOf: url) else { return [] }
         let text = String(decoding: data, as: UTF8.self)
         let decoder = makeDecoder()
@@ -157,7 +150,7 @@ public nonisolated enum SessionLaunchLedger {
     /// prefix so the record stays internally consistent. Ambiguous (>1) or no
     /// match leaves the record untouched, as do records that already have a cwd.
     /// Pure; returns a new array.
-    public static func backfillCWDs(
+    static func backfillCWDs(
         _ records: [SessionRecord],
         using entries: [SessionLaunchLedgerEntry],
         window: TimeInterval = SessionLaunchLedger.matchWindow
@@ -193,7 +186,7 @@ public nonisolated enum SessionLaunchLedger {
     /// Best-effort current branch of `cwd` via `git rev-parse --abbrev-ref HEAD`,
     /// with a ~2s timeout. Returns nil on any failure, a detached HEAD, or
     /// timeout. Uses `/usr/bin/git` to match the rest of the codebase.
-    public static func gitBranch(cwd: String) -> String? {
+    static func gitBranch(cwd: String) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"]

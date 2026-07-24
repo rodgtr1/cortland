@@ -1,5 +1,4 @@
 import XCTest
-import CortlandProInterface
 @testable import Cortland
 
 /// Covers Session Recall Phase 1 part B: the mtime-keyed on-disk cache

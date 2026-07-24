@@ -4,35 +4,7 @@
 
 set -e
 
-# Official builds link the private Pro package; a clone of this repo alone
-# builds the free app. CORTLAND_PRO_PATH is the switch Package.swift reads —
-# see docs/pro-split.md. It defaults to ../cortland-pro so a machine with both
-# checkouts side by side needs no environment at all, and CORTLAND_PRO=0 forces
-# a free build for testing what a public clone gets.
-if [ "${CORTLAND_PRO:-1}" = "0" ]; then
-    unset CORTLAND_PRO_PATH
-    echo "🔨 Building Cortland (free — CORTLAND_PRO=0)..."
-else
-    : "${CORTLAND_PRO_PATH:=$(cd "$(dirname "${BASH_SOURCE[0]}")/../cortland-pro" 2>/dev/null && pwd || true)}"
-    if [ -z "${CORTLAND_PRO_PATH}" ] || [ ! -f "${CORTLAND_PRO_PATH}/Package.swift" ]; then
-        # No Pro package: this is what a clone of the public repo looks like, so
-        # build the free app. A release is the one case where that would be a
-        # mistake worth stopping for — shipping the free app as an official
-        # build would strand every paying user on it.
-        if [ "${RELEASE:-0}" = "1" ]; then
-            echo "❌ RELEASE=1 but no Pro package found."
-            echo "   Expected a checkout of cortland-pro beside this repo, or"
-            echo "   CORTLAND_PRO_PATH pointing at one. Set CORTLAND_PRO=0 to"
-            echo "   release the free app deliberately."
-            exit 1
-        fi
-        unset CORTLAND_PRO_PATH
-        echo "🔨 Building Cortland (free — no Pro package)..."
-    else
-        export CORTLAND_PRO_PATH
-        echo "🔨 Building Cortland (Pro — ${CORTLAND_PRO_PATH})..."
-    fi
-fi
+echo "🔨 Building Cortland..."
 
 # Build the Swift package
 swift build --configuration release

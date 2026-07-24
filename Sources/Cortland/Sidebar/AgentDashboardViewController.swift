@@ -1,6 +1,5 @@
 import Cocoa
 import CortlandTelemetryCore
-import CortlandProInterface
 
 protocol AgentDashboardDelegate: AnyObject {
     func agentDashboardTabs(_ dashboard: AgentDashboardViewController) -> [TabModel]
@@ -23,10 +22,13 @@ final class AgentDashboardViewController: NSViewController {
     // Set on the main actor; invalidated in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var refreshTimer: Timer?
 
-    /// The approval desk's section above the agent list, supplied whole by
-    /// `ProFeatures.approvalDesk`. In a free build there is no desk and this is
-    /// a zero-height placeholder — the section simply does not exist.
-    private var deskSection: NSView!
+    /// The pending-approvals section above the agent list: a header plus one
+    /// card per queued edit, keyed by approval id so queue changes add/remove
+    /// cards without rebuilding the survivors (a rebuild would collapse an
+    /// expanded diff mid-review).
+    private var approvalsStack: NSStackView!
+    private var approvalsHeader: NSTextField!
+    private var approvalCards: [UUID: ApprovalCardView] = [:]
 
     private struct Row: Equatable {
         let tabIndex: Int
@@ -98,10 +100,15 @@ final class AgentDashboardViewController: NSViewController {
         scrollView?.backgroundColor = AppTheme.sidebarBackground
         tableView?.backgroundColor = AppTheme.sidebarBackground
         emptyLabel?.textColor = AppTheme.mutedText
+        approvalsHeader?.textColor = AppTheme.mutedText
         footerDivider?.layer?.backgroundColor = AppTheme.divider.cgColor
         footerLabel?.textColor = AppTheme.primaryText
         tableView?.reloadData()
-        ProFeatures.approvalDesk?.rebuildDeskSection()
+        // Cards bake theme colors in at construction; rebuild them. (Loses an
+        // expanded diff on theme switch — a rare, low-cost event.)
+        for card in approvalCards.values { card.removeFromSuperview() }
+        approvalCards.removeAll()
+        reloadApprovals()
     }
 
     deinit {
@@ -125,15 +132,15 @@ final class AgentDashboardViewController: NSViewController {
     }
 
     private func setupViews() {
-        if let desk = ProFeatures.approvalDesk {
-            deskSection = desk.makeDeskSection()
-        } else {
-            // No desk: a zero-height stand-in keeps the layout chain intact
-            // (the list is pinned below it) while taking up nothing.
-            deskSection = NSView()
-            deskSection.heightAnchor.constraint(equalToConstant: 0).isActive = true
-        }
-        deskSection.translatesAutoresizingMaskIntoConstraints = false
+        approvalsHeader = NSTextField(labelWithString: "PENDING APPROVALS")
+        approvalsHeader.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        approvalsHeader.textColor = AppTheme.mutedText
+
+        approvalsStack = NSStackView()
+        approvalsStack.orientation = .vertical
+        approvalsStack.alignment = .leading
+        approvalsStack.spacing = 6
+        approvalsStack.translatesAutoresizingMaskIntoConstraints = false
 
         scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -183,17 +190,17 @@ final class AgentDashboardViewController: NSViewController {
         footerContainer.addSubview(footerDivider)
         footerContainer.addSubview(footerLabel)
 
-        view.addSubview(deskSection)
+        view.addSubview(approvalsStack)
         view.addSubview(scrollView)
         view.addSubview(emptyLabel)
         view.addSubview(footerContainer)
 
         NSLayoutConstraint.activate([
-            deskSection.topAnchor.constraint(equalTo: view.topAnchor),
-            deskSection.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            deskSection.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            approvalsStack.topAnchor.constraint(equalTo: view.topAnchor),
+            approvalsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
+            approvalsStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
 
-            scrollView.topAnchor.constraint(equalTo: deskSection.bottomAnchor),
+            scrollView.topAnchor.constraint(equalTo: approvalsStack.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: footerContainer.topAnchor),
@@ -225,7 +232,7 @@ final class AgentDashboardViewController: NSViewController {
 
     func reload() {
         guard isViewLoaded else { return }
-        ProFeatures.approvalDesk?.refreshDeskSection()
+        reloadApprovals()
         let tabs = delegate?.agentDashboardTabs(self) ?? []
         updateFooter(tabs)
 
@@ -265,24 +272,108 @@ final class AgentDashboardViewController: NSViewController {
         }
 
         rows = newRows
-        emptyLabel.isHidden = !rows.isEmpty || (ProFeatures.approvalDesk?.pendingCount ?? 0) > 0
+        emptyLabel.isHidden = !rows.isEmpty || !ApprovalQueue.shared.pending.isEmpty
         tableView.reloadData()
         selectActiveRow()
     }
 
     /// Refreshes the bottom roll-up from the current tab set, hiding it when
     /// nothing has billed yet. Called on every reload (cheap: a sum over tabs).
-    /// The spend roll-up under the list. Cost reporting is Pro, so a free build
-    /// has no footer at all rather than a footer showing tokens without money.
     private func updateFooter(_ tabs: [TabModel]) {
-        guard let costs = ProFeatures.costReporting,
-              let footer = costs.sessionFooter(TabController.costEntries(for: tabs)) else {
+        guard let summary = Self.sessionSummary(tabs) else {
             footerContainer.isHidden = true
             return
         }
         footerContainer.isHidden = false
-        footerLabel.stringValue = footer.line
-        footerLabel.toolTip = footer.tooltip
+        footerLabel.stringValue = "Session · \(TelemetryFormat.cost(summary.cost)) · \(TelemetryFormat.compactTokens(summary.tokens)) tokens"
+        footerLabel.toolTip = summary.byModel
+            .map { "\($0.model) · \(TelemetryFormat.cost($0.cost)) · \(TelemetryFormat.compactTokens($0.tokens)) tokens" }
+            .joined(separator: "\n")
+    }
+
+    /// Session roll-up across every reporting pane of every tab: total est-$
+    /// and total tokens, plus a per-model breakdown (highest spend first) for
+    /// the footer tooltip. Nil when nothing has billed a turn (footer stays
+    /// hidden). Panes with an unknown rate still contribute their tokens,
+    /// matching the JSONL history. Falls back to the tab-level primary usage
+    /// for a tab whose per-pane list hasn't populated. Internal (not private)
+    /// for unit tests.
+    static func sessionSummary(
+        _ tabs: [TabModel]
+    ) -> (cost: Double, tokens: Int, byModel: [(model: String, cost: Double, tokens: Int)])? {
+        var totalCost = 0.0
+        var totalTokens = 0
+        var byModel: [String: (cost: Double, tokens: Int)] = [:]
+        for tab in tabs {
+            let entries: [(usage: TranscriptUsage, cost: Double?)] = tab.paneTelemetries.isEmpty
+                ? (tab.telemetry.map { [($0, tab.telemetryCostUSD)] } ?? [])
+                : tab.paneTelemetries.map { ($0.usage, $0.costUSD) }
+            for entry in entries where entry.usage.assistantResponses > 0 {
+                totalTokens += entry.usage.totalTokens
+                totalCost += entry.cost ?? 0
+                let model = entry.usage.model.map(TelemetryFormat.shortModel) ?? "unknown"
+                var slot = byModel[model, default: (0, 0)]
+                slot.cost += entry.cost ?? 0
+                slot.tokens += entry.usage.totalTokens
+                byModel[model] = slot
+            }
+        }
+        guard !byModel.isEmpty else { return nil }
+        let breakdown = byModel
+            .map { (model: $0.key, cost: $0.value.cost, tokens: $0.value.tokens) }
+            .sorted { ($0.cost, $0.tokens) > ($1.cost, $1.tokens) }
+        return (totalCost, totalTokens, breakdown)
+    }
+
+    /// Syncs the approvals section with the queue: cards for resolved entries
+    /// go, cards for new entries are appended (queue order — FIFO), surviving
+    /// cards are left alone so their expanded diff and popup state persist.
+    /// The per-second tick lands here too, refreshing each card's elapsed time.
+    private func reloadApprovals() {
+        let pending = ApprovalQueue.shared.pending
+        let pendingIDs = Set(pending.map(\.id))
+
+        for (id, card) in approvalCards where !pendingIDs.contains(id) {
+            card.removeFromSuperview()
+            approvalCards[id] = nil
+        }
+
+        if pending.isEmpty {
+            approvalsHeader.removeFromSuperview()
+            approvalsStack.edgeInsets = NSEdgeInsets()
+        } else {
+            approvalsStack.edgeInsets = NSEdgeInsets(top: 10, left: 0, bottom: 6, right: 0)
+            if approvalsHeader.superview == nil {
+                approvalsStack.insertArrangedSubview(approvalsHeader, at: 0)
+            }
+        }
+
+        for entry in pending where approvalCards[entry.id] == nil {
+            let card = ApprovalCardView(approval: entry, paneLabel: paneLabel(forPane: entry.paneID)) { outcome in
+                ApprovalQueue.shared.resolve(id: entry.id, outcome: outcome)
+            }
+            approvalCards[entry.id] = card
+            approvalsStack.addArrangedSubview(card)
+            card.widthAnchor.constraint(equalTo: approvalsStack.widthAnchor).isActive = true
+        }
+
+        for card in approvalCards.values {
+            card.refreshElapsed()
+        }
+    }
+
+    /// Display label for the pane an approval came from: the owning tab's
+    /// title, disambiguated with the pane's position when the tab is split.
+    private func paneLabel(forPane paneID: UUID?) -> String {
+        guard let paneID,
+              let tabs = delegate?.agentDashboardTabs(self),
+              let tab = tabs.first(where: { $0.panes.contains { $0.id == paneID } }) else {
+            return "Unknown pane"
+        }
+        if tab.panes.count > 1, let index = tab.panes.firstIndex(where: { $0.id == paneID }) {
+            return "\(tab.title) · pane \(index + 1)"
+        }
+        return tab.title
     }
 
     /// Keeps the highlighted row in sync with the active tab, so cycling tabs
@@ -360,15 +451,14 @@ final class AgentDashboardViewController: NSViewController {
 
     // MARK: - Telemetry formatting
 
-    /// Compact one-line telemetry for a row: `opus-4.8 · $0.36 · 7t`. Turns are
-    /// dropped when unavailable, and the `$` only appears in a Pro build — free
-    /// keeps the model and the turn count, which is telemetry, not spend.
-    /// Returns nil when there's nothing billed yet to show.
-    static func telemetryLine(_ usage: TranscriptUsage, cost: Double?) -> String? {
+    /// Compact one-line telemetry for a row: `opus-4.8 · $0.36 · 7t`. Cost and
+    /// turns are dropped when unavailable. Returns nil when there's nothing
+    /// billed yet to show.
+    fileprivate static func telemetryLine(_ usage: TranscriptUsage, cost: Double?) -> String? {
         guard usage.assistantResponses > 0 else { return nil }
         var parts: [String] = []
         if let model = usage.model { parts.append(TelemetryFormat.shortModel(model)) }
-        if let costText = ProFeatures.costReporting?.rowCostText(cost) { parts.append(costText) }
+        if let cost { parts.append(TelemetryFormat.cost(cost)) }
         if usage.userPrompts > 0 { parts.append("\(usage.userPrompts)t") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -551,5 +641,197 @@ extension AgentDashboardViewController: NSTableViewDelegate {
         let window = ContextWindow.tokens(forModel: usage.model, occupancy: usage.contextTokens)
         let percent = Int((fraction * 100).rounded())
         return "context \(TelemetryFormat.compactTokens(usage.contextTokens)) / \(TelemetryFormat.compactTokens(window)) (\(percent)%)"
+    }
+}
+
+// MARK: - Approval card
+
+/// One queued edit in the approvals section: file name, originating pane,
+/// elapsed wait, an expandable inline diff, and the approve/reject controls
+/// with the same "remember" scopes the old modal sheet offered. Resolving
+/// reports the outcome and the card's removal follows from the queue change.
+private final class ApprovalCardView: NSView {
+    private let approval: PendingApproval
+    private let onResolve: (ApprovalOutcome) -> Void
+
+    private let metaLabel = NSTextField(labelWithString: "")
+    private let paneLabel: String
+    private let rememberPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let diffButton = NSButton(title: "Show diff", target: nil, action: nil)
+    private let stack = NSStackView()
+    private var diffScroll: NSScrollView?
+
+    /// Menu order for the "remember" popup; index maps to `RememberScope`.
+    /// Titles are shorter than the sheet's — the sidebar is ~250pt wide.
+    private static let rememberScopes: [(title: String, scope: RememberScope)] = [
+        ("Just this once", .none),
+        ("Remember file", .file),
+        ("Remember folder", .folder),
+        ("Whole session", .session)
+    ]
+
+    init(approval: PendingApproval, paneLabel: String, onResolve: @escaping (ApprovalOutcome) -> Void) {
+        self.approval = approval
+        self.paneLabel = paneLabel
+        self.onResolve = onResolve
+        super.init(frame: .zero)
+
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.05).cgColor
+        layer?.cornerRadius = 6
+        layer?.borderWidth = 1
+        layer?.borderColor = AppTheme.divider.withAlphaComponent(0.6).cgColor
+        translatesAutoresizingMaskIntoConstraints = false
+
+        let fileLabel = NSTextField(labelWithString: (approval.path as NSString).lastPathComponent)
+        fileLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+        fileLabel.textColor = AppTheme.primaryText
+        fileLabel.lineBreakMode = .byTruncatingMiddle
+        fileLabel.toolTip = approval.path
+
+        metaLabel.font = NSFont.systemFont(ofSize: 11)
+        metaLabel.textColor = AppTheme.mutedText
+        metaLabel.lineBreakMode = .byTruncatingTail
+        refreshElapsed()
+
+        diffButton.target = self
+        diffButton.action = #selector(toggleDiff)
+        diffButton.bezelStyle = .inline
+        diffButton.controlSize = .small
+        diffButton.font = NSFont.systemFont(ofSize: 11)
+
+        // `always_ask` outranks every "remember" grant in policy, so on such a
+        // card every scope but "Just this once" would be a silent no-op. Drop the
+        // popup for a muted note instead of offering choices that do nothing.
+        let rememberControl: NSView
+        if approval.isAlwaysAsk {
+            let alwaysAskLabel = NSTextField(labelWithString: "always asks")
+            alwaysAskLabel.font = NSFont.systemFont(ofSize: 11)
+            alwaysAskLabel.textColor = AppTheme.mutedText
+            alwaysAskLabel.toolTip = "This path matches an always_ask rule, so it prompts every time — a remembered grant can't cover it."
+            rememberControl = alwaysAskLabel
+        } else {
+            for entry in Self.rememberScopes {
+                rememberPopup.addItem(withTitle: entry.title)
+            }
+            rememberPopup.controlSize = .small
+            rememberPopup.font = NSFont.systemFont(ofSize: 11)
+            rememberPopup.toolTip = "Whether to keep approving similar edits for the rest of this session"
+            rememberControl = rememberPopup
+        }
+
+        let rejectButton = NSButton(title: "Reject", target: self, action: #selector(rejectClicked))
+        rejectButton.bezelStyle = .rounded
+        rejectButton.controlSize = .small
+
+        let approveButton = NSButton(title: "Approve", target: self, action: #selector(approveClicked))
+        approveButton.bezelStyle = .rounded
+        approveButton.controlSize = .small
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let buttonRow = NSStackView(views: [diffButton, spacer, rejectButton, approveButton])
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = 6
+
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        stack.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(fileLabel)
+        stack.addArrangedSubview(metaLabel)
+        stack.addArrangedSubview(rememberControl)
+        stack.addArrangedSubview(buttonRow)
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            fileLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            metaLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            buttonRow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8)
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Updates the "pane · waiting 12s" line; driven by the dashboard's
+    /// per-second tick while the panel is visible.
+    func refreshElapsed() {
+        let seconds = max(0, Int(Date().timeIntervalSince(approval.requestedAt)))
+        let elapsed: String
+        if seconds < 60 { elapsed = "\(seconds)s" }
+        else if seconds < 3600 { elapsed = "\(seconds / 60)m \(seconds % 60)s" }
+        else { elapsed = "\(seconds / 3600)h \((seconds % 3600) / 60)m" }
+        metaLabel.stringValue = "\(paneLabel) · waiting \(elapsed)"
+    }
+
+    @objc private func approveClicked() {
+        let scope = Self.rememberScopes[safe: rememberPopup.indexOfSelectedItem]?.scope ?? .none
+        onResolve(ApprovalOutcome(accepted: true, remember: scope))
+    }
+
+    @objc private func rejectClicked() {
+        onResolve(.rejected)
+    }
+
+    @objc private func toggleDiff() {
+        if let diffScroll {
+            diffScroll.isHidden.toggle()
+            diffButton.title = diffScroll.isHidden ? "Show diff" : "Hide diff"
+            return
+        }
+        diffButton.title = "Hide diff"
+        buildDiffView()
+    }
+
+    /// Builds the inline diff on first expansion. The diff shells out to
+    /// /usr/bin/diff, so it's computed off the main thread and rendered when
+    /// ready — same pattern the old sheet used.
+    private func buildDiffView() {
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = true
+        scroll.backgroundColor = AppTheme.windowBackground
+        scroll.wantsLayer = true
+        scroll.layer?.cornerRadius = 4
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isRichText = true
+        textView.drawsBackground = true
+        textView.backgroundColor = AppTheme.windowBackground
+        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.autoresizingMask = [.width]
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.textContainer?.widthTracksTextView = true
+        textView.string = "Computing diff…"
+        scroll.documentView = textView
+
+        // Below the button row, above the card's bottom inset.
+        stack.addArrangedSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.heightAnchor.constraint(equalToConstant: 200),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8)
+        ])
+        diffScroll = scroll
+
+        let (old, new, path) = (approval.old, approval.new, approval.path)
+        DispatchQueue.global(qos: .userInitiated).async { [weak textView] in
+            let diffText = UnifiedDiff.text(old: old, new: new, path: path)
+            let ext = (path as NSString).pathExtension.lowercased()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let rendered = InlineDiffRenderer.render(diffText, fileExtension: ext)
+                    textView?.textStorage?.setAttributedString(rendered)
+                }
+            }
+        }
     }
 }

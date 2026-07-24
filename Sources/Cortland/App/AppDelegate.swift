@@ -32,11 +32,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NSApp.setActivationPolicy(.regular)
         Log.debug("✅ Activation policy set", category: "app")
 
-        // Publish the theme palette to the Pro seam and, in an official build,
-        // fill the ProFeatures registry. Must run before the window: the
-        // window's coordinators read the registry as they come up.
-        ProBridge.bootstrap()
-
         // Keep the on-disk shell integration scripts in sync with this build
         ShellIntegration.installScripts()
 

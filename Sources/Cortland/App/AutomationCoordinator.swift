@@ -1,28 +1,12 @@
 import AppKit
 import CortlandTelemetryCore
-import CortlandProInterface
 
 /// The surface `AutomationCoordinator` needs from the window controller to
 /// resolve panes and drive the UI. MainWindowController stays the source of
 /// truth for tabs/panes/window; the coordinator only reads through this seam,
 /// so the IPC translation, wait logic, and diff-approval queue can live outside
 /// the 1,900-line controller.
-protocol AutomationHost: AnyObject {
-    /// When true, hook edits are approved without review — driven by the
-    /// `[approval]` config mode and the per-session toggle. Read by the
-    /// approval desk through the context handed to it below.
-    var shouldAutoApproveEdits: Bool { get }
-    /// The active `[approval]` config, supplying the auto_allow / always_ask
-    /// glob rules and the worktree auto-approve opt-in.
-    var approvalConfig: ApprovalConfig { get }
-    /// The window approvals are reviewed in, or nil when there's none (app
-    /// closing / already gone).
-    var automationWindow: NSWindow? { get }
-    /// Working directory of the pane an edit hook ran in, or nil when the pane
-    /// can't be resolved. Used to scope worktree auto-approve to the pane's own
-    /// checkout.
-    func workingDirectory(forPane paneID: UUID?) -> String?
-
+protocol AutomationHost: DiffApprovalHost {
     /// All tabs, in order. The active one is identified by `activeAutomationTabID`.
     var automationTabs: [TabModel] { get }
     /// ID of the tab the user is currently looking at (drives `focused`).
@@ -41,68 +25,23 @@ protocol AutomationHost: AnyObject {
 /// Translates IPC commands (from `cortland-ctl`, `cortland-mcp`, and the
 /// edit-approval hook) into operations on the live pane tree, and is the lone
 /// event-stream emit site. Hook edit approvals are delegated to
-/// the registered approval desk. Extracted from MainWindowController — see
+/// `DiffApprovalCoordinator`. Extracted from MainWindowController — see
 /// AutomationHost for the seam back to it.
 final class AutomationCoordinator: NSObject, IPCServerDelegate {
     private weak var host: AutomationHost?
 
-    /// Everything the Pro approval desk needs from this window: the live
-    /// `[approval]` settings, the window to review in, the pane's worktree root,
-    /// where to report the diff lifecycle (so this coordinator stays the lone
-    /// event-emit site), how to park a pane, and how to render a card's diff.
-    ///
-    /// Built here and handed over in `init`. Without a registered desk nothing
-    /// receives it and the edit gate fails open.
-    private func makeApprovalDeskContext() -> ApprovalDeskContext {
-        ApprovalDeskContext(
-            settings: { [weak self] in
-                let config = self?.host?.approvalConfig ?? ApprovalConfig()
-                return ApprovalSettings(
-                    autoAllow: config.autoAllow,
-                    alwaysAsk: config.alwaysAsk,
-                    worktreeAutoApprove: config.worktreeAutoApprove,
-                    globalAuto: self?.host?.shouldAutoApproveEdits ?? false
-                )
-            },
-            reviewWindow: { [weak self] in self?.host?.automationWindow },
-            worktreeRoot: { [weak self] paneID in
-                guard let cwd = self?.host?.workingDirectory(forPane: paneID) else { return nil }
-                return WorkspaceResolver.linkedWorktreeRoot(from: cwd)
-            },
-            paneLabel: { [weak self] paneID in self?.paneLabel(forPane: paneID) ?? "Unknown pane" },
-            emitEvent: { [weak self] path, decision in
-                self?.emitDiffEvent(path: path, decision: decision)
-            },
-            setPaneParked: { [weak self] paneID, parked in
-                self?.setPaneParked(paneID, parked: parked)
-            },
-            renderDiff: { old, new, path, completion in
-                // Shells out to /usr/bin/diff, so compute off the main thread
-                // and highlight on it.
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let text = UnifiedDiff.text(old: old, new: new, path: path)
-                    let ext = (path as NSString).pathExtension.lowercased()
-                    DispatchQueue.main.async {
-                        MainActor.assumeIsolated {
-                            completion(InlineDiffRenderer.render(text, fileExtension: ext))
-                        }
-                    }
-                }
-            }
-        )
-    }
-
-    /// Display label for the pane an approval came from: the owning tab's
-    /// title, disambiguated with the pane's position when the tab is split.
-    private func paneLabel(forPane paneID: UUID?) -> String {
-        guard let paneID, let tabs = host?.automationTabs,
-              let tab = tabs.first(where: { $0.panes.contains { $0.id == paneID } }) else {
-            return "Unknown pane"
+    /// Owns the hook diff-approval queue, review presentation, and per-pane
+    /// "approve & remember" grants. Reports the diff lifecycle back through
+    /// `emitDiffEvent` so this coordinator stays the lone event-emit site, and
+    /// flips a pane's agent status while its edit waits at the desk through
+    /// `setPaneParked`.
+    private lazy var diffApproval = DiffApprovalCoordinator(
+        host: host,
+        onParkedStatusChange: { [weak self] paneID, parked in
+            self?.setPaneParked(paneID, parked: parked)
         }
-        if tab.panes.count > 1, let index = tab.panes.firstIndex(where: { $0.id == paneID }) {
-            return "\(tab.title) · pane \(index + 1)"
-        }
-        return tab.title
+    ) { [weak self] path, decision in
+        self?.emitDiffEvent(path: path, decision: decision)
     }
 
     /// How many edit-gate entries are currently parked at the desk per pane, so
@@ -150,7 +89,6 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     init(host: AutomationHost) {
         self.host = host
         super.init()
-        ProFeatures.approvalDesk?.install(context: makeApprovalDeskContext())
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(paneAgentStateChanged(_:)),
@@ -176,9 +114,9 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     }
 
     /// Called from the host's windowWillClose. Don't strand hook processes
-    /// blocked on approval: resolve everything the desk still holds.
+    /// blocked on approval: cancel the visible sheet and resolve the queue.
     func prepareForWindowClose() {
-        ProFeatures.approvalDesk?.prepareForWindowClose()
+        diffApproval.prepareForWindowClose()
     }
 
     // MARK: - Pane resolution
@@ -492,20 +430,13 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             // `cortland-ctl open-diff <file>`: just view the file.
             host?.automationOpenFile(URL(fileURLWithPath: path))
             completion(IPCResponse(ok: true))
-        } else if let desk = ProFeatures.approvalDesk {
-            desk.requestApproval(
+        } else {
+            diffApproval.requestApproval(
                 paneID: paneID, path: path, old: old, new: new,
                 registerDisconnect: registerDisconnect
             ) { accepted in
                 completion(IPCResponse(ok: true, accepted: accepted))
             }
-        } else {
-            // No desk: answer without a verdict. The edit-gate hook only prints
-            // a permission decision when it gets `accepted` back, so an absent
-            // key sends Claude Code to its own prompt — the same fail-open path
-            // it takes when Cortland isn't running at all.
-            emitDiffEvent(path: path, decision: "unreviewed")
-            completion(IPCResponse(ok: true))
         }
     }
 

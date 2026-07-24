@@ -6,7 +6,7 @@ import Foundation
 ///
 /// Stateless and `nonisolated` so it can run off the main thread despite the
 /// module's `@MainActor` default isolation.
-public nonisolated enum SessionQuery {
+nonisolated enum SessionQuery {
     /// Filter, sort newest-first, and optionally cap `records`.
     ///
     /// - Parameters:
@@ -16,7 +16,7 @@ public nonisolated enum SessionQuery {
     ///   - search: case-insensitive substring matched against title OR aiTitle
     ///     OR cwd.
     ///   - limit: cap applied *after* sorting; a negative limit is ignored.
-    public static func run(
+    static func run(
         _ records: [SessionRecord],
         agent: SessionAgent? = nil,
         repo: String? = nil,
@@ -73,7 +73,7 @@ public nonisolated enum SessionQuery {
     /// newest by timestamp. Claude records each have a unique `sessionID`, so
     /// they form singleton groups and pass through untouched. First-seen group
     /// order is preserved; callers re-sort as needed.
-    public static func dedupeSessions(_ records: [SessionRecord]) -> [SessionRecord] {
+    static func dedupeSessions(_ records: [SessionRecord]) -> [SessionRecord] {
         var groups: [String: [SessionRecord]] = [:]
         var order: [String] = []
         for record in records {

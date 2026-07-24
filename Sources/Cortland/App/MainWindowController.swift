@@ -1,6 +1,5 @@
 import Cocoa
 import SwiftTerm
-import CortlandProInterface
 // UserNotifications isn't Sendable-audited for strict concurrency yet, so import
 // it @preconcurrency to downgrade its cross-actor Sendable diagnostics (e.g.
 // capturing UNUserNotificationCenter in the authorization completion handler).
@@ -148,10 +147,9 @@ class MainWindowController: NSWindowController {
     private var activeTabIndex: Int { tabController.activeTabIndex }
     private var currentPaneSplitController: PaneSplitController? { tabController.currentSplitController }
     private var quickOpenPanel: QuickOpenPanel?
-    /// The free Session Recall teaser, retained so ⌃⇧S reuses one panel instead
-    /// of stacking duplicates, mirroring `quickOpenPanel`. Nil in a Pro build:
-    /// `ProFeatures.recall` owns its own panel and this is never built.
-    private var sessionsTeaserPanel: SessionsTeaserPanel?
+    /// Retained so ⌃⇧S reuses one Session Recall panel instead of stacking
+    /// duplicates, mirroring `quickOpenPanel`.
+    private var sessionsPanel: SessionsPanel?
     private var preferencesWindowController: PreferencesWindowController?
     // Set on the main actor; removed in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var keyEventMonitor: Any?
@@ -861,7 +859,7 @@ class MainWindowController: NSWindowController {
     /// tabs whose agent needs input, plus edits queued for approval.
     func refreshAgentsBadge() {
         let waiting = tabs.filter { $0.agentState == .ready }.count
-        activityBarView.updateAgentsBadge(count: waiting + (ProFeatures.approvalDesk?.pendingCount ?? 0))
+        activityBarView.updateAgentsBadge(count: waiting + ApprovalQueue.shared.pending.count)
     }
 
     /// The last pending-approval count, so queue-change notifications can tell
@@ -872,16 +870,16 @@ class MainWindowController: NSWindowController {
     /// call for attention the way a blocked agent does — dock bounce, plus a
     /// user notification when Cortland isn't frontmost.
     @objc private func pendingApprovalsChanged(_ notification: Notification) {
-        let count = ProFeatures.approvalDesk?.pendingCount ?? 0
-        defer { lastPendingApprovalCount = count }
+        let pending = ApprovalQueue.shared.pending
+        defer { lastPendingApprovalCount = pending.count }
         refreshAgentsBadge()
 
-        guard count > lastPendingApprovalCount else { return }
+        guard pending.count > lastPendingApprovalCount else { return }
         NSApp.requestUserAttention(.informationalRequest)
-        if !NSApp.isActive, let path = notification.userInfo?["path"] as? String {
+        if !NSApp.isActive, let newest = pending.last {
             postUserNotification(
                 title: "Agent waiting for edit approval",
-                body: (path as NSString).lastPathComponent,
+                body: (newest.path as NSString).lastPathComponent,
                 playSound: true
             )
         }
@@ -1016,8 +1014,8 @@ extension MainWindowController: SidebarContainerDelegate {
         worktreeFlowController.openWorktree(path: path)
     }
 
-    func sidebarContainer(_ container: SidebarContainerView, didRequestCreateWorktree branch: String, command: [String]?) {
-        worktreeFlowController.createWorktree(branch: branch, command: command)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestCreateWorktree branch: String, agent: WorktreeAgent) {
+        worktreeFlowController.createWorktree(branch: branch, agent: agent)
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestRemoveWorktree branch: String, force: Bool) {
@@ -1162,24 +1160,13 @@ extension MainWindowController: SidebarContainerDelegate {
     func showSessions() {
         guard let window = window else { return }
 
-        // The Pro panel owns its own window and reuses it across opens, so this
-        // hands off wholesale. Resuming comes back through the closure: the cwd
-        // goes via workingDirectory (not a `cd`) and the resume ARGV via
-        // command:, so the existing claude/codex approval-flag injection
-        // applies. A nil cwd falls back to the active pane's directory.
-        if let recall = ProFeatures.recall {
-            recall.showRecall(relativeTo: window) { [weak self] request in
-                self?.createNewTab(workingDirectory: request.workingDirectory, command: request.command)
-            }
-            return
+        // Create or reuse the Session Recall panel.
+        if sessionsPanel == nil {
+            sessionsPanel = SessionsPanel()
+            sessionsPanel?.sessionsDelegate = self
         }
 
-        // Free: the read-only teaser. Retained so ⌃⇧S reuses one panel instead
-        // of stacking duplicates, mirroring `quickOpenPanel`.
-        if sessionsTeaserPanel == nil {
-            sessionsTeaserPanel = SessionsTeaserPanel()
-        }
-        sessionsTeaserPanel?.show(relativeTo: window)
+        sessionsPanel?.show(relativeTo: window)
     }
 
     func showPreferences() {
@@ -1264,6 +1251,17 @@ extension MainWindowController: QuickOpenPanelDelegate {
     func quickOpenPanel(_ panel: QuickOpenPanel, didSelectFile filePath: String) {
         let url = URL(fileURLWithPath: filePath)
         openFileInEditor(url)
+    }
+}
+
+// MARK: - SessionsPanelDelegate
+extension MainWindowController: SessionsPanelDelegate {
+    func sessionsPanel(_ panel: SessionsPanel, didSelect record: SessionRecord) {
+        // Resume in a NEW tab: the cwd goes via workingDirectory (not a `cd`),
+        // and the resume ARGV via command: so the app's existing claude/codex
+        // approval-flag injection applies. A nil cwd falls back to the active
+        // pane's directory.
+        createNewTab(workingDirectory: record.cwd, command: record.resumeArgv)
     }
 }
 

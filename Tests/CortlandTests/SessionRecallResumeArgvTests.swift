@@ -1,5 +1,4 @@
 import XCTest
-import CortlandProInterface
 @testable import Cortland
 
 /// Covers the correctness-critical `SessionRecord.resumeArgv`: the bare ARGV

@@ -10,32 +10,14 @@ Instead of treating Claude Code, Codex, and Pi like ordinary shell processes,
 Cortland understands what they're doing: it tracks each agent's state live and
 tells you when one needs you, watches context usage as a session approaches
 its token limit, isolates parallel agents into their own git worktrees, puts
-their edits through an inline diff review before they land (Pro — see below),
-and exposes the entire terminal through [MCP](https://modelcontextprotocol.io),
-so agents can orchestrate other agents.
+their edits through an inline diff review before they land, and exposes the
+entire terminal through [MCP](https://modelcontextprotocol.io), so agents
+can orchestrate other agents.
 
 It's also still a normal terminal (tabs, splits, session restore, a file
 tree, a git panel), written in Swift and AppKit, not Electron. And every
 opinionated bit (built-in editor vs. your own `$EDITOR`/nvim, sidebar
 visibility, theme) is a config toggle, not a requirement.
-
-## Free and Pro
-
-This repository is Cortland's free core, and it is a complete terminal on its
-own. Four surfaces have a paid layer that lives in a separate private package,
-so a build from this repo alone differs from an official build in these ways:
-
-| Surface | Built from this repo | Official build |
-| --- | --- | --- |
-| Session Recall (`⌃⇧S`) | The ten most recent sessions, read-only | Text search, deep transcript search, `⌘↩` preview, agent filter, Enter to resume |
-| Approval desk | Each agent's own permission prompt, as when Cortland isn't running | The diff-review desk, `auto_allow`/`always_ask` path rules, approve-and-remember |
-| Cost reporting | Model, tokens, and the live context bar | Per-row spend, the session roll-up, spend history on disk |
-| Worktrees | Create, open, remove, merge | The same, plus creating one and launching an agent into it in a single action |
-
-Everything agents touch is identical either way: the IPC contract, the helper
-binaries, hook installation, and the MCP server. Sections below that describe a
-Pro surface say so. See [docs/pro-split.md](docs/pro-split.md) for how the
-split works and how to build each one.
 
 ## Features
 
@@ -52,8 +34,8 @@ guard against discarding uncommitted work), and Hosts (jump straight into an
 **Agent orchestration**: an Agents dashboard with live state per tab and a
 per-agent context-usage bar (green → yellow → red as a session's context
 window fills up); macOS notifications and dock bounces when an agent needs
-input or finishes; and an approval desk (Pro) that reviews agent file edits
-before they land. Claude Code edits are intercepted by a PreToolUse hook and Pi
+input or finishes; and an approval desk that reviews agent file edits before
+they land. Claude Code edits are intercepted by a PreToolUse hook and Pi
 edits by the Cortland extension; both carry the edit to an inline diff card
 in the Agents panel (accept, reject, or remember for the file, folder, or
 session), and the desk's verdict answers the agent's own permission question,
@@ -67,11 +49,10 @@ silent and the agent's normal prompting takes over; nothing breaks. Codex
 edits keep Codex's own sandbox, reviewer, and in-terminal approvals; Codex
 does not expose auto-applied edits to Cortland's path-specific diff desk.
 One action spins up an isolated
-git worktree, optionally launching an agent straight into it (Pro), so parallel
+git worktree, optionally launching an agent straight into it, so parallel
 agents never fight over the same working tree.
 
-**Session Recall** (search, preview and resume are Pro; the free build lists
-the ten most recent sessions read-only): `⌃⇧S` opens a searchable list of every Claude Code and
+**Session Recall**: `⌃⇧S` opens a searchable list of every Claude Code and
 Codex session on the machine, across all repos, newest first: each row shows
 a one-line title (Claude's own AI title, or one generated locally for Codex),
 the repo, and the session's age. Enter resumes the selected session in a new
@@ -205,7 +186,7 @@ via `⌘K` ("Keyboard Shortcuts").
 | `⇧⌘E` / `⇧⌘G` / `⇧⌘F` | Files / Git / Search panel |
 | `⌘P` / `⇧⌘P` | Quick open / command palette |
 | `⇧⌘J` | Jump to the next agent that needs attention |
-| `⌃⇧S` | Session Recall: recent sessions; find, preview and resume are Pro |
+| `⌃⇧S` | Session Recall: find, preview, and resume past agent sessions |
 | `⌘B` | Toggle sidebar |
 | `⌘=` / `⌘-` / `⌘0` | Zoom in / out / reset |
 | `⌘,` | Preferences |
@@ -431,13 +412,10 @@ opacity = 0.9
 enable_blur = true
 
 [approval]
-# mode is honored by every build: it is passed to the agent itself. The three
-# path rules below are read by the approval desk, which is Pro — without one
-# they are inert, and Preferences hides them rather than pretending otherwise.
 mode = "ask"                 # ask | auto | review | bypass; legacy claude-auto aliases review
-auto_allow = []              # Claude/Pi desk (Pro): silently approve matches under ask
-always_ask = []              # Claude/Pi desk (Pro): always review matches, e.g. [".env"]
-worktree_auto_approve = false # Claude/Pi desk (Pro): approve edits inside the pane's worktree
+auto_allow = []              # Claude/Pi desk: silently approve matches under ask
+always_ask = []              # Claude/Pi desk: always review matches, e.g. [".env"]
+worktree_auto_approve = false # Claude/Pi desk: approve edits inside the pane's worktree
 
 [behavior]
 scrollback_lines = 10000     # -1 for unlimited

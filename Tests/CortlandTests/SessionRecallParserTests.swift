@@ -1,5 +1,4 @@
 import XCTest
-import CortlandProInterface
 @testable import Cortland
 
 /// Pins the Swift Session Recall parser to the golden contract in

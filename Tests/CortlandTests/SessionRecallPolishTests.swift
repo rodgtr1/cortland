@@ -1,14 +1,12 @@
 import XCTest
-import CortlandProInterface
 @testable import Cortland
 
-/// Covers the public half of the Session Recall polish pass: Codex rollout
-/// dedupe (`SessionQuery.dedupeSessions` + the `isRootThread` flag) and the
-/// generated-title cache round-trip. Both are shared — the free teaser reads
-/// the same records the Pro panel does.
+/// Covers the Session Recall polish pass: Codex rollout dedupe
+/// (`SessionQuery.dedupeSessions` + the `isRootThread` flag) and local Codex
+/// titling (`SessionTitler` + `SessionRecallCache.storeGeneratedTitle`).
 ///
-/// The titler that *produces* those titles is Pro; its tests live beside it in
-/// CortlandProTests.
+/// All pure/in-memory — the titler is driven through an injected fake runner, so
+/// the real `ollama` binary is never invoked.
 final class SessionRecallPolishTests: XCTestCase {
     private let fm = FileManager.default
 
@@ -115,7 +113,69 @@ final class SessionRecallPolishTests: XCTestCase {
         XCTAssertEqual(decoded.title, "old record")
     }
 
-    // MARK: - Generated-title cache round-trip
+    // MARK: - Part 2: SessionTitler cleanup
+
+    func testTitlerCleansQuotesAndTrailingPeriod() {
+        let titler = SessionTitler(runner: { _ in "  \"Fix Login Bug.\"  \n" })
+        XCTAssertEqual(titler.title(for: "please fix the login bug"), "Fix Login Bug")
+    }
+
+    func testTitlerRejectsEmptyOutput() {
+        let titler = SessionTitler(runner: { _ in "   \n" })
+        XCTAssertNil(titler.title(for: "some request"))
+    }
+
+    func testTitlerRejectsEchoOfPrompt() {
+        let prompt = "Refactor the parser"
+        let titler = SessionTitler(runner: { _ in prompt })
+        XCTAssertNil(titler.title(for: prompt), "a title identical to the prompt adds nothing")
+    }
+
+    func testTitlerStripsThinkingTraceAndTakesTitle() {
+        // A reasoning model streams its trace before the answer, terminated by a
+        // "...done thinking." marker, with the real title on a later line.
+        let raw = """
+        Thinking...
+        The user wants to fix the login bug, so a good title is short.
+        ...done thinking.
+
+        Fix Login Bug
+        """
+        let titler = SessionTitler(runner: { _ in raw })
+        XCTAssertEqual(titler.title(for: "please fix the login bug"), "Fix Login Bug")
+    }
+
+    func testTitlerStripsAnsiEscapeSequences() {
+        // The CLI interleaves cursor-move / erase codes (ESC[3D, ESC[K) into
+        // stdout; they must not end up in the title.
+        let esc = "\u{1B}"
+        let raw = "\(esc)[3D\(esc)[KFix \(esc)[KLogin Bug\(esc)[K\n"
+        let titler = SessionTitler(runner: { _ in raw })
+        XCTAssertEqual(titler.title(for: "fix the login flow"), "Fix Login Bug")
+    }
+
+    func testTitlerReturnsNilWhenRunnerFails() {
+        let titler = SessionTitler(runner: { _ in nil })
+        XCTAssertNil(titler.title(for: "anything"))
+    }
+
+    func testTitlerSkipsBlankInputWithoutCallingRunner() {
+        final class Flag: @unchecked Sendable { var hit = false }
+        let flag = Flag()
+        let titler = SessionTitler(runner: { _ in flag.hit = true; return "X" })
+        XCTAssertNil(titler.title(for: "   \n  "))
+        XCTAssertFalse(flag.hit, "blank input never reaches the runner")
+    }
+
+    func testPromptBuilderTruncatesLongInput() {
+        let long = String(repeating: "a", count: 5_000)
+        let prompt = SessionTitler.buildPrompt(from: long)
+        // Exactly maxPromptChars of the raw input is embedded — no more.
+        XCTAssertTrue(prompt.contains(String(repeating: "a", count: SessionTitler.maxPromptChars)))
+        XCTAssertFalse(prompt.contains(String(repeating: "a", count: SessionTitler.maxPromptChars + 1)))
+    }
+
+    // MARK: - Part 2: cache round-trip
 
     func testStoreGeneratedTitleRoundTrips() throws {
         let base = fm.temporaryDirectory.appendingPathComponent("SRPolish-\(UUID().uuidString)")
