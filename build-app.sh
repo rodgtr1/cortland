@@ -99,15 +99,26 @@ chmod +x "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/${APP_NAME}"
 #
 # RELEASE=1 switches to the Developer ID identity with secure timestamps,
 # which notarization requires (see scripts/notarize.sh for the next step).
+#
+# The hardened runtime is a notarization requirement, and it is deliberately
+# NOT used for dev builds: it turns on library validation, which demands that
+# every embedded library carry the same Team ID as the app. Developer ID
+# supplies one; the self-signed dev identity has none, so a hardened dev build
+# cannot load Sparkle.framework at all — dyld kills it at launch with
+# "mapping process and mapped file (non-platform) have different Team IDs".
+# TCC grants key on the designated requirement (identity plus bundle ID), which
+# these flags do not change, so they still survive a rebuild.
 if [ "${RELEASE:-0}" = "1" ]; then
     SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: TRAVIS KEITH RODGERS (2UWZ923R8C)}"
     TIMESTAMP_FLAG="--timestamp"
+    RUNTIME_FLAG="--options runtime"
 else
     # Still "Sidekick Dev" after the Cortland rename — the whole point of this
     # identity is a cdhash that outlives rebuilds, and renaming it would drop
     # every TCC grant it holds.
     SIGN_IDENTITY="${SIGN_IDENTITY:-Sidekick Dev}"
     TIMESTAMP_FLAG=""
+    RUNTIME_FLAG=""
 fi
 
 # Create cortland-ctl CLI tool in bundle
@@ -156,23 +167,23 @@ if security find-identity -p codesigning -v 2>/dev/null | grep -q "${SIGN_IDENTI
         "Autoupdate" \
         "Updater.app"; do
         if [ -e "${SPARKLE_VERSION_DIR}/${SPARKLE_PART}" ]; then
-            codesign --force --options runtime ${TIMESTAMP_FLAG} \
+            codesign --force ${RUNTIME_FLAG} ${TIMESTAMP_FLAG} \
                 --preserve-metadata=entitlements \
                 --sign "${SIGN_IDENTITY}" \
                 "${SPARKLE_VERSION_DIR}/${SPARKLE_PART}"
         fi
     done
-    codesign --force --options runtime ${TIMESTAMP_FLAG} \
+    codesign --force ${RUNTIME_FLAG} ${TIMESTAMP_FLAG} \
         --sign "${SIGN_IDENTITY}" \
         "${BUILD_DIR}/${BUNDLE_NAME}/Contents/Frameworks/Sparkle.framework"
 
     for HELPER in cortland-ctl cortland-agent-status cortland-mcp cortland-telemetry; do
-        codesign --force --options runtime ${TIMESTAMP_FLAG} \
+        codesign --force ${RUNTIME_FLAG} ${TIMESTAMP_FLAG} \
             --entitlements Cortland.entitlements \
             --sign "${SIGN_IDENTITY}" \
             "${BUILD_DIR}/${BUNDLE_NAME}/Contents/MacOS/${HELPER}"
     done
-    codesign --force --options runtime ${TIMESTAMP_FLAG} \
+    codesign --force ${RUNTIME_FLAG} ${TIMESTAMP_FLAG} \
         --entitlements Cortland.entitlements \
         --sign "${SIGN_IDENTITY}" \
         "${BUILD_DIR}/${BUNDLE_NAME}"

@@ -4,6 +4,7 @@
 
 ### Fixes
 
+- **Dev builds launch again**: the build script applied the hardened runtime to every build, and the hardened runtime enforces library validation — every embedded library must carry the same Team ID as the app. A Developer ID certificate supplies one, so release builds were fine, but the self-signed dev identity has none, and dyld killed the app at launch the moment Sparkle.framework became something to load ("mapping process and mapped file (non-platform) have different Team IDs"). The hardened runtime is now applied only under `RELEASE=1`, where notarization requires it. TCC grants key on the designated requirement, which these flags do not change, so they still survive a rebuild.
 - **`./install.sh` no longer breaks the app it installs**: the copy to `/Applications` used `cp -r`, whose legacy recursive mode follows symlinks into real copies. Sparkle.framework is the bundle's first symlinked framework, so the flattened copy failed its code-signature check and dyld killed the app at launch. The installer now copies with `ditto`, the same tool the build uses to embed the framework, for the same reason.
 
 ## 0.7.0 (2026-07-24)
