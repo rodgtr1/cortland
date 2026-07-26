@@ -61,6 +61,16 @@ final class SessionsPanel: FilterableListPanel {
     /// against stale records and is discarded. Prevents an in-flight build from
     /// silently overwriting a fresher record set with an old index.
     private var deepGeneration = 0
+    /// Bumped on every deep query. A search captures it before going off-main
+    /// and its results are dropped unless it still matches, so a slow search for
+    /// "np" can never land on top of the results for "npm install".
+    private var deepSearchGeneration = 0
+    /// The scheduled (debounced) deep search, cancelled by the next keystroke.
+    private var deepSearchWorkItem: DispatchWorkItem?
+    /// How long typing has to pause before a deep query runs. Deep search walks
+    /// every indexed transcript's text, which is far too much to redo per
+    /// keystroke; the shallow filter stays immediate.
+    private static let deepSearchDebounce: TimeInterval = 0.2
     /// Match snippets for the currently shown rows, keyed by log path, shown in
     /// the subtitle position instead of "agent · repo · age".
     private var snippets: [String: String] = [:]
@@ -186,6 +196,10 @@ final class SessionsPanel: FilterableListPanel {
     /// everything under cortland-term-mac; those shouldn't bury actual title
     /// hits). Newest-first is preserved within each group.
     private func applyShallowFilter() {
+        // Turning Deep off mid-search must not let that search land on top of
+        // the shallow rows a moment later.
+        deepSearchWorkItem?.cancel()
+        deepSearchGeneration += 1
         snippets = [:]
         let matches = SessionQuery.run(all, agent: agentFilter, search: currentQuery.isEmpty ? nil : currentQuery)
         if currentQuery.isEmpty {
@@ -217,6 +231,7 @@ final class SessionsPanel: FilterableListPanel {
     /// and refresh once the (off-main) load lands.
     private func applyDeepFilter() {
         guard let deepIndex else {
+            deepSearchWorkItem?.cancel()
             filtered = SessionQuery.run(
                 all,
                 agent: agentFilter,
@@ -231,21 +246,112 @@ final class SessionsPanel: FilterableListPanel {
 
         // No phrase yet: nothing to match inside bodies — just show newest.
         guard !currentQuery.isEmpty else {
+            deepSearchWorkItem?.cancel()
+            deepSearchGeneration += 1
             snippets = [:]
             let matches = SessionQuery.run(all, agent: agentFilter)
             filtered = Array(matches.prefix(displayLimit))
-            updateFooter(shown: filtered.count, total: matches.count)
+            updateFooter(
+                shown: filtered.count,
+                total: matches.count,
+                note: Self.deepFooter(
+                    shown: filtered.count,
+                    total: matches.count,
+                    isCapped: false,
+                    index: deepIndex
+                )
+            )
             return
         }
 
-        // Search across the (agent-filtered) sessions, newest-first, then cap
-        // for display.
-        let ordered = SessionQuery.run(all, agent: agentFilter)
-        let matches = SessionDeepSearch.search(currentQuery, in: ordered, index: deepIndex)
-        let shown = Array(matches.prefix(displayLimit))
+        scheduleDeepSearch(using: deepIndex)
+    }
+
+    /// Run the phrase search off the main actor after a short pause in typing.
+    /// It used to run inline on every keystroke, walking every indexed
+    /// transcript's text on the main thread; a large index froze the panel while
+    /// it typed. The rows on screen stay put until the newest search lands.
+    private func scheduleDeepSearch(using index: SessionDeepSearch.Index) {
+        deepSearchWorkItem?.cancel()
+        deepSearchGeneration += 1
+        let generation = deepSearchGeneration
+        let query = currentQuery
+        let records = all
+        let agent = agentFilter
+        // Ask for one more than fits on screen, so the footer can distinguish
+        // "exactly a screenful" from "more than a screenful".
+        let matchLimit = displayLimit + 1
+
+        let work = DispatchWorkItem { [weak self] in
+            let ordered = SessionQuery.run(records, agent: agent)
+            let results = SessionDeepSearch.search(query, in: ordered, index: index, limit: matchLimit)
+            DispatchQueue.main.async {
+                guard let self, generation == self.deepSearchGeneration else { return }
+                self.applyDeepResults(results, index: index)
+            }
+        }
+        deepSearchWorkItem = work
+        DispatchQueue.global(qos: .userInitiated)
+            .asyncAfter(deadline: .now() + Self.deepSearchDebounce, execute: work)
+    }
+
+    /// Install a completed deep search: rows, snippets, and a footer that says
+    /// what the count actually is.
+    private func applyDeepResults(_ results: SessionDeepSearch.Results, index: SessionDeepSearch.Index) {
+        let shown = Array(results.matches.prefix(displayLimit))
         filtered = shown.map(\.record)
         snippets = Dictionary(shown.map { ($0.record.logPath, $0.snippet) }, uniquingKeysWith: { first, _ in first })
-        updateFooter(shown: shown.count, total: matches.count)
+        updateFooter(
+            shown: shown.count,
+            total: results.matches.count,
+            note: Self.deepFooter(
+                shown: shown.count,
+                total: results.matches.count,
+                isCapped: results.isCapped,
+                index: index
+            )
+        )
+        reloadAndSelectFirst()
+    }
+
+    /// The footer for a deep search. A capped search knows it found *at least*
+    /// this many, so it says "50 of 51+" rather than passing a floor off as a
+    /// total; a partial index is called out on its own, because "no matches"
+    /// means something different when not every session was read. Pure and
+    /// `nonisolated` so the honesty of the count is testable without a window.
+    nonisolated static func deepFooter(
+        shown: Int,
+        total: Int,
+        isCapped: Bool,
+        index: SessionDeepSearch.Index
+    ) -> String? {
+        var parts: [String] = []
+        if isCapped {
+            parts.append("\(shown) of \(total)+ · keep typing to narrow")
+        } else if shown < total {
+            parts.append("\(shown) of \(total) · keep typing to narrow")
+        } else if total == 0 {
+            parts.append("no matches")
+        }
+        if let note = indexNote(index) { parts.append(note) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// What the index left out, or nil when it holds every session in full.
+    nonisolated static func indexNote(_ index: SessionDeepSearch.Index) -> String? {
+        guard index.isPartial else { return nil }
+        var parts: [String] = []
+        if index.skippedSessions > 0 {
+            parts.append(count(index.skippedSessions, "session", "sessions") + " not indexed")
+        }
+        if !index.truncatedPaths.isEmpty {
+            parts.append(count(index.truncatedPaths.count, "transcript", "transcripts") + " truncated")
+        }
+        return "searched all but " + parts.joined(separator: " and ")
+    }
+
+    private nonisolated static func count(_ value: Int, _ singular: String, _ plural: String) -> String {
+        "\(value) \(value == 1 ? singular : plural)"
     }
 
     /// Build the body-text index off the main thread (mirroring `loadSessions`),
@@ -313,6 +419,11 @@ final class SessionsPanel: FilterableListPanel {
         deepIndex = nil
         snippets = [:]
         deepGeneration += 1
+        // A search scheduled against the index we just dropped has nothing to
+        // land on; cancel it and retire its generation.
+        deepSearchWorkItem?.cancel()
+        deepSearchWorkItem = nil
+        deepSearchGeneration += 1
     }
 
     func show(relativeTo parentWindow: NSWindow) {

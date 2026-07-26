@@ -19,6 +19,13 @@ tree, a git panel), written in Swift and AppKit, not Electron. And every
 opinionated bit (built-in editor vs. your own `$EDITOR`/nvim, sidebar
 visibility, theme) is a config toggle, not a requirement.
 
+> **Apple Silicon only.** Every release is an arm64-only build: it will not
+> launch on an Intel Mac, and the in-app updater correctly reports "no update
+> available" there rather than offering one that can't run. macOS 13 (Ventura)
+> is the minimum OS on that hardware — an OS floor, not a claim of Intel
+> support. A universal build is separate work
+> (`swift build --arch arm64 --arch x86_64`).
+
 ## Features
 
 **Terminal**: SwiftTerm-powered emulation, auto-detected shell, cwd + git
@@ -41,7 +48,9 @@ in the Agents panel (accept, reject, or remember for the file, folder, or
 session), and the desk's verdict answers the agent's own permission question,
 so there is exactly one prompt, not two. The provider-neutral approval policy
 maps ask, workspace auto, safety-reviewed auto, and full access onto each
-agent's native controls. Claude and Pi also support `auto_allow`/`always_ask`
+agent's native controls; the two Auto modes auto-approve work **inside the
+project directory only**, and full access is the one that removes the boundary
+along with the prompts. Claude and Pi also support `auto_allow`/`always_ask`
 glob overrides through the diff desk: an
 `always_ask` path like `.env` parks at the desk even in fully autonomous
 mode, and a rejection there holds. If Cortland isn't running, the gate stays
@@ -86,6 +95,8 @@ restart.
 
 ## Quick Start
 
+Apple Silicon only — see the note above before downloading or building.
+
 ### Run from Source
 ```bash
 swift build
@@ -109,9 +120,9 @@ Upgrading later is those same two commands, and nothing else: see
 
 Builds from the [Releases](https://github.com/rodgtr1/cortland/releases) page
 are signed with a Developer ID and notarized, so they open on first launch with
-no override. A DMG you build yourself is signed with whatever local identity
-you have, so macOS may ask you to allow it under System Settings → Privacy &
-Security → "Open Anyway".
+no override. They are arm64 builds and run on Apple Silicon Macs only. A DMG you
+build yourself is signed with whatever local identity you have, so macOS may ask
+you to allow it under System Settings → Privacy & Security → "Open Anyway".
 
 Then, two one-button setup steps:
 
@@ -123,8 +134,8 @@ Then, two one-button setup steps:
 - **Preferences → Terminal → Install for zsh** (optional): shell integration
   for prompt marks, cwd tracking, and agent-exit cleanup.
 
-Apple Silicon only for now; Intel would need a universal build
-(`swift build --arch arm64 --arch x86_64`).
+Both steps assume the app is already installed — on an Apple Silicon Mac,
+which is the only hardware these builds run on.
 
 ## Preferences
 
@@ -169,8 +180,21 @@ bar:
   and routes Pi's `edit`/`write` tools through the approval desk with the
   same fail-open contract as the Claude gate.
 
-Approval behavior (ask, workspace auto, safety-reviewed auto, or full access)
-lives in the separate **Approvals** tab, not here.
+Approval behavior lives in the separate **Approvals** tab, not here. Four
+modes, applied to the next agent launched in a pane:
+
+| Mode | What it means |
+|---|---|
+| Ask before changes | Claude prompts before edits; Codex runs read-only and asks before crossing that boundary. |
+| Auto-approve edits inside the workspace | Auto-approval **inside the project directory only** — Claude `acceptEdits`, Codex `workspace-write` with `on-request` approval. Anything reaching outside the workspace still prompts. |
+| Auto inside the workspace (safety-reviewed) | The same workspace-only autonomy, with boundary requests routed to the agent's own reviewer (Codex `auto_review`) instead of to you. |
+| Full access (no prompts, no sandbox) | Claude `bypassPermissions`, Codex `danger-full-access` with approvals off. No boundary, no prompts. |
+
+Auto is not "never asks again". Cortland's own pane-control socket sits at
+`~/.config/cortland/cortland.sock`, outside any repo, so an agent reaching for
+`cortland-ctl` is crossing the workspace boundary and can be asked about it —
+once per session, and it is the sandbox working as configured. Full access is
+the mode that prompts for nothing.
 
 ## Keyboard Shortcuts
 
@@ -296,7 +320,11 @@ Tools: `pane_list` / `pane_current` / `pane_split` / `pane_focus` /
 ## Pane Automation (`cortland-ctl`)
 
 For scripts and agents that want lower-level control, `cortland-ctl` talks to
-the same Unix socket the MCP server uses:
+the same Unix socket the MCP server uses. That socket is at
+`~/.config/cortland/cortland.sock`, outside whatever repo an agent is working
+in, so under either Auto approval mode a sandboxed agent may ask before
+reaching it — the workspace boundary doing its job. Full access is the mode
+with no boundary to cross.
 
 ```bash
 # Discover panes and the caller's own pane
@@ -412,7 +440,9 @@ opacity = 0.9
 enable_blur = true
 
 [approval]
-mode = "ask"                 # ask | auto | review | bypass; legacy claude-auto aliases review
+mode = "ask"                 # ask | auto | review | bypass; auto/review are workspace-only
+                             # auto-approval, bypass removes the boundary;
+                             # legacy claude-auto aliases review
 auto_allow = []              # Claude/Pi desk: silently approve matches under ask
 always_ask = []              # Claude/Pi desk: always review matches, e.g. [".env"]
 worktree_auto_approve = false # Claude/Pi desk: approve edits inside the pane's worktree
@@ -448,6 +478,8 @@ Drop custom theme palettes (same JSON schema as the built-ins) into
 
 ## Requirements
 
+- An Apple Silicon Mac. Releases are arm64-only and do not run on Intel; the
+  `LSMinimumSystemVersion` of 13.0 below is the OS floor, not an architecture.
 - macOS 13.0+ (Ventura)
 - Swift 6.2+ toolchain (Xcode 26+) to build from source
 

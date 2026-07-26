@@ -1,4 +1,5 @@
 import Foundation
+import CortlandTelemetryCore
 
 /// Reads local Claude Code and Codex CLI session logs into unified
 /// `SessionRecord` values. Pure `Foundation`, no persistence — this is the
@@ -16,6 +17,17 @@ nonisolated enum SessionLogScanner {
     /// we need is almost always in the first handful of lines.
     private static let maxLinesPerFile = 2000
 
+    /// Ceiling on one jsonl record, 4 MiB. Agent logs inline whole file reads
+    /// and command output, so a handful of tool-result records can be tens of
+    /// MB each — and a log written without newlines is one record the size of
+    /// the file. A scan visits every session log on the machine, so the cap has
+    /// to bound a single record too, not just their number. Records past it are
+    /// skipped rather than parsed: half a JSON record is not a record. What
+    /// this scan is looking for (cwd, timestamp, the first human prompt,
+    /// Claude's ai-title) is far below the ceiling; the worst case is a session
+    /// whose opening prompt is megabytes long showing "(no prompt found)".
+    static let maxBytesPerLine = 4 << 20
+
     /// Prefixes that mark an injected wrapper / system / tooling payload rather
     /// than a real human prompt. Compared case-sensitively against the
     /// collapsed candidate text.
@@ -30,15 +42,15 @@ nonisolated enum SessionLogScanner {
 
     /// Parse a single Claude session file into a record, or nil if unreadable.
     static func parseClaudeSession(at url: URL, fileManager: FileManager = .default) -> SessionRecord? {
-        guard let lines = jsonLines(at: url) else { return nil }
-
         let sessionID = url.deletingPathExtension().lastPathComponent
         var cwd: String?
         var timestamp: Date?
         var title: String?
         var aiTitle: String?
 
-        for record in lines {
+        // Folded as the file streams, so only the four fields above are
+        // retained — never the records they came from.
+        let opened = forEachRecord(at: url) { record in
             let type = record["type"] as? String
             if cwd == nil, let value = record["cwd"] as? String {
                 cwd = value
@@ -48,7 +60,7 @@ nonisolated enum SessionLogScanner {
             }
             // Claude writes its own AI-generated title into an `ai-title` line;
             // capture it separately. It may appear after the first user turn,
-            // so we can't early-break once cwd/timestamp/title are all found.
+            // so we can't stop once cwd/timestamp/title are all found.
             if aiTitle == nil, type == "ai-title", let raw = record["aiTitle"] as? String {
                 let collapsed = collapse(raw)
                 aiTitle = collapsed.isEmpty ? nil : collapsed
@@ -60,7 +72,9 @@ nonisolated enum SessionLogScanner {
                     title = candidate
                 }
             }
+            return true   // read the whole window: ai-title can come last.
         }
+        guard opened else { return nil }
 
         // cwd is authoritative ONLY from the in-record field. The encoded
         // project dir name is lossy (a literal '-' in a segment is
@@ -83,8 +97,6 @@ nonisolated enum SessionLogScanner {
 
     /// Parse a single Codex rollout file into a record, or nil if unreadable.
     static func parseCodexRollout(at url: URL, fileManager: FileManager = .default) -> SessionRecord? {
-        guard let lines = jsonLines(at: url) else { return nil }
-
         var cwd: String?
         var timestamp: Date?
         var title: String?
@@ -92,7 +104,7 @@ nonisolated enum SessionLogScanner {
         var rolloutID: String?
         var threadSource: String?
 
-        for record in lines {
+        let opened = forEachRecord(at: url) { record in
             let type = record["type"] as? String
             let payload = record["payload"] as? [String: Any]
 
@@ -126,10 +138,11 @@ nonisolated enum SessionLogScanner {
                 }
             }
 
-            if cwd != nil, timestamp != nil, title != nil {
-                break
-            }
+            // Codex has no ai-title line, so everything wanted is in hand and
+            // the rest of the window can go unread.
+            return !(cwd != nil && timestamp != nil && title != nil)
         }
+        guard opened else { return nil }
 
         // Root vs subagent: Codex writes one rollout per thread. The root thread
         // has `thread_source == "user"` (or, equivalently, its rollout `id`
@@ -359,26 +372,52 @@ nonisolated enum SessionLogScanner {
         (try? fileManager.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
     }
 
-    /// Parse a jsonl file into an array of top-level JSON objects, skipping
-    /// blank and malformed lines without throwing. Returns nil only when the
-    /// file itself can't be read.
-    private static func jsonLines(at url: URL) -> [[String: Any]]? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        // Decode lossily (invalid UTF-8 becomes U+FFFD) to mirror the
-        // prototype's errors="replace" read.
-        let contents = String(decoding: data, as: UTF8.self)
-        var objects: [[String: Any]] = []
+    /// Stream a jsonl file's top-level objects through `handle`, newest line
+    /// last, stopping at `maxLinesPerFile` or when `handle` returns false.
+    /// Returns false only when the file can't be opened.
+    ///
+    /// Each record is handed over and then dropped, so a scan holds one record
+    /// at a time rather than 2,000 of them: the caller folds what it needs into
+    /// a few fields. Reading is chunked and capped per line as well as per
+    /// file (`maxBytesPerLine`), so a live 400 MB transcript — or one written
+    /// as a single record — costs a bounded read, not its own size in memory.
+    /// A scan walks every session log on the machine, which is what makes the
+    /// difference between a scan and an out-of-memory scan.
+    ///
+    /// Blank and malformed lines are skipped without throwing, and so is any
+    /// record too long for the ceiling: a record cut in half parses as garbage
+    /// at best and as a misleading half-record at worst.
+    private static func forEachRecord(at url: URL, _ handle: ([String: Any]) -> Bool) -> Bool {
         var seen = 0
-        for line in contents.split(separator: "\n", omittingEmptySubsequences: false) {
-            if seen >= maxLinesPerFile { break }
+        return TranscriptLineReader.forEachLine(
+            inFileAt: url.path,
+            maxLineBytes: maxBytesPerLine
+        ) { line, _, wasTruncated in
             seen += 1
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty { continue }
-            guard let lineData = trimmed.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
-            else { continue }
-            objects.append(object)
+            if !wasTruncated, let object = jsonObject(from: line), !handle(object) {
+                return false
+            }
+            return seen < maxLinesPerFile
         }
-        return objects
+    }
+
+    /// One jsonl line's bytes into a top-level object, or nil when the line is
+    /// blank or malformed. Whitespace-only lines are skipped without a parse
+    /// attempt, matching the old string-trimming read. Shared with
+    /// `SessionBodyText`, which streams the same files for deep search.
+    static func jsonObject(from line: Data) -> [String: Any]? {
+        let trimmed = trimmingASCIIWhitespace(line)
+        guard !trimmed.isEmpty else { return nil }
+        return try? JSONSerialization.jsonObject(with: trimmed) as? [String: Any]
+    }
+
+    /// Strip leading/trailing spaces, tabs, and carriage returns from a line's
+    /// bytes (a CRLF file leaves a `\r` behind after the newline split).
+    static func trimmingASCIIWhitespace(_ data: Data) -> Data {
+        let isSpace: (UInt8) -> Bool = { $0 == 0x20 || $0 == 0x09 || $0 == 0x0D || $0 == 0x0A }
+        guard let first = data.firstIndex(where: { !isSpace($0) }),
+              let last = data.lastIndex(where: { !isSpace($0) })
+        else { return Data() }
+        return data.subdata(in: first..<(last + 1))
     }
 }

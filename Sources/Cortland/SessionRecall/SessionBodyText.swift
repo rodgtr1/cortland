@@ -1,4 +1,5 @@
 import Foundation
+import CortlandTelemetryCore
 
 /// Extracts a session log's *searchable body text* — the human and assistant
 /// prose plus the commands the agent invoked — for the opt-in Session Recall
@@ -8,9 +9,14 @@ import Foundation
 /// A `nonisolated enum` of static methods (matching `SessionLogScanner`) so it
 /// can run off the main thread despite the module's `@MainActor` default
 /// isolation. It reuses the scanner's jsonl-reading *approach* (lossy UTF-8,
-/// skip malformed lines) without touching its logic. Unlike the title scanner,
-/// extraction is uncapped: deep search exists to find phrases anywhere in a
-/// long transcript, and this parsing is in-memory and opt-in.
+/// skip malformed lines) without touching its logic.
+///
+/// Unlike the title scanner it has no *line* cap — deep search exists to find
+/// phrases anywhere in a long transcript, including the last turn of a 20,000
+/// line session. It has byte budgets instead (`maxBytesPerFile`, and the
+/// index-wide budget in `SessionDeepSearch`): a transcript is read until its
+/// budget runs out and then truncated, so one 2 GB log can't take the app down
+/// with it. The budgets are deliberately far above a normal session.
 ///
 /// What it INCLUDES vs EXCLUDES is the whole point of recall usefulness:
 /// - INCLUDE: Claude `user`/`assistant` message text; Codex
@@ -20,25 +26,68 @@ import Foundation
 ///   those are noise for recall. Only whitelisted, text-bearing fields are kept,
 ///   so large output payloads are skipped by construction.
 nonisolated enum SessionBodyText {
-    /// Read a log file into an array of lowercased, whitespace-collapsed text
-    /// lines — one per message / tool-call input contributed. Lines are kept
-    /// separable so a matching snippet can be produced around a hit. Returns an
-    /// empty array when the file can't be read; malformed jsonl lines are
-    /// skipped without throwing.
-    static func extractLines(at url: URL) -> [String] {
-        guard let data = try? Data(contentsOf: url) else { return [] }
-        // Decode lossily (invalid UTF-8 -> U+FFFD), matching the scanner's read.
-        let contents = String(decoding: data, as: UTF8.self)
+    /// Ceiling on the raw jsonl bytes read from one transcript: 64 MiB. Claude
+    /// and Codex logs carry whole file reads and command output inline, so a
+    /// long-running session can reach hundreds of MB on disk while its *prose*
+    /// stays small. Past this the file is truncated rather than skipped —
+    /// everything up to the budget is still searchable.
+    static let maxBytesPerFile = 64 << 20
+
+    /// What one file's extraction produced, and whether it was cut short. The
+    /// panel reports truncation instead of implying it searched a whole log it
+    /// only partly read.
+    nonisolated struct Extraction: Sendable, Equatable {
+        /// Lowercased, whitespace-collapsed text lines, one per contributing
+        /// message or tool-call input.
         var lines: [String] = []
-        for raw in contents.split(separator: "\n", omittingEmptySubsequences: false) {
-            let trimmed = raw.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty { continue }
-            guard let lineData = trimmed.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
-            else { continue }
-            appendText(from: object, into: &lines)
+        /// Bytes of jsonl consumed producing `lines`.
+        var bytesRead = 0
+        /// Total characters held in `lines` — what the index-wide budget spends.
+        var characters = 0
+        /// True when a budget ran out before the end of the file.
+        var isTruncated = false
+    }
+
+    /// Read a log file into lowercased, whitespace-collapsed text lines — one
+    /// per message / tool-call input contributed. Lines are kept separable so a
+    /// matching snippet can be produced around a hit.
+    ///
+    /// Streams the file (`TranscriptLineReader`) and stops once `byteBudget`
+    /// raw bytes have been consumed, marking the result truncated. Returns an
+    /// empty extraction when the file can't be read; malformed jsonl lines are
+    /// skipped without throwing.
+    ///
+    /// `byteBudget` bounds memory, not just work: it is passed to the reader as
+    /// a per-line ceiling too, so a transcript written as one enormous record —
+    /// or with no newlines at all — is discarded past the budget rather than
+    /// assembled and then parsed. A line that had to be cut is not parsed at
+    /// all: half a JSON record is not a record.
+    static func extract(at url: URL, byteBudget: Int = maxBytesPerFile) -> Extraction {
+        var extraction = Extraction()
+        let opened = TranscriptLineReader.forEachLine(
+            inFileAt: url.path,
+            maxLineBytes: max(byteBudget, 1)
+        ) { line, bytesConsumed, wasTruncated in
+            extraction.bytesRead += bytesConsumed
+            if wasTruncated {
+                extraction.isTruncated = true
+            } else if let object = SessionLogScanner.jsonObject(from: line) {
+                appendText(from: object, into: &extraction.lines)
+            }
+            guard extraction.bytesRead < byteBudget, !wasTruncated else {
+                extraction.isTruncated = true
+                return false
+            }
+            return true
         }
-        return lines
+        guard opened else { return Extraction() }
+        extraction.characters = extraction.lines.reduce(0) { $0 + $1.count }
+        return extraction
+    }
+
+    /// The lines alone, for callers that don't care about truncation.
+    static func extractLines(at url: URL) -> [String] {
+        extract(at: url).lines
     }
 
     // MARK: - Per-line extraction

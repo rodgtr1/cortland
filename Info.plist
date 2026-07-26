@@ -12,12 +12,13 @@
     <string>Cortland</string>
     <!-- CFBundleVersion is the monotonic build number Sparkle compares across
          releases; CFBundleShortVersionString is the human-facing version.
-         Scheme: minor * 100 + patch (0.5.0 -> 500, 0.5.1 -> 501, 0.7.0 -> 700).
+         Scheme: major * 10000 + minor * 100 + patch (0.5.0 -> 500,
+         0.5.1 -> 501, 0.7.0 -> 700, 1.0.0 -> 10000).
          Bump both together on every release. -->
     <key>CFBundleVersion</key>
-    <string>700</string>
+    <string>701</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.7.0</string>
+    <string>0.7.1</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>

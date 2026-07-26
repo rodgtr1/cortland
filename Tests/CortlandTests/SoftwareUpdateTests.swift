@@ -46,26 +46,59 @@ final class SoftwareUpdateTests: XCTestCase {
 
     // MARK: - Version monotonicity
 
+    /// The build number a `major.minor.patch` version has to carry:
+    /// major × 10000 + minor × 100 + patch (docs/release-baseline.md). The
+    /// major term is what keeps 1.0.0 (`10000`) above 0.7.0 (`700`); without it
+    /// 1.0.0 computes to `0` and Sparkle offers 0.7.0 as an "update".
+    private func buildNumber(for version: String) throws -> Int {
+        let parts = version.split(separator: ".").map { Int($0) ?? -1 }
+        XCTAssertEqual(parts.count, 3, "version \(version) is not major.minor.patch")
+        XCTAssertTrue(parts.allSatisfy { $0 >= 0 }, "version \(version) has a non-numeric component")
+        XCTAssertLessThan(parts[1], 100, "the formula reserves 100 minor slots per major")
+        XCTAssertLessThan(parts[2], 100, "the formula reserves 100 patch slots per minor")
+        return parts[0] * 10_000 + parts[1] * 100 + parts[2]
+    }
+
     /// `CFBundleVersion` is what Sparkle compares; `CFBundleShortVersionString`
     /// is what people read. They are bumped by hand, in two places, which is
-    /// exactly the kind of edit that gets half-done. The formula is
-    /// minor × 100 + patch (docs/release-baseline.md).
+    /// exactly the kind of edit that gets half-done.
     func testBundleVersionMatchesShortVersionFormula() throws {
         let plist = try repoInfoPlist
         let short = try XCTUnwrap(plist["CFBundleShortVersionString"] as? String)
         let build = try XCTUnwrap(plist["CFBundleVersion"] as? String)
 
-        let parts = short.split(separator: ".").map { Int($0) ?? -1 }
-        XCTAssertEqual(parts.count, 3, "version \(short) is not major.minor.patch")
-        XCTAssertEqual(parts[0], 0, "the minor×100+patch formula has no room for a major bump; see docs/release-baseline.md")
-        XCTAssertTrue(parts.allSatisfy { $0 >= 0 }, "version \(short) has a non-numeric component")
-        XCTAssertLessThan(parts[2], 100, "the formula reserves 100 patch slots per minor")
-
         XCTAssertEqual(
             Int(build),
-            parts[1] * 100 + parts[2],
-            "CFBundleVersion \(build) does not match \(short) under minor×100+patch"
+            try buildNumber(for: short),
+            "CFBundleVersion \(build) does not match \(short) under major×10000+minor×100+patch"
         )
+    }
+
+    /// The numbers the formula has to produce, including the two that were
+    /// already published under the old minor×100+patch rule — extending the
+    /// formula must not renumber a shipped build.
+    func testFormulaProducesTheDocumentedBuildNumbers() throws {
+        XCTAssertEqual(try buildNumber(for: "0.5.0"), 500)
+        XCTAssertEqual(try buildNumber(for: "0.7.0"), 700)
+        XCTAssertEqual(try buildNumber(for: "0.7.1"), 701)
+        XCTAssertEqual(try buildNumber(for: "1.0.0"), 10_000)
+        XCTAssertEqual(try buildNumber(for: "1.0.1"), 10_001)
+        XCTAssertEqual(try buildNumber(for: "2.3.4"), 20_304)
+    }
+
+    /// The whole point of the build number: it only ever goes up, across a
+    /// major bump too. An install on a higher number never sees the release as
+    /// an update, so a single inversion strands everyone on that version.
+    func testFormulaIsMonotonicAcrossAMajorBump() throws {
+        let releases = ["0.5.0", "0.5.1", "0.6.0", "0.7.0", "0.7.1", "0.99.99", "1.0.0", "1.0.1", "1.1.0", "2.0.0"]
+        let builds = try releases.map { try buildNumber(for: $0) }
+        for (index, build) in builds.enumerated().dropFirst() {
+            XCTAssertGreaterThan(
+                build,
+                builds[index - 1],
+                "\(releases[index]) (\(build)) must outrank \(releases[index - 1]) (\(builds[index - 1]))"
+            )
+        }
     }
 
     // MARK: - Settings validation

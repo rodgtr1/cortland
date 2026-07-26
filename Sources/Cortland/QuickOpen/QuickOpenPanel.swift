@@ -4,7 +4,9 @@ protocol QuickOpenPanelDelegate: AnyObject {
     func quickOpenPanel(_ panel: QuickOpenPanel, didSelectFile filePath: String)
 }
 
-struct FileResult {
+/// `nonisolated` because scoring builds these on a background queue and hands
+/// them to the main actor (see `scoredResults`).
+nonisolated struct FileResult: Sendable {
     let path: String
     let relativePath: String
     let fileName: String
@@ -16,7 +18,40 @@ struct FileResult {
 /// chrome (search field, table, key handling) lives in `FilterableListPanel`;
 /// this subclass supplies the file results and the async search.
 class QuickOpenPanel: FilterableListPanel {
+    /// Decides which finished search may write its rows into the panel.
+    ///
+    /// Terminating the child process isn't enough on its own: a killed `find`
+    /// has usually already printed most of a large tree, so its reader keeps
+    /// going, scores what it has, and hops to the main queue with results for a
+    /// query that no longer exists. Clearing the field returns immediately, so
+    /// those rows would reappear under an empty search field. Every search takes
+    /// a ticket; anything that abandons the current search retires it, and a
+    /// retired ticket is refused on arrival.
+    ///
+    /// `nonisolated` so the rule can be tested without a window.
+    nonisolated struct SearchGate: Equatable {
+        private var issued = 0
+        private var active: Int?
+
+        /// Begin a search and take the ticket it must present later.
+        mutating func start() -> Int {
+            issued += 1
+            active = issued
+            return issued
+        }
+
+        /// Abandon whatever search is running; every outstanding ticket is now
+        /// stale.
+        mutating func invalidate() {
+            active = nil
+        }
+
+        /// Whether the holder of `ticket` is still the search the panel wants.
+        func accepts(_ ticket: Int) -> Bool { active == ticket }
+    }
+
     private var findTask: Process?
+    private var searchGate = SearchGate()
     private var debounceWorkItem: DispatchWorkItem?
 
     weak var quickOpenDelegate: QuickOpenPanelDelegate?
@@ -25,12 +60,26 @@ class QuickOpenPanel: FilterableListPanel {
     private var currentWorkingDirectory: String = FileManager.default.currentDirectoryPath
     private nonisolated static let maxResults = 50
 
-    /// Upper bound on candidate paths scored per keystroke on the `find`
-    /// fallback. `fd` pre-filters and caps server-side (`fdCandidateCap`), but
-    /// plain `find` returns the whole tree — without a bound a large repo would
-    /// score tens of thousands of paths on every keystroke (P2). Generous enough
+    /// Upper bound on candidate paths read and scored per keystroke on the
+    /// `find` fallback. `fd` pre-filters and caps server-side
+    /// (`fdCandidateCap`), but plain `find` returns the whole tree — without a
+    /// bound a large repo would score tens of thousands of paths on every
+    /// keystroke (P2). The reader stops at this many lines and kills the child,
+    /// so the cap bounds the walk itself, not just the scoring. Generous enough
     /// that ordinary repos are covered in full.
     private nonisolated static let candidateScanCap = 20_000
+
+    /// Wall-clock ceiling on one search. A `find` rooted somewhere enormous (a
+    /// home directory, a network mount) can walk for minutes; past this the
+    /// child is killed and whatever it printed so far is scored. Long enough
+    /// that a normal repo never reaches it.
+    private nonisolated static let searchTimeout: TimeInterval = 5
+
+    /// Directory names never worth walking: version control, dependency, and
+    /// build output trees. Pruned by `find` so it doesn't descend into them at
+    /// all — the old `-not -path` form walked every one of `node_modules` and
+    /// threw the results away afterwards.
+    private nonisolated static let prunedDirectories = [".git", "node_modules", ".build", "target"]
 
     init() {
         super.init(chrome: Chrome(
@@ -53,9 +102,9 @@ class QuickOpenPanel: FilterableListPanel {
     }
 
     override func queryChanged(_ query: String) {
-        // Cancel previous debounce work and any in-flight find task.
+        // Cancel previous debounce work and retire any in-flight find task.
         debounceWorkItem?.cancel()
-        findTask?.terminate()
+        endActiveSearch()
 
         if query.isEmpty {
             fileResults = []
@@ -111,14 +160,7 @@ class QuickOpenPanel: FilterableListPanel {
         } else {
             // Fallback to find
             task.executableURL = URL(fileURLWithPath: "/usr/bin/find")
-            task.arguments = [
-                currentWorkingDirectory,
-                "-type", "f",
-                "-not", "-path", "*/.*",
-                "-not", "-path", "*/node_modules/*",
-                "-not", "-path", "*/.build/*",
-                "-not", "-path", "*/target/*"
-            ]
+            task.arguments = Self.findArguments(root: currentWorkingDirectory)
         }
 
         let pipe = Pipe()
@@ -127,31 +169,63 @@ class QuickOpenPanel: FilterableListPanel {
         // child forever (find prints a line per unreadable directory).
         task.standardError = FileHandle.nullDevice
 
-        // Store reference
+        // Store reference, and take the ticket that says these results are the
+        // ones the panel still wants.
         findTask = task
+        let ticket = searchGate.start()
 
         do {
             try task.run()
+            // A walk that never finishes must not hold a pipe reader hostage:
+            // kill the child at the deadline and score whatever it printed. A
+            // task that already exited is left alone, so this is a no-op on
+            // every search that finished in time.
+            DispatchQueue.global(qos: .utility)
+                .asyncAfter(deadline: .now() + Self.searchTimeout) { [task] in
+                    if task.isRunning { task.terminate() }
+                }
+
             // Drain off the main thread: reading to EOF on the main queue froze the
-            // UI for the whole walk on large trees. Discard stale results if a newer
-            // query started (findTask !== task), mirroring SearchPanelViewController.
+            // UI for the whole walk on large trees. Results are dropped unless the
+            // gate still accepts this ticket — a newer query, a cleared field, or a
+            // closed panel all retire it.
             DispatchQueue.global(qos: .userInitiated).async { [weak self, task] in
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                // Read incrementally and stop at the cap, instead of buffering
+                // the whole tree: `find` on a large root prints far more than
+                // will ever be scored, and readDataToEndOfFile held all of it.
+                let paths = Self.readPaths(
+                    from: pipe.fileHandleForReading,
+                    cap: Self.candidateScanCap,
+                    onCap: { if task.isRunning { task.terminate() } }
+                )
                 task.waitUntilExit()
                 // Score off the main thread: on the `find` fallback this walked
                 // and scored the whole tree on the main queue every keystroke.
-                let results = Self.scoredResults(from: data, searchText: searchText, root: root)
+                let results = Self.scoredResults(from: paths, searchText: searchText, root: root)
                 DispatchQueue.main.async {
-                    guard let self = self, self.findTask === task else { return }
+                    guard let self = self, self.searchGate.accepts(ticket) else { return }
                     self.applyResults(results)
                 }
             }
         } catch {
+            // A failed spawn must not blank out rows a newer search already put
+            // there, so it clears only if it is still the current search.
             DispatchQueue.main.async { [weak self] in
-                self?.fileResults = []
-                self?.tableView.reloadData()
+                guard let self, self.searchGate.accepts(ticket) else { return }
+                self.fileResults = []
+                self.tableView.reloadData()
             }
         }
+    }
+
+    /// Retire the running search: kill the child and drop the ticket, so
+    /// anything still draining its pipe can no longer write to the panel. Called
+    /// wherever the current results stop being wanted — a new query, an emptied
+    /// field, a closed panel.
+    private func endActiveSearch() {
+        findTask?.terminate()
+        findTask = nil
+        searchGate.invalidate()
     }
 
     /// fd candidate ceiling. Higher than the display cap (`maxResults`) because
@@ -168,6 +242,102 @@ class QuickOpenPanel: FilterableListPanel {
         }.joined(separator: ".*")
     }
 
+    /// The `find` fallback's argv. The pruned directories are cut off with
+    /// `-prune` so the walk never enters them, and dot-names are pruned too,
+    /// matching what the old `-not -path "*/.*"` filter hid. Everything left is
+    /// printed as it's found, so the reader can stop the walk at the cap.
+    nonisolated static func findArguments(root: String) -> [String] {
+        var arguments = [root, "("]
+        for (index, name) in (prunedDirectories + [".*"]).enumerated() {
+            if index > 0 { arguments.append("-o") }
+            arguments += ["-name", name]
+        }
+        arguments += [")", "-prune", "-o", "-type", "f", "-print"]
+        return arguments
+    }
+
+    /// Accumulates newline-separated paths out of a stream of chunks, stopping
+    /// at `cap` lines. Split out from the process plumbing so the chunk/line
+    /// boundary handling — a path split across two reads — is testable without
+    /// spawning anything.
+    ///
+    /// The carried-over tail stays as bytes, never as a decoded `String`: a read
+    /// boundary can land in the middle of a multi-byte UTF-8 scalar, and
+    /// decoding each chunk on arrival would turn the two halves of an "é" into
+    /// replacement characters and hand back a path that doesn't exist. Only
+    /// whole lines, delimited by newline bytes, are decoded.
+    nonisolated struct BoundedLineReader {
+        private static let newline = UInt8(0x0A)
+
+        let cap: Int
+        private(set) var lines: [String] = []
+        /// The tail of the last chunk, which may be half a path — and, at the
+        /// byte level, half a character.
+        private var partial = Data()
+
+        init(cap: Int) {
+            self.cap = cap
+        }
+
+        var isFull: Bool { lines.count >= cap }
+
+        mutating func consume(_ data: Data) {
+            guard !isFull, !data.isEmpty else { return }
+            var start = data.startIndex
+            while let newlineIndex = data[start...].firstIndex(of: Self.newline) {
+                partial.append(contentsOf: data[start..<newlineIndex])
+                append(partial)
+                partial.removeAll(keepingCapacity: true)
+                start = newlineIndex + 1
+                if isFull {
+                    partial.removeAll()
+                    return
+                }
+            }
+            partial.append(contentsOf: data[start...])
+        }
+
+        /// Flush a final line that never got its newline (a child killed
+        /// mid-print, or output that simply doesn't end in one).
+        mutating func finish() {
+            guard !isFull, !partial.isEmpty else { return }
+            append(partial)
+            partial.removeAll()
+        }
+
+        /// Decode one complete line. Lossy, like every other path we read off a
+        /// pipe: a filename that isn't valid UTF-8 is better shown with a
+        /// replacement character than dropped.
+        private mutating func append(_ line: Data) {
+            lines.append(String(decoding: line, as: UTF8.self))
+        }
+    }
+
+    /// Drain `handle` into at most `cap` paths, calling `onCap` (which kills the
+    /// child) as soon as the cap is hit so the walk stops instead of filling a
+    /// pipe nobody will read.
+    private nonisolated static func readPaths(
+        from handle: FileHandle,
+        cap: Int,
+        onCap: () -> Void
+    ) -> [String] {
+        var reader = BoundedLineReader(cap: cap)
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty { break }   // EOF
+            reader.consume(chunk)
+            if reader.isFull {
+                onCap()
+                // Keep draining so the child dies on its own write instead of
+                // blocking forever on a full pipe; the reader discards it all.
+                while !handle.availableData.isEmpty {}
+                break
+            }
+        }
+        reader.finish()
+        return reader.lines
+    }
+
     /// Path relative to `root`, tolerant of a trailing slash on `root`. Returns
     /// the original path when it isn't under `root`.
     nonisolated static func relativePath(of fullPath: String, under root: String) -> String {
@@ -176,18 +346,17 @@ class QuickOpenPanel: FilterableListPanel {
     }
 
     /// Scores candidate paths and returns the top `maxResults`. Pure and
-    /// nonisolated so it can run on a background queue (P2).
-    private nonisolated static func scoredResults(
-        from data: Data,
+    /// nonisolated so it can run on a background queue (P2). The reader already
+    /// stopped at `candidateScanCap`; the count here is a second belt.
+    nonisolated static func scoredResults(
+        from paths: [String],
         searchText: String,
         root: String
     ) -> [FileResult] {
-        guard let output = String(data: data, encoding: .utf8) else { return [] }
-
         var results: [FileResult] = []
         var scanned = 0
 
-        for line in output.components(separatedBy: .newlines) {
+        for line in paths {
             let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedLine.isEmpty else { continue }
             if scanned >= candidateScanCap { break }
@@ -237,7 +406,10 @@ class QuickOpenPanel: FilterableListPanel {
         )
         setFrameOrigin(newOrigin)
 
-        // Clear previous search
+        // Clear previous search. Reopening on a different working directory
+        // must not inherit rows (or a still-draining search) from the last one.
+        debounceWorkItem?.cancel()
+        endActiveSearch()
         fileResults = []
         tableView.reloadData()
         searchField.stringValue = ""
@@ -250,7 +422,7 @@ class QuickOpenPanel: FilterableListPanel {
     override func close() {
         // Cancel any running tasks
         debounceWorkItem?.cancel()
-        findTask?.terminate()
+        endActiveSearch()
 
         super.close()
     }

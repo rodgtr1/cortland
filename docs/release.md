@@ -38,8 +38,9 @@ The Sparkle half landed in v0.7.0.
 
 Both keys in `Info.plist`, together. `CFBundleShortVersionString` is what
 people see; `CFBundleVersion` is the monotonic number Sparkle compares, formula
-minor × 100 + patch (see `docs/release-baseline.md`). It must only ever go up:
-an install on a higher build number will never see the release as an update.
+major × 10000 + minor × 100 + patch (see `docs/release-baseline.md`), so 0.7.0
+is 700 and 1.0.0 is 10000. It must only ever go up: an install on a higher
+build number will never see the release as an update.
 
 ### 2. Write the release notes (optional)
 
@@ -104,7 +105,40 @@ All three attachments matter:
   release, so a **prerelease will not be served to anyone**. Publish as a full
   release when the update should go out.
 
-### 5. Confirm the feed
+Those three, and nothing else. `notarize.sh` also rebuilds `build/Cortland.zip`
+from the stapled app, but the zip is not part of a release: it exists for local
+update testing. A `Cortland.zip` that has found its way onto a public release
+is either the same stapled app — mounted, `codesign --verify --deep --strict`
+clean, and Gatekeeper-assessed like everything else — or it comes off the
+release with `gh release delete-asset`. An unsigned stray is a download people
+can't open, sitting next to two they can.
+
+There is no CI path to a release. GitHub's runners have neither the Developer
+ID key nor the notary credentials, so anything they build is unsigned by
+construction; the commands above, run by hand, are the release.
+
+### 5. Verify what was published
+
+```sh
+./scripts/verify-release.sh v0.7.0
+```
+
+It downloads the release's public assets into a fresh temp directory and
+checks what a downloader gets: all three assets present and no fourth, both
+DMGs signed and assessed as "Notarized Developer ID", each DMG and the app
+inside it carrying a stapled ticket (`xcrun stapler validate` — an unstapled
+download needs Apple reachable on first launch, which is the offline case this
+whole flow exists to guarantee), the app passing `codesign --verify --deep
+--strict` and Gatekeeper, the appcast's version and build matching the mounted
+app, and the enclosure URL serving a file. Everything it mounts is unmounted
+and deleted on the way out.
+
+Run it on a normal Mac, as yourself, in a login shell. `spctl --assess` reads
+the machine's Gatekeeper state, so a restricted sandbox or a locked-down MDM
+profile can reject a release that is fine — a reason to run it somewhere
+normal, never a reason to skip it.
+
+The feed is also readable by hand:
 
 ```sh
 curl -sL https://github.com/rodgtr1/cortland/releases/latest/download/appcast.xml

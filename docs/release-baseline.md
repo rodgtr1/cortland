@@ -22,22 +22,27 @@ and the appcast, and needs a value that only ever increases.
 | `CFBundleShortVersionString` | `0.5.0` | Human-facing version. Exported to every pane as `TERM_PROGRAM_VERSION`, logged at launch. |
 | `CFBundleVersion` | `500` | Monotonic build number. Sparkle's upgrade comparison; never shown to a user. |
 
-Build number formula: **minor × 100 + patch**.
+Build number formula: **major × 10000 + minor × 100 + patch**.
 
 | Release | `CFBundleShortVersionString` | `CFBundleVersion` |
 | --- | --- | --- |
 | 0.5.0 | `0.5.0` | `500` |
 | 0.5.1 | `0.5.1` | `501` |
 | 0.6.0 | `0.6.0` | `600` |
+| 0.7.0 | `0.7.0` | `700` |
+| 1.0.0 | `1.0.0` | `10000` |
 
-The formula reserves 100 patch slots per minor release. Bump both keys together
-in `Info.plist`; nothing generates them.
+The formula reserves 100 patch slots per minor release and 100 minor slots per
+major. Bump both keys together in `Info.plist`; nothing generates them.
 
-One gap to settle before 1.0: the formula ignores the major component, so
-`1.0.0` computes to `0` and would go backwards. Extending it to
-`major × 10000 + minor × 100 + patch` (making 1.0.0 → `10000`, and 0.5.0 still
-`500`) keeps every existing number valid, but that decision belongs to whoever
-cuts the first major release.
+The original formula was `minor × 100 + patch`, which ignored the major
+component: `1.0.0` computed to `0`, below every 0.x build ever shipped, and
+Sparkle would have offered 0.7.0 to a 1.0.0 install as an update. The major
+term fixes that without renumbering anything — every published build keeps the
+number it shipped with, because `0 × 10000` is zero.
+`SoftwareUpdateTests.testBundleVersionMatchesShortVersionFormula` pins the
+current `Info.plist` to the formula, and
+`testFormulaIsMonotonicAcrossAMajorBump` pins the ordering it exists for.
 
 ### Code that reads these keys
 

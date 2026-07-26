@@ -404,17 +404,17 @@ class PreferencesWindowController: NSWindowController {
         approvalModePopup = NSPopUpButton()
         approvalModePopup.addItems(withTitles: [
             "Ask before changes",
-            "Auto-approve workspace edits",
-            "Auto (safety-reviewed)",
-            "Full access (no prompts)"
+            "Auto-approve edits inside the workspace",
+            "Auto inside the workspace (safety-reviewed)",
+            "Full access (no prompts, no sandbox)"
         ])
         approvalModePopup.target = self
         approvalModePopup.action = #selector(approvalModeChanged(_:))
 
         let modeHelp = Self.wrappingLabel(
-            "Controls Claude and Codex with matching intent. Ask gates edits; Workspace edits automatically inside the project; Auto sends broader actions to each agent's safety reviewer; Full access removes prompts and sandbox limits. Applies to the next agent launched, including in an open pane; running sessions keep their current permissions. Toggle workspace-edit auto with ⇧⌘A.",
+            "Controls Claude and Codex with matching intent. Ask gates edits. Both Auto modes auto-approve work inside the project directory only (Codex: workspace-write with on-request approval) — anything that reaches outside it still prompts, including Cortland's own pane-control socket at ~/.config/cortland/cortland.sock, which lives outside the workspace, so cortland-ctl can ask once per session. Safety-reviewed Auto routes those boundary requests to the agent's own reviewer instead of you. Full access removes the sandbox and the prompts with it. Applies to the next agent launched, including in an open pane; running sessions keep their current permissions. Toggle workspace-edit auto with ⇧⌘A.",
             fontSize: 11,
-            maxLines: 7,
+            maxLines: 12,
             preferredWidth: 420
         )
 

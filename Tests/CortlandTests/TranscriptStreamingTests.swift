@@ -69,4 +69,83 @@ final class TranscriptStreamingTests: XCTestCase {
         XCTAssertNil(PiTranscriptParser.aggregate(contentsOfFile: "/no/such/transcript.jsonl"))
         XCTAssertNil(CodexTranscriptParser.aggregate(contentsOfFile: "/no/such/transcript.jsonl"))
     }
+
+    // MARK: - Per-line ceiling
+
+    /// Chunked reading bounds the file but not a single line: a record with a
+    /// giant inlined payload grows the assembly buffer to that record's size.
+    /// With a ceiling, the excess is read and dropped instead of accumulated —
+    /// the caller gets at most `maxLineBytes`, the honest full byte count, and
+    /// the fact that it was cut.
+    func testLineCeilingTruncatesInsteadOfBuffering() throws {
+        let giant = String(repeating: "x", count: 300_000)
+        let path = try writeTemp("short line\n\(giant)\nlast\n")
+
+        var lines: [(text: String, consumed: Int, truncated: Bool)] = []
+        let opened = TranscriptLineReader.forEachLine(inFileAt: path, maxLineBytes: 1_000) { line, consumed, truncated in
+            lines.append((String(decoding: line, as: UTF8.self), consumed, truncated))
+            return true
+        }
+
+        XCTAssertTrue(opened)
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertEqual(lines[0].text, "short line")
+        XCTAssertFalse(lines[0].truncated)
+        XCTAssertEqual(lines[0].consumed, 11)   // 10 bytes + newline
+
+        XCTAssertTrue(lines[1].truncated)
+        XCTAssertEqual(lines[1].text.count, 1_000, "the buffer never exceeded the ceiling")
+        XCTAssertEqual(lines[1].consumed, 300_001, "but the full size on disk is still reported")
+
+        // Reading resumes cleanly at the next line rather than swallowing it.
+        XCTAssertEqual(lines[2].text, "last")
+        XCTAssertFalse(lines[2].truncated)
+    }
+
+    /// A file with no newline at all is one line, and the ceiling applies to it
+    /// the same way — otherwise "stream it" still means "load all of it".
+    func testLineCeilingAppliesToAFileWithNoNewline() throws {
+        let path = try writeTemp(String(repeating: "y", count: 250_000))
+
+        var received: [(count: Int, consumed: Int, truncated: Bool)] = []
+        TranscriptLineReader.forEachLine(inFileAt: path, maxLineBytes: 4_096) { line, consumed, truncated in
+            received.append((line.count, consumed, truncated))
+            return true
+        }
+
+        XCTAssertEqual(received.count, 1)
+        XCTAssertEqual(received[0].count, 4_096)
+        XCTAssertEqual(received[0].consumed, 250_000)
+        XCTAssertTrue(received[0].truncated)
+    }
+
+    /// The unbounded entry points the telemetry parsers use must be unchanged
+    /// by the ceiling's arrival: same lines, same order, including the one that
+    /// straddles a chunk boundary and the one with no trailing newline.
+    func testUnboundedReaderStillDeliversEveryLineWhole() throws {
+        let long = String(repeating: "z", count: 200_000)
+        let path = try writeTemp("one\n\(long)\nthree")
+
+        var lines: [String] = []
+        TranscriptLineReader.forEachLine(inFileAt: path) { lines.append(String(decoding: $0, as: UTF8.self)) }
+
+        XCTAssertEqual(lines.count, 3)
+        XCTAssertEqual(lines[0], "one")
+        XCTAssertEqual(lines[1].count, 200_000)
+        XCTAssertEqual(lines[2], "three")
+    }
+
+    /// Stopping early still stops early — the `while` variant is what bounds
+    /// Session Recall's 2,000-line title scan.
+    func testEarlyStopEndsReading() throws {
+        let path = try writeTemp("a\nb\nc\nd\n")
+
+        var seen: [String] = []
+        TranscriptLineReader.forEachLine(inFileAt: path) { line in
+            seen.append(String(decoding: line, as: UTF8.self))
+            return seen.count < 2
+        }
+
+        XCTAssertEqual(seen, ["a", "b"])
+    }
 }

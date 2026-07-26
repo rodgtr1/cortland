@@ -189,16 +189,22 @@ show_hidden_files = false
 # to the next agent started in a pane, not running ones.
 #   "ask"    — Claude prompts before edits; Codex runs read-only and asks before
 #              crossing that boundary.
-#   "auto"   — Claude: --permission-mode acceptEdits; Codex: --sandbox
-#              workspace-write --ask-for-approval on-request. File edits apply
-#              without a prompt (risky Bash like `git push` still prompts). Works
-#              even on corporate machines that disable bypass mode.
-#   "review" — safety-reviewed autonomy. Claude uses --permission-mode auto;
-#              Codex keeps workspace-write/on-request and routes eligible boundary
-#              requests to approvals_reviewer=auto_review. Legacy "claude-auto"
-#              is accepted as an alias.
-#   "bypass" — Claude: --permission-mode bypassPermissions; Codex: --sandbox
-#              danger-full-access --ask-for-approval never. No prompts at all.
+#   "auto"   — auto-approval INSIDE THE WORKSPACE, not everywhere. Claude:
+#              --permission-mode acceptEdits; Codex: --sandbox workspace-write
+#              --ask-for-approval on-request. File edits under the project
+#              directory apply without a prompt; crossing that boundary still
+#              asks (risky Bash like `git push`, and writes outside the
+#              workspace). Cortland's own pane-control socket lives at
+#              ~/.config/cortland/cortland.sock — outside the workspace — so
+#              `cortland-ctl` can still prompt once under this mode. Works even
+#              on corporate machines that disable bypass mode.
+#   "review" — the same workspace-only autonomy, safety-reviewed. Claude uses
+#              --permission-mode auto; Codex keeps workspace-write/on-request and
+#              routes eligible boundary requests to approvals_reviewer=auto_review
+#              instead of to you. Legacy "claude-auto" is accepted as an alias.
+#   "bypass" — full access, no workspace boundary. Claude: --permission-mode
+#              bypassPermissions; Codex: --sandbox danger-full-access
+#              --ask-for-approval never. No prompts at all, anywhere.
 #              Claude falls back to "acceptEdits" when a managed policy disables
 #              bypass mode; Codex downgrades itself under a requirements.toml policy.
 #   A managed/enterprise policy that pins defaultMode wins regardless, so on a
