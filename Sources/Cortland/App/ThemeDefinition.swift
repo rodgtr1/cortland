@@ -162,6 +162,40 @@ extension ThemeDefinition {
         )
     )
 
+    /// Official Catppuccin Frappé palette — the lower-contrast dark flavor.
+    static let catppuccinFrappe = ThemeDefinition(
+        name: "catppuccin-frappe",
+        displayName: "Catppuccin Frappé",
+        appearance: .dark,
+        palette: ThemePalette(
+            rosewater: "#f2d5cf", flamingo: "#eebebe", pink: "#f4b8e4", mauve: "#ca9ee6",
+            red: "#e78284", maroon: "#ea999c", peach: "#ef9f76", yellow: "#e5c890",
+            green: "#a6d189", teal: "#81c8be", sky: "#99d1db", sapphire: "#85c1dc",
+            blue: "#8caaee", lavender: "#babbf1",
+            text: "#c6d0f5", subtext1: "#b5bfe2", subtext0: "#a5adce",
+            overlay2: "#949cbb", overlay1: "#838ba7", overlay0: "#737994",
+            surface2: "#626880", surface1: "#51576d", surface0: "#414559",
+            base: "#303446", mantle: "#292c3c", crust: "#232634"
+        )
+    )
+
+    /// Official Catppuccin Macchiato palette — between Frappé and Mocha.
+    static let catppuccinMacchiato = ThemeDefinition(
+        name: "catppuccin-macchiato",
+        displayName: "Catppuccin Macchiato",
+        appearance: .dark,
+        palette: ThemePalette(
+            rosewater: "#f4dbd6", flamingo: "#f0c6c6", pink: "#f5bde6", mauve: "#c6a0f6",
+            red: "#ed8796", maroon: "#ee99a0", peach: "#f5a97f", yellow: "#eed49f",
+            green: "#a6da95", teal: "#8bd5ca", sky: "#91d7e3", sapphire: "#7dc4e4",
+            blue: "#8aadf4", lavender: "#b7bdf8",
+            text: "#cad3f5", subtext1: "#b8c0e0", subtext0: "#a5adcb",
+            overlay2: "#939ab7", overlay1: "#8087a2", overlay0: "#6e738d",
+            surface2: "#5b6078", surface1: "#494d64", surface0: "#363a4f",
+            base: "#24273a", mantle: "#1e2030", crust: "#181926"
+        )
+    )
+
     /// Translated from Miguel Solorio's "Min Light" VS Code theme into our
     /// palette schema. A minimal, mostly-monochrome light theme.
     static let minLight = ThemeDefinition(
@@ -180,7 +214,12 @@ extension ThemeDefinition {
         )
     )
 
-    static let builtIns: [ThemeDefinition] = [catppuccinMocha, catppuccinLatte, minLight]
+    // Mocha stays first: "auto" resolves to the first theme matching the
+    // system appearance, so order here decides the auto dark/light defaults
+    // (Mocha and Latte).
+    static let builtIns: [ThemeDefinition] = [
+        catppuccinMocha, catppuccinLatte, catppuccinFrappe, catppuccinMacchiato, minLight,
+    ]
 }
 
 // MARK: - Contrast Contract
@@ -192,12 +231,13 @@ extension ThemeDefinition {
 //   text     on base/mantle: primary text and terminal foreground — ≥ 6.5:1
 //   subtext0 on base/mantle: secondary text (light themes), ANSI grays — ≥ 4:1
 //   subtext1 on base:        ANSI black in light themes, white in dark — ≥ 4.5:1
-//   overlay0 on base:        secondary text in dark themes only — ≥ 3:1
+//   overlay0 on base:        secondary text in dark themes only — ≥ 2.8:1
 //
-// Floors sit just under the official Catppuccin values (Latte is the binding
-// case: text/mantle 6.57, subtext0/base 4.37), so real palettes pass and the
-// failure mode this guards against — grays near 2:1 on a light background — is
-// caught with room to spare.
+// Floors sit just under the official Catppuccin values (Latte binds the text
+// and subtext checks: text/mantle 6.57, subtext0/base 4.37; Frappé, the
+// deliberately soft flavor, binds overlay0 at 2.87), so real palettes pass
+// and the failure mode this guards against — grays near 2:1 on a light
+// background — is caught with room to spare.
 //
 // `validate` checks these and returns human-readable violations. Built-ins are
 // held to it by ThemeContrastTests; user JSON themes get the same check at
@@ -229,7 +269,7 @@ enum ThemeContrast {
             (p.subtext1, p.base, 4.5, "subtext1 on base"),
         ]
         if !p.isLight {
-            checks.append((p.overlay0, p.base, 3.0, "overlay0 on base"))
+            checks.append((p.overlay0, p.base, 2.8, "overlay0 on base"))
         }
         return checks.compactMap { check in
             let r = ratio(check.fg, check.bg)

@@ -108,6 +108,7 @@ public struct Config: Codable {
 
 [theme]
 # name: "catppuccin-mocha" (dark; also the fallback for unknown names),
+#   "catppuccin-frappe" (dark), "catppuccin-macchiato" (dark),
 #   "catppuccin-latte" (light), "min-light" (light), or "auto" to follow the
 #   macOS light/dark setting. Drop custom *.json palettes into
 #   ~/.config/cortland/themes/ and reference one by name here.
