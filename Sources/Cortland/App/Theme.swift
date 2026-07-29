@@ -44,15 +44,20 @@ protocol ThemeColors {
 
 /// Maps the ThemeColors roles onto a resolved palette. This is the same mapping
 /// the old CatppuccinTheme used, so role colors are unchanged for Mocha.
+/// De-emphasized text branches on appearance: overlay0 reads fine against dark
+/// surfaces but washes out against light ones (~2:1 in Latte), so light themes
+/// take those roles from the subtext ramp instead.
 struct PaletteThemeColors: ThemeColors {
     let p: ResolvedPalette
+
+    private var mutedText: NSColor { p.isLight ? p.subtext0 : p.overlay0 }
 
     var windowBackground: NSColor { p.mantle }
     var controlBackground: NSColor { p.crust }
     var textBackground: NSColor { p.base }
 
     var primaryText: NSColor { p.text }
-    var secondaryText: NSColor { p.overlay0 }
+    var secondaryText: NSColor { mutedText }
     var labelText: NSColor { p.text }
 
     var accent: NSColor { p.blue }
@@ -62,7 +67,7 @@ struct PaletteThemeColors: ThemeColors {
     var activeTabBackground: NSColor { p.surface0 }
     var inactiveTabBackground: NSColor { p.crust }
     var activeTabText: NSColor { p.text }
-    var inactiveTabText: NSColor { p.overlay0 }
+    var inactiveTabText: NSColor { mutedText }
     var activeTabBorder: NSColor { p.blue }
 
     var terminalBackground: NSColor { p.base }
@@ -101,8 +106,8 @@ class Theme {
         self.selection = ThemeDefinition.catppuccinMocha.name
         let initial = ThemeDefinition.catppuccinMocha
         self.definition = initial
-        self.palette = ResolvedPalette(initial.palette)
-        self.current = PaletteThemeColors(p: ResolvedPalette(initial.palette))
+        self.palette = ResolvedPalette(initial.palette, appearance: initial.appearance)
+        self.current = PaletteThemeColors(p: self.palette)
 
         DistributedNotificationCenter.default().addObserver(
             self,
@@ -126,7 +131,7 @@ class Theme {
     private func applyResolved() {
         let resolved = resolve(selection)
         definition = resolved
-        palette = ResolvedPalette(resolved.palette)
+        palette = ResolvedPalette(resolved.palette, appearance: resolved.appearance)
         current = PaletteThemeColors(p: palette)
         applyAppAppearance()
         NotificationCenter.default.post(name: .themeDidChange, object: nil)
@@ -183,6 +188,9 @@ class Theme {
             }
             // Don't let a user file shadow a built-in name.
             if ThemeDefinition.builtIns.contains(where: { $0.name == theme.name }) { continue }
+            for violation in ThemeContrast.validate(theme) {
+                Log.error("⚠️ Theme \(theme.name) fails contrast contract — \(violation)", category: "theme")
+            }
             themes.append(theme)
         }
         return themes
