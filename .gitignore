@@ -24,3 +24,6 @@ Package-*.swift
 test-*.swift
 
 .lavish/
+site/
+website/
+.openai/
