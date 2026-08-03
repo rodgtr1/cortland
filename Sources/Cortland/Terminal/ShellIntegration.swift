@@ -160,6 +160,10 @@ __cortland_precmd() {
         printf '\e]133;D;%s\e\\' "$exit_code"
     fi
     __cortland_report_cwd
+    # Reset kitty keyboard-protocol flags at every prompt. A TUI that dies
+    # without popping its flags (dropped SSH session, crashed agent CLI)
+    # would otherwise leave the pane emitting CSI-u sequences zsh can't read.
+    printf '\e[=0;1u'
     printf '\e]133;A\e\\'
 }
 
@@ -257,6 +261,8 @@ __cortland_precmd() {
         printf '\e]133;D;%s\e\\' "$exit_code"
     fi
     __cortland_report_cwd
+    # Reset kitty keyboard-protocol flags at every prompt (see zsh note above).
+    printf '\e[=0;1u'
     printf '\e]133;A\e\\'
     __CORTLAND_AT_PROMPT=1
 }
