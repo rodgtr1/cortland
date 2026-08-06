@@ -159,6 +159,9 @@ class MainWindowController: NSWindowController {
     /// mouse-up monitor) opens one tab, not two. Same URL inside the window is
     /// treated as the echo and dropped.
     private var lastOpenedURL: (url: URL, at: Date)?
+    /// The same guard for editor opens: one ⌘+click on a file path must not
+    /// stack two editor panes on the same file if both click paths react to it.
+    private var lastOpenedFile: (path: String, at: Date)?
     private let keyboardCommandRouter = KeyboardCommandRouter()
     /// Owns the ⇧⌘P palette and the keyboard-command dispatch table; drives the
     /// behaviors back through the `PaletteCommandHost` conformance below.
@@ -771,6 +774,10 @@ class MainWindowController: NSWindowController {
 
     @objc private func paneOpenFileRequested(_ notification: Notification) {
         guard let path = notification.userInfo?["path"] as? String else { return }
+        if let last = lastOpenedFile, last.path == path, Date().timeIntervalSince(last.at) < 0.7 {
+            return
+        }
+        lastOpenedFile = (path, Date())
         let line = notification.userInfo?["line"] as? Int
         openFileInEditor(URL(fileURLWithPath: path), atLine: line ?? 1, highlighting: nil)
     }

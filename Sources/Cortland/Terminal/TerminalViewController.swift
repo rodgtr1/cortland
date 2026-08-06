@@ -99,6 +99,13 @@ enum MouseReportClassifier {
     }
 }
 
+/// What Cortland does with the string under a clicked cell: open it as a file
+/// in the built-in editor, or hand it to the system opener as a URL.
+enum TerminalLinkTarget: Equatable {
+    case file(path: String, line: Int?)
+    case url(URL)
+}
+
 /// Turns the string SwiftTerm reports under a clicked cell into a URL worth
 /// handing to the browser.
 ///
@@ -153,6 +160,107 @@ enum TerminalLinkNormalizer {
         guard let tld = labels.last, tld.count >= 2, tld.count <= 24,
               tld.allSatisfy({ $0.isASCII && $0.isLetter }) else { return false }
         return true
+    }
+
+    /// The one decision behind every clicked link in a terminal pane: is this
+    /// text a file Cortland should open in the editor, a URL for the system
+    /// opener, or nothing at all?
+    ///
+    /// Files win over URLs — `example.com/notes.md` is a link, but if a file by
+    /// that name sits in the pane's cwd the click meant the file. "Nothing at
+    /// all" matters as much as the other two: a schemeless string that isn't a
+    /// file must never reach `NSWorkspace`, which answers it with -50 and a
+    /// Finder alert ("The application can't be opened").
+    ///
+    /// `fileExists` is injected so the decision stays pure and testable.
+    nonisolated static func target(
+        for raw: String,
+        relativeTo cwd: String,
+        fileExists: (String) -> Bool
+    ) -> TerminalLinkTarget? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let file = fileTarget(from: trimmed, relativeTo: cwd, fileExists: fileExists) {
+            return .file(path: file.path, line: file.line)
+        }
+        if let url = openableURL(from: trimmed) {
+            return .url(url)
+        }
+        // Schemes Cortland has no opinion about (mailto:, ssh://) still belong to
+        // the system opener — they're the reason SwiftTerm's handler existed.
+        if let url = systemSchemeURL(trimmed) {
+            return .url(url)
+        }
+        return nil
+    }
+
+    /// A path on disk, with the `:line[:column]` suffix compilers and agents
+    /// print stripped off. The unstripped form is tried first, so a file whose
+    /// name really does end in `:12` still opens.
+    nonisolated private static func fileTarget(
+        from raw: String,
+        relativeTo cwd: String,
+        fileExists: (String) -> Bool
+    ) -> (path: String, line: Int?)? {
+        var candidate = raw
+        if candidate.lowercased().hasPrefix("file://") {
+            // Emitters hand these over unencoded as often as not, so the scheme
+            // and authority come off by hand rather than through URL parsing.
+            let afterScheme = candidate.dropFirst("file://".count)
+            guard let firstSlash = afterScheme.firstIndex(of: "/") else { return nil }
+            let path = String(afterScheme[firstSlash...])
+            candidate = path.removingPercentEncoding ?? path
+        }
+
+        if let resolved = resolvedPath(candidate, relativeTo: cwd), fileExists(resolved) {
+            return (resolved, nil)
+        }
+
+        // Peel at most two trailing `:<digits>` groups — `file.swift:120:8`.
+        var stem = candidate
+        var numbers: [Int] = []
+        while numbers.count < 2, let colon = stem.lastIndex(of: ":") {
+            let tail = stem[stem.index(after: colon)...]
+            guard !tail.isEmpty, tail.allSatisfy(\.isNumber), let value = Int(tail) else { return nil }
+            stem = String(stem[..<colon])
+            numbers.insert(value, at: 0)
+            if let resolved = resolvedPath(stem, relativeTo: cwd), fileExists(resolved) {
+                return (resolved, numbers.first)
+            }
+        }
+        return nil
+    }
+
+    nonisolated private static func resolvedPath(_ candidate: String, relativeTo cwd: String) -> String? {
+        guard !candidate.isEmpty else { return nil }
+        let expanded: String
+        if candidate.hasPrefix("~") {
+            expanded = NSString(string: candidate).expandingTildeInPath
+        } else if candidate.hasPrefix("/") {
+            expanded = candidate
+        } else {
+            guard !cwd.isEmpty else { return nil }
+            expanded = URL(fileURLWithPath: cwd).appendingPathComponent(candidate).path
+        }
+        return URL(fileURLWithPath: expanded).standardizedFileURL.path
+    }
+
+    /// A link with a real scheme that isn't ours to interpret. The scheme test
+    /// excludes `.` deliberately: `example.com:8080/status` would otherwise read
+    /// as a scheme, and requiring `//` (or mailto:/tel:) keeps a bare
+    /// `note:something` out of LaunchServices. `file:` is refused — a file URL
+    /// that got this far names something that isn't on disk.
+    nonisolated private static func systemSchemeURL(_ raw: String) -> URL? {
+        guard let colon = raw.firstIndex(of: ":") else { return nil }
+        let scheme = raw[..<colon].lowercased()
+        let rest = raw[raw.index(after: colon)...]
+        guard let first = scheme.first, first.isASCII, first.isLetter,
+              scheme.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "+" || $0 == "-") }),
+              scheme != "file"
+        else { return nil }
+        guard rest.hasPrefix("//") || scheme == "mailto" || scheme == "tel" else { return nil }
+        return URL(string: raw)
     }
 }
 
@@ -294,6 +402,9 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
 class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate {
     weak var delegate: TerminalViewControllerDelegate?
     private var terminalView: LocalProcessTerminalView!
+    /// Owns link activation on the terminal view's behalf. The view holds it
+    /// weakly (`terminalDelegate`), so the controller keeps it alive.
+    private var linkDelegateProxy: TerminalLinkDelegateProxy?
     private var config: Config
     /// The four terminal inset constraints paired with their sign, kept so
     /// applyConfig can re-apply window.padding live instead of only at setup.
@@ -518,28 +629,65 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         if hasCommand, handleCommandClick(col: col, row: row) {
             return nil
         }
-        if let url = urlUnderClick(col: col, row: row) {
-            // Only a deliberate ⌘+click opens the link; a plain click is
-            // swallowed so the link never opens on its own.
+        if let target = linkTargetUnderClick(col: col, row: row) {
+            // Only a deliberate ⌘+click opens anything.
             if hasCommand {
-                delegate?.terminalRequestsOpenURL(self, url: url)
+                activate(target)
+                return nil
             }
-            return nil
+            // A plain click is swallowed over a URL so the link can never open on
+            // its own, but passes through over a file path: path-like text is
+            // everywhere in a TUI, and its clicks belong to the app inside.
+            if case .url = target { return nil }
+            return event
         }
         // Not on a link/file: let SwiftTerm handle the click normally.
         return event
     }
 
-    private func urlUnderClick(col: Int, row: Int) -> URL? {
+    private func linkTargetUnderClick(col: Int, row: Int) -> TerminalLinkTarget? {
         // Ask SwiftTerm for the link at this cell: it spans wrapped rows (so a
-        // URL broken across lines is returned whole, not just the clicked
+        // path or URL broken across lines is returned whole, not just the clicked
         // fragment) and understands OSC 8 hyperlinks.
         guard let candidate = terminalView.getTerminal().link(
             at: .screen(Position(col: col, row: row)),
             mode: .explicitAndImplicit
         ), !candidate.isEmpty else { return nil }
 
-        return TerminalLinkNormalizer.openableURL(from: candidate)
+        return linkTarget(for: candidate)
+    }
+
+    /// Every link activation in a terminal pane funnels through here: the
+    /// ⌘+click handler above, and SwiftTerm's own opener via
+    /// `TerminalLinkDelegateProxy`. Nothing else may act on a clicked string —
+    /// SwiftTerm's default handler passes raw terminal text to `NSWorkspace`,
+    /// which answers a schemeless path with -50 and a Finder alert.
+    func activateLink(_ raw: String) {
+        guard let target = linkTarget(for: raw) else { return }
+        activate(target)
+    }
+
+    private func linkTarget(for raw: String) -> TerminalLinkTarget? {
+        TerminalLinkNormalizer.target(
+            for: raw,
+            relativeTo: currentCWD,
+            fileExists: Self.isOpenableFile
+        )
+    }
+
+    private func activate(_ target: TerminalLinkTarget) {
+        switch target {
+        case .file(let path, let line):
+            delegate?.terminalRequestsOpenFile(self, path: path, line: line)
+        case .url(let url):
+            delegate?.terminalRequestsOpenURL(self, url: url)
+        }
+    }
+
+    nonisolated private static func isOpenableFile(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+        return exists && !isDirectory.boolValue
     }
 
     /// SwiftTerm's scrollWheel only ever scrolls the scrollback buffer, which
@@ -675,6 +823,14 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
         // Set delegate to receive process events
         terminalView.processDelegate = self
+
+        // Take the view's own TerminalViewDelegate slot so link activation can't
+        // fall through to SwiftTerm's NSWorkspace default (see the proxy).
+        let linkProxy = TerminalLinkDelegateProxy(view: terminalView) { [weak self] link in
+            self?.activateLink(link)
+        }
+        terminalView.terminalDelegate = linkProxy
+        linkDelegateProxy = linkProxy
 
         view.addSubview(terminalView)
 
@@ -992,20 +1148,6 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
         // Don't update the window title - we use tab titles instead
         // The window title stays as "Cortland"
-    }
-
-    /// SwiftTerm's own link activation. On the normal screen its `mouseDown`
-    /// runs a selection tracking loop that pulls the release straight out of the
-    /// event queue, so that release never reaches our shared mouse-up monitor —
-    /// SwiftTerm handles the link click itself and calls this. Left to the
-    /// library default it would `NSWorkspace.open` the raw string, which double-
-    /// opens alongside the monitor when both do see the release, and fails with
-    /// -50 on the schemeless links the implicit matcher returns. Routing it
-    /// through the same normalizer and open path gives link opening one owner;
-    /// the dedupe downstream absorbs the case where both paths fire.
-    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
-        guard let url = TerminalLinkNormalizer.openableURL(from: link) else { return }
-        delegate?.terminalRequestsOpenURL(self, url: url)
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
