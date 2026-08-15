@@ -282,17 +282,22 @@ final class SessionsPanel: FilterableListPanel {
         // "exactly a screenful" from "more than a screenful".
         let matchLimit = displayLimit + 1
 
-        let work = DispatchWorkItem { [weak self] in
-            let ordered = SessionQuery.run(records, agent: agent)
-            let results = SessionDeepSearch.search(query, in: ordered, index: index, limit: matchLimit)
-            DispatchQueue.main.async {
-                guard let self, generation == self.deepSearchGeneration else { return }
-                self.applyDeepResults(results, index: index)
+        // The debounce work item runs on the main queue: the module defaults to
+        // MainActor isolation, so this closure is @MainActor and executing it on
+        // a global queue trips the runtime's isolation assertion (SIGTRAP). The
+        // hop off-main happens through the @Sendable `async` overload instead.
+        let work = DispatchWorkItem {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let ordered = SessionQuery.run(records, agent: agent)
+                let results = SessionDeepSearch.search(query, in: ordered, index: index, limit: matchLimit)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, generation == self.deepSearchGeneration else { return }
+                    self.applyDeepResults(results, index: index)
+                }
             }
         }
         deepSearchWorkItem = work
-        DispatchQueue.global(qos: .userInitiated)
-            .asyncAfter(deadline: .now() + Self.deepSearchDebounce, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.deepSearchDebounce, execute: work)
     }
 
     /// Install a completed deep search: rows, snippets, and a footer that says
