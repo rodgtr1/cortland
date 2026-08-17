@@ -636,11 +636,11 @@ class ClickableContainerView: NSView, NSGestureRecognizerDelegate {
     }
 
     // The recognizer spans the whole container, so it also sees clicks that
-    // land on the pane's close button. It recognizes on mouse-up and AppKit
-    // then withholds that mouse-up from the button, so the X highlights but
-    // its action never fires — the click only re-activates the pane. Bow out
-    // when the click starts on the button; activation still fires for clicks
-    // anywhere else, and closing a pane activates it first anyway.
+    // land on any control inside the pane (the close button, the diff view's
+    // Open File and conflict buttons). It recognizes on mouse-up and AppKit
+    // then withholds that mouse-up from the control, so a button highlights
+    // but its action never fires. Bow out when the click starts on a control,
+    // activating the pane directly since the recognizer won't fire for it.
     func gestureRecognizer(
         _ gestureRecognizer: NSGestureRecognizer,
         shouldAttemptToRecognizeWith event: NSEvent
@@ -648,7 +648,10 @@ class ClickableContainerView: NSView, NSGestureRecognizerDelegate {
         guard let superview else { return true }
         var view = hitTest(superview.convert(event.locationInWindow, from: nil))
         while let current = view, current !== self {
-            if current is PaneCloseButton { return false }
+            if current is NSControl {
+                onMouseDown?()
+                return false
+            }
             view = current.superview
         }
         return true
