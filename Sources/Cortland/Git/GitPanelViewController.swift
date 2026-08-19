@@ -587,13 +587,74 @@ class GitPanelViewController: NSViewController {
         }
     }
 
+    /// Ceiling on the git-output accessory view; past this the text scrolls
+    /// rather than growing the alert taller than the screen (a pull diffstat
+    /// runs to hundreds of lines, and NSAlert's own text never scrolls).
+    private let operationOutputMaxHeight: CGFloat = 240
+    private let operationOutputWidth: CGFloat = 420
+
     private func showGitOperationResult(title: String, success: Bool, message: String?) {
         let alert = NSAlert()
         alert.messageText = success ? "\(title) Successful" : "\(title) Failed"
-        alert.informativeText = message ?? (success ? "Operation completed successfully" : "Unknown error occurred")
         alert.alertStyle = success ? .informational : .warning
+
+        let output = (message ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if output.isEmpty {
+            alert.informativeText = success ? "Operation completed successfully" : "Unknown error occurred"
+        } else {
+            let lines = output.components(separatedBy: .newlines)
+            if lines.count <= 4 {
+                alert.informativeText = output
+            } else {
+                alert.informativeText = gitOutputSummary(lines: lines)
+                alert.accessoryView = gitOutputAccessoryView(text: output)
+            }
+        }
+
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    /// One-line gist for the alert body so the detail can live in the scroller:
+    /// the first line, plus git's "N files changed" tally when it emitted one.
+    private func gitOutputSummary(lines: [String]) -> String {
+        let first = lines.first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) ?? ""
+        let tally = lines.last(where: { $0.contains("file changed") || $0.contains("files changed") })?
+            .trimmingCharacters(in: .whitespaces)
+        if let tally, tally != first {
+            return "\(first)\n\(tally)"
+        }
+        return first
+    }
+
+    private func gitOutputAccessoryView(text: String) -> NSView {
+        let textView = NSTextView()
+        textView.string = text
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.textContainerInset = NSSize(width: 4, height: 4)
+        textView.textContainer?.containerSize = NSSize(width: operationOutputWidth, height: .greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
+        textView.frame = NSRect(x: 0, y: 0, width: operationOutputWidth, height: operationOutputMaxHeight)
+
+        // Lay out once so short-but-multiline output gets a snug box instead of
+        // always claiming the full ceiling.
+        var contentHeight = operationOutputMaxHeight
+        if let layoutManager = textView.layoutManager, let container = textView.textContainer {
+            layoutManager.ensureLayout(for: container)
+            contentHeight = layoutManager.usedRect(for: container).height
+        }
+        let height = min(max(contentHeight + 8, 60), operationOutputMaxHeight)
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: operationOutputWidth, height: height))
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = false
+        scrollView.borderType = .bezelBorder
+        scrollView.documentView = textView
+        return scrollView
     }
 
     @objc private func contextMenuOpenInEditor() {
