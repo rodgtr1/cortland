@@ -48,6 +48,18 @@ final class TabControllerTests: XCTestCase {
         XCTAssertEqual(tc.activeTab?.isActive, true)
     }
 
+    func testCreateNewTabInsertsAfterActiveTab() {
+        createTabs(3)
+        tc.switchToTab(index: 0)
+        let firstID = tc.tabs[0].id
+        let secondID = tc.tabs[1].id
+        tc.createNewTab()
+        XCTAssertEqual(tc.activeTabIndex, 1, "the new tab opens just after the tab it was created from")
+        XCTAssertEqual(tc.tabs[0].id, firstID)
+        XCTAssertEqual(tc.tabs[2].id, secondID, "later tabs shift right instead of the new tab landing at the end")
+        XCTAssertEqual(tc.activeTab?.isActive, true)
+    }
+
     // MARK: - switch
 
     func testSwitchToTabMovesActiveFlagAndController() {

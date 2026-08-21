@@ -87,9 +87,11 @@ final class TabController: NSObject {
     }
 
     /// Shared plumbing for adding a fully-built tab: detaches the current tab,
-    /// appends and activates the new one, and installs its split controller
-    /// into the content view. Used by new-tab, session restore, and single-pane
-    /// (diff/changes) tabs so they can't drift apart.
+    /// inserts the new one just after the active tab, activates it, and installs
+    /// its split controller into the content view. Used by new-tab, session
+    /// restore, and single-pane (diff/changes) tabs so they can't drift apart.
+    /// (Restore installs tabs one at a time with each becoming active, so
+    /// insert-after-active preserves the saved order there.)
     ///
     /// Returns false when the tab cap refuses the tab, so callers can surface
     /// the failure (IPC must not report ok on a tab that never opened).
@@ -115,8 +117,9 @@ final class TabController: NSObject {
         }
 
         tab.isActive = true
-        tabs.append(tab)
-        activeTabIndex = tabs.count - 1
+        let insertIndex = tabs.isEmpty ? 0 : min(activeTabIndex + 1, tabs.count)
+        tabs.insert(tab, at: insertIndex)
+        activeTabIndex = insertIndex
 
         let paneSplitController = PaneSplitController(config: config)
         paneSplitController.delegate = self
