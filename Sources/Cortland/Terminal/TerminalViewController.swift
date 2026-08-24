@@ -397,6 +397,76 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
         }
         super.send(source: source, data: data)
     }
+
+    // MARK: - Dropped files and images
+
+    /// Neither SwiftTerm nor NSView registers for dragged types, so without
+    /// this a file dragged onto a pane only gets the not-allowed cursor.
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes(Self.acceptedDragTypes)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes(Self.acceptedDragTypes)
+    }
+
+    /// `NSImage.imageTypes` is exactly what `NSImage(pasteboard:)` can read, so
+    /// registering it keeps the accepted set and the decode path from drifting.
+    /// PNG and TIFF are named too: they are the two the image drop relies on.
+    private static var acceptedDragTypes: [NSPasteboard.PasteboardType] {
+        [.fileURL, .png, .tiff] + NSImage.imageTypes.map(NSPasteboard.PasteboardType.init(rawValue:))
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        Self.dragOperation(for: sender.draggingPasteboard)
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        Self.dragOperation(for: sender.draggingPasteboard)
+    }
+
+    private static func dragOperation(for pasteboard: NSPasteboard) -> NSDragOperation {
+        if !fileURLs(on: pasteboard).isEmpty { return .copy }
+        return pasteboard.canReadObject(forClasses: [NSImage.self]) ? .copy : []
+    }
+
+    /// Types the dropped paths into *this* pane's PTY, whichever pane holds
+    /// keyboard focus, the way iTerm2 and Terminal.app do. Raw image data (an
+    /// image dragged out of a browser has no file behind it) is written to the
+    /// same temp store the Cmd+V image paste uses, and its path typed instead.
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let pasteboard = sender.draggingPasteboard
+
+        let urls = Self.fileURLs(on: pasteboard)
+        if !urls.isEmpty {
+            send(txt: TerminalDropPaths.typedText(for: urls.map(\.path)))
+            return true
+        }
+
+        guard let image = NSImage(pasteboard: pasteboard),
+              let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            return false
+        }
+        do {
+            let url = try ImagePasteStore.store(png: png)
+            send(txt: TerminalDropPaths.typedText(for: [url.path]))
+            return true
+        } catch {
+            Log.debug("🖼️ Failed to write dropped image: \(error)", category: "terminal")
+            return false
+        }
+    }
+
+    /// File URLs only: a drag out of a browser also carries a `public.url`,
+    /// and typing an http address as a path would be nonsense.
+    private static func fileURLs(on pasteboard: NSPasteboard) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        return pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
+    }
 }
 
 class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate {
