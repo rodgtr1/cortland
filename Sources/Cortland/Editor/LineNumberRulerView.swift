@@ -143,6 +143,17 @@ class LineNumberRulerView: NSRulerView {
             .foregroundColor: textColor
         ]
 
+        // Line fragment rects are in text-container coordinates, which sit at
+        // the text view's origin plus its inset. The ruler's coordinate space
+        // starts at the top of the *visible* region, so subtract the scroll
+        // offset; otherwise every number past the first screenful is drawn
+        // below the ruler's bounds and vanishes once the user scrolls.
+        let containerOrigin = textView.textContainerOrigin
+        let scrollOffsetY = textView.visibleRect.minY
+        func rulerY(for fragmentRect: NSRect) -> CGFloat {
+            fragmentRect.minY + containerOrigin.y - scrollOffsetY
+        }
+
         var lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphRange.location, effectiveRange: nil)
         charIndex = characterRange.location
 
@@ -152,7 +163,7 @@ class LineNumberRulerView: NSRulerView {
 
             let drawRect = NSRect(
                 x: bounds.width - lineNumberSize.width - 8,
-                y: lineRect.minY,
+                y: rulerY(for: lineRect),
                 width: lineNumberSize.width,
                 height: lineNumberSize.height
             )
