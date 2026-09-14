@@ -38,6 +38,8 @@ protocol PaletteCommandHost: AnyObject {
     func showSessions()
     func showPreferences()
     func openConfigFile()
+    /// Hands the active tab's agent off to a fresh session of the same CLI.
+    func continueActiveTabInFreshSession()
 
     // Extras
     /// Whether the optional arcade module is enabled in config ([arcade]
@@ -128,6 +130,12 @@ final class PaletteCommandRegistry {
         actions.append(
             PaletteAction(title: "Edit Config File", subtitle: "config.toml", symbolName: "doc.badge.gearshape") { [weak self] in
                 self?.host?.openConfigFile()
+            }
+        )
+
+        actions.append(
+            PaletteAction(title: "Continue in Fresh Session", subtitle: "Hand off to a new agent session", symbolName: "arrow.uturn.forward.circle") { [weak self] in
+                self?.host?.continueActiveTabInFreshSession()
             }
         )
 

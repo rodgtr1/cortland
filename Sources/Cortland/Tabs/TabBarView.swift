@@ -5,6 +5,7 @@ protocol TabBarDelegate: AnyObject {
     func tabBar(_ tabBar: TabBarView, didCloseTab index: Int)
     func tabBar(_ tabBar: TabBarView, didMoveTab fromIndex: Int, to toIndex: Int)
     func tabBar(_ tabBar: TabBarView, didRenameTab index: Int, to title: String?)
+    func tabBar(_ tabBar: TabBarView, didRequestFreshSessionForTab index: Int)
 }
 
 /// Tab buttons forward mouse-downs to the tab bar so it can distinguish a
@@ -563,6 +564,11 @@ class TabBarView: NSView {
         renameItem.tag = button.tag
         menu.addItem(renameItem)
 
+        let freshSessionItem = NSMenuItem(title: "Continue in Fresh Session…", action: #selector(freshSessionMenuClicked(_:)), keyEquivalent: "")
+        freshSessionItem.target = self
+        freshSessionItem.tag = button.tag
+        menu.addItem(freshSessionItem)
+
         let closeItem = NSMenuItem(title: "Close Tab", action: #selector(closeTabMenuClicked(_:)), keyEquivalent: "")
         closeItem.target = self
         closeItem.tag = button.tag
@@ -590,6 +596,10 @@ class TabBarView: NSView {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         delegate?.tabBar(self, didRenameTab: index, to: name.isEmpty ? nil : name)
+    }
+
+    @objc private func freshSessionMenuClicked(_ sender: NSMenuItem) {
+        delegate?.tabBar(self, didRequestFreshSessionForTab: sender.tag)
     }
 
     @objc private func closeTabMenuClicked(_ sender: NSMenuItem) {

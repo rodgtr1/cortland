@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New features
+
+- **Continue in Fresh Session**: a new entry in the tab right-click menu and the command palette hands an agent's work from a nearly full session to a brand-new one without copying anything. Cortland asks the agent in the tab's active pane (once it has finished its current turn) to write a handoff document (goal, decisions, progress, next steps, the files that matter) to `.cortland/handoffs/` inside its working directory, waits for the agent to go busy and then finish, and opens a new tab in the same directory running the same CLI (Claude Code or Codex, told apart by the model the pane reports) with an initial prompt to read the file and continue. The original tab stays open for reference. The wait never blocks the window: if the agent stops to ask a question, its pane is focused and nothing opens; if it never starts, runs past ten minutes, or finishes without writing the file, an alert says so and the original session is untouched. The handoff prompt is configurable with `prompt` under a new optional `[handoff]` section, where `{path}` stands for the file path.
+
 ## 0.7.1 (2026-07-25)
 
 ### Fixes

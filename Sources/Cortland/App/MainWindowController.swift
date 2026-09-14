@@ -173,6 +173,7 @@ class MainWindowController: NSWindowController {
     private var sessionSaveTimer: Timer?
     /// Owns IPC command translation and the hook diff-approval queue.
     private var automationCoordinator: AutomationCoordinator!
+    private lazy var sessionHandoffCoordinator = SessionHandoffCoordinator(host: self)
     /// Mirrors pane attention events to native macOS notifications (opt-in).
     private var notificationCoordinator: NotificationCoordinator!
     /// Per-session "auto-approve agent edits" toggle (menu-driven). Layered on
@@ -979,6 +980,11 @@ extension MainWindowController: TabBarDelegate {
         tab.customTitle = title
         updateTabBar()
     }
+
+    func tabBar(_ tabBar: TabBarView, didRequestFreshSessionForTab index: Int) {
+        guard let tab = tabs[safe: index] else { return }
+        sessionHandoffCoordinator.continueInFreshSession(tab: tab)
+    }
 }
 
 extension MainWindowController: ActivityBarDelegate {
@@ -1699,6 +1705,34 @@ extension MainWindowController: PaletteCommandHost {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
             _ = terminal.send(key: "enter")
         }
+    }
+
+    func continueActiveTabInFreshSession() {
+        guard let tab = tabs[safe: activeTabIndex] else { return }
+        sessionHandoffCoordinator.continueInFreshSession(tab: tab)
+    }
+}
+
+// MARK: - SessionHandoffHost
+extension MainWindowController: SessionHandoffHost {
+    var handoffWindow: NSWindow? { window }
+    var handoffTabs: [TabModel] { tabs }
+    var handoffConfig: HandoffConfig? { config.handoff }
+
+    func handoffTelemetryModel(forPane paneID: UUID) -> String? {
+        automationCoordinator?.paneTelemetry[paneID]?.model
+    }
+
+    func handoffOpenTab(workingDirectory: String, command: [String], customTitle: String?) {
+        guard createNewTab(workingDirectory: workingDirectory, command: command) else { return }
+        if let customTitle, let tab = tabs[safe: activeTabIndex] {
+            tab.customTitle = customTitle
+            updateTabBar()
+        }
+    }
+
+    func handoffFocusPane(id: UUID) {
+        focusPaneFromNotification(paneID: id)
     }
 }
 

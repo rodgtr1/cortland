@@ -15,6 +15,7 @@ public struct Config: Codable {
     public var telemetry: TelemetryConfig?  // Make optional for backwards compatibility
     public var notifications: NotificationsConfig?  // Make optional for backwards compatibility
     public var arcade: ArcadeConfig?  // Make optional for backwards compatibility
+    public var handoff: HandoffConfig?  // Make optional for backwards compatibility
 
     /// True when this value is the defaults returned because the on-disk file
     /// existed but could not be read or parsed — as opposed to a legitimate
@@ -26,7 +27,7 @@ public struct Config: Codable {
     // Only the real config sections are (de)coded; `loadDidFail` is transient
     // and its default keeps synthesized Codable happy without persisting it.
     enum CodingKeys: String, CodingKey {
-        case theme, font, cursor, window, behavior, shell, diff, editor, approval, telemetry, notifications, arcade
+        case theme, font, cursor, window, behavior, shell, diff, editor, approval, telemetry, notifications, arcade, handoff
     }
 
     public init() {
@@ -42,6 +43,7 @@ public struct Config: Codable {
         self.telemetry = TelemetryConfig()
         self.notifications = NotificationsConfig()
         self.arcade = ArcadeConfig()
+        self.handoff = HandoffConfig()
     }
 
     public static func load(from path: String = "~/.config/cortland/config.toml") -> Config {
@@ -279,6 +281,17 @@ background_grace_seconds = 0
 # appears. Also toggleable in Preferences ▸ Extras. Game state and high
 # scores persist across launches in ~/.config/cortland/arcade.json.
 enabled = false
+
+# [handoff]
+# "Continue in Fresh Session" (tab right-click menu or the command palette)
+# asks the agent in a pane to write a handoff file, then opens a new tab with a
+# fresh session of the same CLI that reads it and carries on. The file goes to
+# .cortland/handoffs/ inside the pane's working directory.
+#
+# prompt: what the old agent is asked to do. {path} is replaced with the
+#   handoff file's path; without the token, a sentence naming the path is
+#   appended. Leave unset to use the built-in prompt.
+# prompt = "Summarize this session for a new agent and write it to {path}, then stop."
 """
 
         // Create directory if needed
@@ -721,5 +734,22 @@ nonisolated public struct ArcadeConfig: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+    }
+}
+
+// MARK: - Handoff Configuration
+/// Settings for "Continue in Fresh Session" (App/SessionHandoffCoordinator).
+/// Optional in `Config` so files written before the section existed still
+/// parse; an absent `prompt` keeps the built-in handoff prompt.
+nonisolated public struct HandoffConfig: Codable, Sendable {
+    public var prompt: String?
+
+    public init(prompt: String? = nil) {
+        self.prompt = prompt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.prompt = try container.decodeIfPresent(String.self, forKey: .prompt)
     }
 }

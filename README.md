@@ -75,6 +75,16 @@ database and nothing leaves the machine: it reads the agents' own session
 logs behind an incremental cache, and Codex titles come from a local Ollama
 model when one is installed.
 
+**Continue in Fresh Session**: when an agent's context is nearly full,
+right-click its tab (or run "Continue in Fresh Session" from the command
+palette) and Cortland asks the agent to write a handoff file to
+`.cortland/handoffs/` in the pane's working directory, waits for it to finish,
+then opens a new tab running a fresh Claude Code or Codex session that reads
+the file and picks up from its next steps. The original tab stays open. If the
+agent stops to ask you something instead, Cortland focuses its pane and opens
+nothing. Set `prompt` under `[handoff]` in `config.toml` to change what the
+agent is asked to write; a `{path}` token in it becomes the file path.
+
 **Editor**: a built-in editor with tree-sitter syntax highlighting (Swift,
 Go, Rust, Python, TypeScript/JavaScript/JSX/TSX, Markdown), or set
 `file_open_mode = "terminal"` to open files in your own `$EDITOR`/nvim
