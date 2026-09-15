@@ -7,6 +7,25 @@ enum GitDiffKind: Equatable, Sendable {
     case againstDefaultBranch
 }
 
+/// The commit message box. ⌘↩ commits, but only while this view is the
+/// window's first responder — key equivalents are offered to every view in the
+/// window regardless of focus, so the check is what keeps a ⌘↩ typed into a
+/// terminal pane from committing whatever draft is sitting here.
+final class CommitMessageTextView: NSTextView {
+    var onCommandReturn: (() -> Void)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // 36 = Return, 76 = keypad Enter.
+        if flags == .command, event.keyCode == 36 || event.keyCode == 76,
+           window?.firstResponder === self, let onCommandReturn {
+            onCommandReturn()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
 protocol GitPanelDelegate: AnyObject {
     func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String, kind: GitDiffKind)
     func gitPanel(_ panel: GitPanelViewController, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
@@ -361,7 +380,12 @@ class GitPanelViewController: NSViewController {
         commitScrollView.borderType = .lineBorder
         commitScrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        commitMessageTextView = NSTextView()
+        let messageTextView = CommitMessageTextView()
+        messageTextView.onCommandReturn = { [weak self] in
+            guard let self, self.commitButton.isEnabled else { return }
+            self.commitClicked()
+        }
+        commitMessageTextView = messageTextView
         commitMessageTextView.isEditable = true
         commitMessageTextView.isRichText = false
         commitMessageTextView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -374,8 +398,10 @@ class GitPanelViewController: NSViewController {
 
         commitButton = NSButton(title: "Commit", target: self, action: #selector(commitClicked))
         commitButton.bezelStyle = .rounded
-        commitButton.keyEquivalent = "\r"
-        commitButton.keyEquivalentModifierMask = [.command]
+        // No window key equivalent here: a Return-keyed button becomes the
+        // window's default button and AppKit routes ⌘↩ to it from any focused
+        // view, so a drafted message could be committed from a terminal pane.
+        // ⌘↩ is handled by CommitMessageTextView, only while it has focus.
         commitButton.isEnabled = false
         commitButton.translatesAutoresizingMaskIntoConstraints = false
         commitContainer.addSubview(commitButton)
