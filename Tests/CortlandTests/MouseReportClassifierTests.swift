@@ -1,4 +1,5 @@
 import XCTest
+import SwiftTerm
 @testable import Cortland
 
 /// Verifies the byte-level classification that decides which mouse reports are
@@ -90,5 +91,100 @@ final class MouseReportClassifierTests: XCTestCase {
         let release: [UInt8] = [0x1B, 0x5B, 0x4D, 32 + 3, 33, 33]
         XCTAssertEqual(MouseReportClassifier.buttonTransition(press[...]), .press)
         XCTAssertEqual(MouseReportClassifier.buttonTransition(release[...]), .release)
+    }
+}
+
+/// The press-time decision that lets a drag select text over an app that has
+/// mouse reporting on. Getting it wrong either makes Codex output impossible
+/// to copy again or steals plain drags from vim and lazygit.
+final class SelectionGestureTests: XCTestCase {
+    func testPlainDragSelectsOnNormalScreen() {
+        XCTAssertTrue(SelectionGesture.bypassesMouseReporting(shiftHeld: false, isAlternateScreen: false))
+    }
+
+    func testPlainDragGoesToAlternateScreenApp() {
+        XCTAssertFalse(SelectionGesture.bypassesMouseReporting(shiftHeld: false, isAlternateScreen: true))
+    }
+
+    func testShiftDragSelectsEverywhere() {
+        XCTAssertTrue(SelectionGesture.bypassesMouseReporting(shiftHeld: true, isAlternateScreen: true))
+        XCTAssertTrue(SelectionGesture.bypassesMouseReporting(shiftHeld: true, isAlternateScreen: false))
+    }
+}
+
+/// Drives a real SwiftTerm terminal to pin down when a scroll invalidates a
+/// selection anchored to buffer indices: never while the scrollback still has
+/// room, and on every scroll once it is full and trimming.
+final class SelectionScrollInvalidationTests: XCTestCase {
+    private final class Delegate: TerminalDelegate {
+        var scrolls = 0
+        var movedOnScroll: [Bool] = []
+        var terminal: Terminal?
+        func send(source: Terminal, data: ArraySlice<UInt8>) {}
+        func scrolled(source: Terminal, yDisp: Int) {
+            scrolls += 1
+            movedOnScroll.append(SelectionGesture.scrollMovedExistingLines(in: source))
+        }
+    }
+
+    /// Three rows plus two lines of scrollback: the buffer holds five lines,
+    /// so the first two scrolls append and every scroll after that trims.
+    func testScrollsOnlyInvalidateOnceScrollbackIsFull() {
+        let delegate = Delegate()
+        let terminal = Terminal(delegate: delegate, options: TerminalOptions(cols: 20, rows: 3, scrollback: 2))
+        for i in 1...6 {
+            terminal.feed(text: "line \(i)\r\n")
+        }
+        // Two line feeds move the cursor down the screen; the four after scroll.
+        XCTAssertEqual(delegate.scrolls, 4)
+        XCTAssertEqual(delegate.movedOnScroll, [false, false, true, true])
+    }
+
+    func testScrollInsideARegionInvalidates() {
+        let delegate = Delegate()
+        let terminal = Terminal(delegate: delegate, options: TerminalOptions(cols: 20, rows: 5, scrollback: 100))
+        // DECSTBM: rows 2 to 4 scroll, the rest stay put. Cursor moves to home.
+        terminal.feed(text: "\u{1B}[2;4r")
+        terminal.feed(text: "\u{1B}[4;1Hx\r\n")
+        XCTAssertEqual(delegate.scrolls, 1)
+        XCTAssertEqual(delegate.movedOnScroll, [true])
+    }
+
+    func testAlternateScreenScrollInvalidates() {
+        let delegate = Delegate()
+        let terminal = Terminal(delegate: delegate, options: TerminalOptions(cols: 20, rows: 2, scrollback: 100))
+        terminal.feed(text: "\u{1B}[?1049h")
+        terminal.feed(text: "a\r\nb\r\nc\r\n")
+        XCTAssertGreaterThan(delegate.scrolls, 0)
+        XCTAssertFalse(delegate.movedOnScroll.contains(false))
+    }
+}
+
+/// The configured scrollback has to reach SwiftTerm, whose own default is 500
+/// lines; before this, the setting was decoded and then ignored.
+final class TerminalScrollbackTests: XCTestCase {
+    private final class Delegate: TerminalDelegate {
+        func send(source: Terminal, data: ArraySlice<UInt8>) {}
+    }
+
+    func testNegativeMeansTheUnlimitedCap() {
+        XCTAssertEqual(TerminalScrollback.lines(forConfigured: -1), TerminalScrollback.unlimitedCap)
+        XCTAssertEqual(TerminalScrollback.lines(forConfigured: 10_000), 10_000)
+        XCTAssertEqual(TerminalScrollback.lines(forConfigured: 0), 0)
+    }
+
+    /// 600 lines through a 3-row terminal trims under SwiftTerm's 500-line
+    /// default and keeps everything once the history is raised the way the
+    /// view controller does it.
+    func testChangingScrollbackKeepsMoreHistory() {
+        let delegate = Delegate()
+        let trimmed = Terminal(delegate: delegate, options: TerminalOptions(cols: 20, rows: 3))
+        for i in 1...600 { trimmed.feed(text: "line \(i)\r\n") }
+        XCTAssertNil(trimmed.getScrollInvariantLine(row: 0), "the default history should have trimmed")
+
+        let raised = Terminal(delegate: delegate, options: TerminalOptions(cols: 20, rows: 3))
+        raised.changeScrollback(TerminalScrollback.lines(forConfigured: 10_000))
+        for i in 1...600 { raised.feed(text: "line \(i)\r\n") }
+        XCTAssertNotNil(raised.getScrollInvariantLine(row: 0), "10,000 lines of history must hold 600 lines")
     }
 }

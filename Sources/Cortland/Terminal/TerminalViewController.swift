@@ -264,6 +264,54 @@ enum TerminalLinkNormalizer {
     }
 }
 
+/// Decides whether a left-button gesture over the terminal is a text selection
+/// that SwiftTerm should handle itself, even though the app inside has asked
+/// for mouse reports. SwiftTerm never starts a selection while its
+/// `allowMouseReporting` flag is on, which left no way to copy text out of
+/// Codex or any other REPL that keeps reporting enabled between turns.
+/// `TerminalViewController.handleTerminalMouseDown` applies the answer.
+enum SelectionGesture {
+    /// True when the gesture must bypass mouse reporting and select text.
+    ///
+    /// On the normal screen every click and drag already belongs to Cortland
+    /// (`AgentAwareTerminalView.send` drops the reports before they reach the
+    /// app), so a plain drag selects there. On the alternate screen a plain
+    /// drag still goes to the TUI (vim, lazygit); holding Shift claims it for
+    /// selection, the same escape hatch xterm, iTerm2, and Ghostty offer.
+    nonisolated static func bypassesMouseReporting(shiftHeld: Bool, isAlternateScreen: Bool) -> Bool {
+        shiftHeld || !isAlternateScreen
+    }
+
+    /// True when the scroll that just completed moved lines that were already
+    /// in the buffer, which is when a selection anchored to buffer indices
+    /// stops naming the text the user picked. Three scrolls do that: one that
+    /// trimmed a full scrollback (every later index now names the next line
+    /// down), one inside a scroll region (lines shift in place), and any on
+    /// the alternate screen, which has no scrollback and recycles its rows
+    /// on every scroll. A scroll that only appended to a scrollback with room
+    /// left leaves every index valid. `linesTop` is not public, but a
+    /// scroll-invariant read of row 0 fails exactly once it is nonzero.
+    nonisolated static func scrollMovedExistingLines(in terminal: Terminal) -> Bool {
+        if terminal.isCurrentBufferAlternate { return true }
+        let buffer = terminal.buffer
+        if buffer.scrollTop != 0 || buffer.scrollBottom != terminal.rows - 1 { return true }
+        return terminal.getScrollInvariantLine(row: 0) == nil
+    }
+}
+
+/// Maps the `scrollback_lines` config value onto what SwiftTerm accepts.
+/// SwiftTerm preallocates one slot per line of history, so "unlimited" (any
+/// negative value, documented as -1) becomes a large fixed cap instead.
+enum TerminalScrollback {
+    /// One million lines: the slot table costs 8 MB, and the lines themselves
+    /// are only allocated as output arrives.
+    nonisolated static let unlimitedCap = 1_000_000
+
+    nonisolated static func lines(forConfigured value: Int) -> Int {
+        value < 0 ? unlimitedCap : value
+    }
+}
+
 private final class AgentAwareTerminalView: LocalProcessTerminalView {
     var onOutput: ((String) -> Void)?
     /// Carries the keystroke's bytes so the agent-state detector can tell a
@@ -298,6 +346,23 @@ private final class AgentAwareTerminalView: LocalProcessTerminalView {
     func clearMouseButtonLatch() {
         mouseButtonDown = false
         suppressFocusClickReports = false
+    }
+
+    // MARK: - Selection outlives output, until the text under it moves
+
+    /// SwiftTerm anchors a selection to raw buffer indices, and with mouse
+    /// reporting off between gestures (see `handleTerminalMouseDown`) it no
+    /// longer clears the selection on every feed. That keeps a selection
+    /// alive while a REPL redraws in place, which is what makes copying from
+    /// Codex work at all, but once existing lines move the same indices name
+    /// other text: the highlight would creep down the screen and ⌘C would
+    /// copy lines the user never selected. Only `Terminal.scroll` calls this
+    /// delegate method (the wheel goes through a different one), so it is
+    /// exactly the moment to check.
+    override func scrolled(source terminal: Terminal, yDisp: Int) {
+        super.scrolled(source: terminal, yDisp: yDisp)
+        guard selectionActive, SelectionGesture.scrollMovedExistingLines(in: terminal) else { return }
+        selectNone()
     }
 
     /// Bytes of a multibyte UTF-8 rune that arrived split across PTY reads,
@@ -639,12 +704,20 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// browser tabs. The xterm protocol has no bit for Command, so the app
     /// could not tell that click apart from an ordinary one.
     ///
+    /// This also decides, before SwiftTerm sees the press, whether the gesture
+    /// selects text or is reported to the app (see `SelectionGesture`).
+    /// SwiftTerm's mouse handlers are not overridable, and its only switch
+    /// between the two is `allowMouseReporting`, so the flag is set here for
+    /// the whole gesture and stays put until the next press decides again.
+    /// Leaving it off between gestures is deliberate: SwiftTerm clears the
+    /// selection on every feed while the flag is on, which would wipe a
+    /// selection the moment a live REPL redraws its spinner.
+    ///
     /// Always returns the event: SwiftTerm still needs the mouse-down for
     /// selection, and the pane-activation monitor still needs to see it. Only
     /// the reports going upstream to the child process are gated.
     func handleTerminalMouseDown(_ event: NSEvent) -> NSEvent? {
-        guard event.modifierFlags.contains(.command),
-              let window = view.window,
+        guard let window = view.window,
               event.window === window,
               let terminalView = terminalView,
               !terminalView.isHiddenOrHasHiddenAncestor else { return event }
@@ -652,7 +725,14 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         let pointInView = terminalView.convert(event.locationInWindow, from: nil)
         guard terminalView.bounds.contains(pointInView) else { return event }
 
-        (terminalView as? AgentAwareTerminalView)?.suppressReportsForClickGesture()
+        terminalView.allowMouseReporting = !SelectionGesture.bypassesMouseReporting(
+            shiftHeld: event.modifierFlags.contains(.shift),
+            isAlternateScreen: terminalView.getTerminal().isCurrentBufferAlternate
+        )
+
+        if event.modifierFlags.contains(.command) {
+            (terminalView as? AgentAwareTerminalView)?.suppressReportsForClickGesture()
+        }
         return event
     }
 
@@ -885,6 +965,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // Keep the first 16 ANSI colors themed, but leave 256-color indexes on
         // the standard xterm cube so CLI theme pickers render selected colors faithfully.
         terminalView.terminal.ansi256PaletteStrategy = .xterm
+        // SwiftTerm creates the terminal with its own 500-line default; the
+        // configured history was never handed over until now.
+        terminalView.terminal.changeScrollback(TerminalScrollback.lines(forConfigured: config.behavior.scrollbackLines))
         applyThemeColors()
 
         // Apply background based on blur configuration
@@ -1841,7 +1924,12 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
     func applyConfig(_ newConfig: Config) {
         Log.debug("🔄 Applying config to terminal: font=\(newConfig.font.family) size=\(newConfig.font.size) blur=\(newConfig.window.enableBlur)", category: "terminal")
+        let scrollbackChanged = newConfig.behavior.scrollbackLines != config.behavior.scrollbackLines
         self.config = newConfig
+
+        if scrollbackChanged {
+            terminalView.terminal.changeScrollback(TerminalScrollback.lines(forConfigured: newConfig.behavior.scrollbackLines))
+        }
 
         // Update font (respecting the current app-wide zoom)
         terminalView.font = terminalFont(for: newConfig)

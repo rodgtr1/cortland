@@ -6,6 +6,12 @@
 
 - **Continue in Fresh Session**: a new entry in the tab right-click menu and the command palette hands an agent's work from a nearly full session to a brand-new one without copying anything. Cortland asks the agent in the tab's active pane (once it has finished its current turn) to write a handoff document (goal, decisions, progress, next steps, the files that matter) to `.cortland/handoffs/` inside its working directory, waits for the agent to go busy and then finish, and opens a new tab in the same directory running the same CLI (Claude Code or Codex, told apart by the model the pane reports) with an initial prompt to read the file and continue. The original tab stays open for reference. The wait never blocks the window: if the agent stops to ask a question, its pane is focused and nothing opens; if it never starts, runs past ten minutes, or finishes without writing the file, an alert says so and the original session is untouched. The handoff prompt is configurable with `prompt` under a new optional `[handoff]` section, where `{path}` stands for the file path.
 
+### Fixes
+
+- **Text can be selected and copied over Codex and other mouse-aware REPLs**: SwiftTerm never starts a selection while the app inside has mouse reporting on, so dragging across a Codex response highlighted nothing and there was nothing to copy. On the normal screen every click and drag already belonged to Cortland (the reports were dropped before reaching the app), so a plain drag now selects there, and double-click selects a word. On the alternate screen a plain drag still goes to the TUI (vim, lazygit); Shift-drag selects instead, the same escape hatch xterm, iTerm2, and Ghostty offer. A selection made this way also survives the REPL redrawing in place, where before SwiftTerm cleared it on every byte of output; it is dropped only when a scroll moves the lines under it (a full scrollback trimming its oldest line, a scroll region, or any scroll on the alternate screen), since SwiftTerm anchors selections to buffer indices and the highlight would otherwise creep onto text that was never selected.
+
+- **`scrollback_lines` is applied**: the setting was read from `config.toml` and then never passed to SwiftTerm, so every pane kept SwiftTerm's default of 500 lines of history no matter what the file said. Panes now use the configured value (10000 by default), pick up a changed value on config reload, and treat -1 as a one-million-line cap, since SwiftTerm preallocates its line table and cannot be truly unbounded.
+
 ## 0.7.1 (2026-07-25)
 
 ### Fixes
