@@ -118,8 +118,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
 
-        // About Cortland
-        let aboutItem = NSMenuItem(title: "About Cortland", action: nil, keyEquivalent: "")
+        // About Cortland. The standard panel reads name, version, build, and
+        // copyright from Info.plist; with no action the item drew disabled.
+        let aboutItem = NSMenuItem(title: "About Cortland", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(aboutItem)
 
         // Check for Updates… — standard position, right under About. Disabled

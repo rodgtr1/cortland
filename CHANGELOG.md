@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- **About Cortland works**: the menu item had no action, so AppKit drew it disabled. It now opens the standard About panel with the version and build from `Info.plist`.
+
 ## 0.8.0 (2026-09-15)
 
 ### New features
