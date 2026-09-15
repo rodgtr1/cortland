@@ -16,9 +16,9 @@
          0.5.1 -> 501, 0.7.0 -> 700, 1.0.0 -> 10000).
          Bump both together on every release. -->
     <key>CFBundleVersion</key>
-    <string>701</string>
+    <string>800</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.7.1</string>
+    <string>0.8.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>
