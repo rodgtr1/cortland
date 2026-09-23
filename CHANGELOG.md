@@ -4,6 +4,7 @@
 
 ### Fixes
 
+- **Clicking the commit message box focuses it**: the text view inside the box was allowed to shrink to its text, and the scroll view filled the rest of the box with a private filler view that swallowed clicks, so a click below the first line focused nothing and typing went nowhere. The text view is now kept at least as large as the box, and a click anywhere in the box focuses it with the insertion point at the end of the draft.
 - **About Cortland works**: the menu item had no action, so AppKit drew it disabled. It now opens the standard About panel with the version and build from `Info.plist`.
 
 ## 0.8.0 (2026-09-15)

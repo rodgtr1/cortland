@@ -26,6 +26,27 @@ final class CommitMessageTextView: NSTextView {
     }
 }
 
+/// The commit area. A click inside the message box that misses the text view
+/// still lands here (the scroll view fills any gap below a short text view
+/// with a private filler view that swallows clicks and never focuses
+/// anything), so it is treated as a click on the message: the text view takes
+/// focus with the insertion point at the end of the draft.
+final class CommitAreaView: NSView {
+    weak var messageScrollView: NSScrollView?
+    weak var messageTextView: NSTextView?
+
+    override func mouseDown(with event: NSEvent) {
+        if let scrollView = messageScrollView, let textView = messageTextView,
+           window?.firstResponder !== textView,
+           scrollView.frame.contains(convert(event.locationInWindow, from: nil)),
+           window?.makeFirstResponder(textView) == true {
+            textView.setSelectedRange(NSRange(location: (textView.string as NSString).length, length: 0))
+            return
+        }
+        super.mouseDown(with: event)
+    }
+}
+
 protocol GitPanelDelegate: AnyObject {
     func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String, kind: GitDiffKind)
     func gitPanel(_ panel: GitPanelViewController, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
@@ -49,6 +70,7 @@ class GitPanelViewController: NSViewController {
     private var syncLabel: NSTextField!
     private var statusLabel: NSTextField!
     private var commitMessageTextView: NSTextView!
+    private var commitScrollView: NSScrollView?
     private var commitButton: NSButton!
     private var stageAllButton: NSButton!
     private var unstageAllButton: NSButton!
@@ -359,7 +381,7 @@ class GitPanelViewController: NSViewController {
 
     private func setupCommitArea() {
         // Commit message area
-        let commitContainer = NSView()
+        let commitContainer = CommitAreaView()
         commitContainer.wantsLayer = true
         commitContainer.layer?.backgroundColor = AppTheme.headerBackground.cgColor
         commitContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -392,9 +414,22 @@ class GitPanelViewController: NSViewController {
         commitMessageTextView.backgroundColor = AppTheme.windowBackground
         commitMessageTextView.textColor = AppTheme.primaryText
         commitMessageTextView.insertionPointColor = AppTheme.cursor
+        // Keep the text view as tall and wide as the scroll view's content area
+        // (see viewDidLayout for the height floor). Without this it shrinks to
+        // its text, and the scroll view fills the rest of the box with a
+        // filler view that swallows clicks, so clicking below the first line
+        // focuses nothing.
+        commitMessageTextView.isVerticallyResizable = true
+        commitMessageTextView.isHorizontallyResizable = false
+        commitMessageTextView.autoresizingMask = [.width]
+        commitMessageTextView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        commitMessageTextView.textContainer?.widthTracksTextView = true
 
         commitScrollView.documentView = commitMessageTextView
         commitContainer.addSubview(commitScrollView)
+        commitContainer.messageScrollView = commitScrollView
+        commitContainer.messageTextView = commitMessageTextView
+        self.commitScrollView = commitScrollView
 
         commitButton = NSButton(title: "Commit", target: self, action: #selector(commitClicked))
         commitButton.bezelStyle = .rounded
@@ -420,6 +455,22 @@ class GitPanelViewController: NSViewController {
             commitButton.bottomAnchor.constraint(equalTo: commitContainer.bottomAnchor, constant: -8),
             commitButton.widthAnchor.constraint(equalToConstant: 80)
         ])
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        // The text view may never be shorter than the box, so every point in
+        // the box is a click on the text view.
+        if let commitScrollView, let textView = commitMessageTextView {
+            let content = commitScrollView.contentSize
+            let floor = NSSize(width: 0, height: content.height)
+            if textView.minSize != floor {
+                textView.minSize = floor
+                if textView.frame.height < content.height {
+                    textView.setFrameSize(NSSize(width: content.width, height: content.height))
+                }
+            }
+        }
     }
 
     private func layoutViews() {
