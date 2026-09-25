@@ -3,6 +3,9 @@ import Cocoa
 class EditorViewController: NSViewController {
     private var textView: CodeTextView!
     private var scrollView: NSScrollView!
+    private var clipView: EditorClipView!
+    /// Padding between the text and the ruler / right edge of the pane.
+    static let textInset = NSSize(width: 16, height: 8)
     private var lineNumberRuler: LineNumberRulerView!
     private var syntaxHighlighter: SyntaxHighlighter!
     private var currentURL: URL?
@@ -52,11 +55,19 @@ class EditorViewController: NSViewController {
         // Load config
         let config = Config.load()
 
+        let wordWrap = config.editor?.wordWrap ?? true
+
         scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        // The clip view has to be swapped in before the document view is set.
+        clipView = EditorClipView()
+        clipView.pinsDocumentToVisibleWidth = wordWrap
+        scrollView.contentView = clipView
         scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = false
+        // With word wrap on there is nothing to scroll sideways to, and a
+        // horizontal scroller only invites the clip view to drift.
+        scrollView.hasHorizontalScroller = !wordWrap
+        scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
 
         let textContainer = NSTextContainer()
@@ -90,11 +101,10 @@ class EditorViewController: NSViewController {
         textView.autoresizingMask = [.width]
         // Breathing room on the sides so wrapped text doesn't slide under the
         // scroller (and isn't jammed against the line-number ruler).
-        textView.textContainerInset = NSSize(width: 10, height: 6)
+        textView.textContainerInset = Self.textInset
 
         // Configure word wrap based on config (default to true if not set)
         textView.isVerticallyResizable = true
-        let wordWrap = config.editor?.wordWrap ?? true
         if wordWrap {
             // Word wrap enabled: text wraps to view width
             textView.isHorizontallyResizable = false
@@ -165,6 +175,8 @@ class EditorViewController: NSViewController {
             width: editorConfig.wordWrap ? 0 : CGFloat.greatestFiniteMagnitude,
             height: CGFloat.greatestFiniteMagnitude
         )
+        clipView.pinsDocumentToVisibleWidth = editorConfig.wordWrap
+        scrollView.hasHorizontalScroller = !editorConfig.wordWrap
 
         // Re-apply theme colors live (applyConfig is invoked on theme change).
         textView.backgroundColor = AppTheme.windowBackground
@@ -193,14 +205,20 @@ class EditorViewController: NSViewController {
         // When word wrap is on, the container width tracks the text view width
         // but only recomputes on a resize. A font change resets the width to 0,
         // so without this every line wraps to zero width and the text vanishes
-        // until the window is resized. Restore it to the visible width here.
+        // until the window is resized. Restore it to the visible width here,
+        // using the same formula NSTextView applies when it tracks the width,
+        // so a later resize doesn't change where lines wrap.
         if textContainer.widthTracksTextView {
             let visibleWidth = scrollView.contentView.bounds.width
             if visibleWidth > 0 {
+                if textView.frame.width != visibleWidth {
+                    textView.setFrameSize(NSSize(width: visibleWidth, height: textView.frame.height))
+                }
                 textContainer.containerSize = NSSize(
-                    width: visibleWidth - 2 * textView.textContainerInset.width - 2 * textContainer.lineFragmentPadding,
+                    width: max(0, visibleWidth - 2 * textView.textContainerInset.width),
                     height: CGFloat.greatestFiniteMagnitude
                 )
+                scrollView.contentView.scroll(to: NSPoint(x: 0, y: scrollView.contentView.bounds.origin.y))
             }
         }
 
