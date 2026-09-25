@@ -74,6 +74,28 @@ final class EditorWrapLayoutTests: XCTestCase {
         assertTextFitsVisibleWidth()
     }
 
+    /// The gutter must not cover the text. On macOS 26 an NSScrollView ruler is
+    /// drawn over the clip view instead of beside it, so the gutter is laid out
+    /// as a sibling and the scroll view starts where it ends.
+    func testGutterSitsBesideTheTextNotOverIt() {
+        let scrollView = editor._textView!.enclosingScrollView!
+        let gutter = editor.view.subviews.first { $0 is LineNumberRulerView }!
+        XCTAssertEqual(gutter.frame.minX, 0)
+        XCTAssertEqual(gutter.frame.width, 50)
+        XCTAssertEqual(scrollView.frame.minX, gutter.frame.maxX)
+        XCTAssertEqual(scrollView.frame.maxX, editor.view.bounds.maxX)
+        XCTAssertFalse(scrollView.frame.intersects(gutter.frame))
+        XCTAssertNil(scrollView.verticalRulerView)
+
+        // The first glyph is drawn right of the gutter, inset by the padding.
+        let textView = editor._textView!
+        let firstGlyph = textView.layoutManager!.boundingRect(forGlyphRange: NSRange(location: 0, length: 1),
+                                                              in: textView.textContainer!)
+        let inWindow = textView.convert(firstGlyph.offsetBy(dx: textView.textContainerOrigin.x,
+                                                             dy: textView.textContainerOrigin.y), to: nil)
+        XCTAssertGreaterThanOrEqual(inWindow.minX, gutter.frame.maxX + textView.textContainerInset.width)
+    }
+
     func testTextFitsAfterShrinkingLikeAPaneSplit() {
         container.setFrameSize(NSSize(width: 500, height: 600))
         settle()

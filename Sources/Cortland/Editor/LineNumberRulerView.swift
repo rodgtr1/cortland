@@ -31,6 +31,37 @@ class LineNumberRulerView: NSRulerView {
         self.textView = textView
         clientView = textView
         observeTextStorage(of: textView)
+        observeScrolling(of: textView)
+    }
+
+    /// The gutter is laid out beside the scroll view, not as its ruler, so the
+    /// scroll view doesn't redraw it when the text scrolls or the text view
+    /// grows. Watch the clip view's bounds and the text view's frame directly.
+    private func observeScrolling(of textView: NSTextView) {
+        if let clipView = textView.enclosingScrollView?.contentView {
+            clipView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(setNeedsRedraw),
+                name: NSView.boundsDidChangeNotification,
+                object: clipView
+            )
+        }
+        textView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(setNeedsRedraw),
+            name: NSView.frameDidChangeNotification,
+            object: textView
+        )
+    }
+
+    @objc private func setNeedsRedraw() {
+        needsDisplay = true
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     // NSRulerView.awakeFromNib is nonisolated in the SDK; AppKit always invokes

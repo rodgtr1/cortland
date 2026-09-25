@@ -119,18 +119,24 @@ class EditorViewController: NSViewController {
 
         scrollView.documentView = textView
 
-        // Add line number ruler
+        // The line-number gutter sits beside the scroll view rather than being
+        // installed as its vertical ruler. On macOS 26 the scroll view no longer
+        // reserves room for a ruler: it draws it over the first 50pt of the
+        // clip view, hiding the start of every line.
         lineNumberRuler = LineNumberRulerView(scrollView: scrollView, orientation: .verticalRuler)
+        lineNumberRuler.translatesAutoresizingMaskIntoConstraints = false
         lineNumberRuler.attach(to: textView)
-        scrollView.verticalRulerView = lineNumberRuler
-        scrollView.hasVerticalRuler = true
-        scrollView.rulersVisible = true
 
+        view.addSubview(lineNumberRuler)
         view.addSubview(scrollView)
 
         NSLayoutConstraint.activate([
+            lineNumberRuler.topAnchor.constraint(equalTo: view.topAnchor),
+            lineNumberRuler.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            lineNumberRuler.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            lineNumberRuler.widthAnchor.constraint(equalToConstant: lineNumberRuler.ruleThickness),
             scrollView.topAnchor.constraint(equalTo: view.topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: lineNumberRuler.trailingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
