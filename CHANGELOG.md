@@ -4,6 +4,7 @@
 
 ### Fixes
 
+- **Programs can copy to the clipboard (OSC 52)**: tmux copy mode, Neovim's clipboard provider, Helix, and the agent CLIs put text on the clipboard with the OSC 52 escape so you get the exact text instead of a mouse selection with wrapped line breaks and pane borders in it. SwiftTerm parses the sequence but its macOS view never implements the callback that writes the pasteboard, so every such copy was silently dropped. Cortland now handles OSC 52 itself: every selection (`c`, `p`, `s`, or none) lands on the system clipboard, wrapped or unpadded base64 is accepted, and `?` queries are ignored so a program cannot read the clipboard through the terminal.
 - **Clicking the commit message box focuses it**: the text view inside the box was allowed to shrink to its text, and the scroll view filled the rest of the box with a private filler view that swallowed clicks, so a click below the first line focused nothing and typing went nowhere. The text view is now kept at least as large as the box, and a click anywhere in the box focuses it with the insertion point at the end of the draft.
 - **About Cortland works**: the menu item had no action, so AppKit drew it disabled. It now opens the standard About panel with the version and build from `Info.plist`.
 

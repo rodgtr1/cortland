@@ -968,6 +968,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // SwiftTerm creates the terminal with its own 500-line default; the
         // configured history was never handed over until now.
         terminalView.terminal.changeScrollback(TerminalScrollback.lines(forConfigured: config.behavior.scrollbackLines))
+        // OSC 52 copies from the program inside the pane; SwiftTerm parses the
+        // sequence but never reaches the pasteboard on macOS (see ClipboardEscape).
+        ClipboardEscape.install(on: terminalView.terminal)
         applyThemeColors()
 
         // Apply background based on blur configuration
