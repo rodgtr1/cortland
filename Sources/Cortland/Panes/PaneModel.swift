@@ -56,6 +56,7 @@ class PaneModel: Identifiable, Hashable {
     var paneType: PaneType = .terminal
     // Set on the main actor; read once in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var editorDirtyStateObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var editorFileObserver: NSObjectProtocol?
 
     enum PaneType {
         case terminal
@@ -126,6 +127,27 @@ class PaneModel: Identifiable, Hashable {
                     name: .paneDirtyStateChanged,
                     object: self,
                     userInfo: ["isDirty": isModified]
+                )
+            }
+        }
+
+        if let existingObserver = editorFileObserver {
+            NotificationCenter.default.removeObserver(existingObserver)
+        }
+        // Read mode navigates between notes by link; the pane and tab titles
+        // follow the file the editor now shows.
+        editorFileObserver = NotificationCenter.default.addObserver(
+            forName: .editorFileChanged,
+            object: editorVC,
+            queue: .main
+        ) { [weak self, weak editorVC] _ in
+            guard let self, let editorVC else { return }
+            MainActor.assumeIsolated {
+                self.updateTitleForEditor(fileName: editorVC.fileName)
+                NotificationCenter.default.post(
+                    name: .paneTitleChanged,
+                    object: self,
+                    userInfo: ["title": self.title]
                 )
             }
         }
@@ -248,6 +270,9 @@ class PaneModel: Identifiable, Hashable {
 
     deinit {
         if let observer = editorDirtyStateObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = editorFileObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }

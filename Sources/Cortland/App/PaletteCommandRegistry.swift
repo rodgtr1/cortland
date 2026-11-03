@@ -31,9 +31,16 @@ protocol PaletteCommandHost: AnyObject {
     func showPanel(_ panel: SidebarPanel)
     func toggleSidebar()
     func toggleHiddenFiles()
+    /// Rebuilds the file tree from disk, keeping expanded folders.
+    func refreshFileTree()
 
     // Files / misc
     func saveCurrentFile()
+    /// Flips the focused editor pane between Markdown reader and editor.
+    func toggleMarkdownReadMode()
+    /// Whether Markdown read mode is on in config ([editor]
+    /// markdown_read_mode). Gates the ⇧⌘M chord and the palette entry.
+    var isMarkdownReadModeEnabled: Bool { get }
     func showQuickOpen()
     func showSessions()
     func showPreferences()
@@ -128,6 +135,12 @@ final class PaletteCommandRegistry {
         })
 
         actions.append(
+            PaletteAction(title: "Refresh File Tree", subtitle: "Re-read the files panel from disk", symbolName: "arrow.clockwise") { [weak self] in
+                self?.host?.refreshFileTree()
+            }
+        )
+
+        actions.append(
             PaletteAction(title: "Edit Config File", subtitle: "config.toml", symbolName: "doc.badge.gearshape") { [weak self] in
                 self?.host?.openConfigFile()
             }
@@ -138,6 +151,14 @@ final class PaletteCommandRegistry {
                 self?.host?.continueActiveTabInFreshSession()
             }
         )
+
+        if host?.isMarkdownReadModeEnabled == true {
+            actions.append(
+                PaletteAction(title: "Toggle Markdown Read Mode", subtitle: KeyboardCommand.toggleMarkdownReadMode.displayShortcut, symbolName: "doc.richtext") { [weak self] in
+                    self?.host?.toggleMarkdownReadMode()
+                }
+            )
+        }
 
         // Optional extras only appear while enabled in config.
         if host?.isArcadeEnabled == true {
@@ -222,6 +243,8 @@ final class PaletteCommandRegistry {
             host.focusAgentAttentionTab()
         case .toggleArcade:
             toggleArcade()
+        case .toggleMarkdownReadMode:
+            host.toggleMarkdownReadMode()
         }
     }
 }

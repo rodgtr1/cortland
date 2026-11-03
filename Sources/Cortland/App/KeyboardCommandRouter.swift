@@ -24,6 +24,7 @@ enum KeyboardCommand: Equatable {
     case focusAgentAttention
     case toggleArcade
     case showSessions
+    case toggleMarkdownReadMode
 }
 
 extension KeyboardCommand {
@@ -59,6 +60,7 @@ extension KeyboardCommand {
         case .focusAgentAttention: return "⇧⌘J"
         case .toggleArcade: return "⌃`"
         case .showSessions: return "⌃⇧S"
+        case .toggleMarkdownReadMode: return "⇧⌘M"
         default: return nil
         }
     }
@@ -110,6 +112,7 @@ struct KeyboardCommandRouter {
             case 35: return .commandPalette
             case 24: return .zoomIn // Cmd+Shift+= is Cmd+"+"
             case 38: return .focusAgentAttention // Cmd+Shift+J
+            case 46: return .toggleMarkdownReadMode // Cmd+Shift+M
             default: break
             }
         }

@@ -68,6 +68,7 @@ class KeyboardShortcutsPanel: NSPanel {
         (.quickOpen, "Quick open: search file names", "Files"),
         (.commandPalette, "Open command palette", "Files"),
         (.saveFile, "Save the current editor tab", "Files"),
+        (.toggleMarkdownReadMode, "Markdown: switch between reader and editor (enable in Preferences ▸ Editor)", "Files"),
 
         // Terminal
         (.findInTerminal, "Find in terminal", "Terminal"),

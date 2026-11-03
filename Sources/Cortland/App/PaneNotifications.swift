@@ -52,6 +52,10 @@ nonisolated extension Notification.Name {
     /// An editor pane's modified state changed. `object` is the editor.
     static let editorModifiedStateChanged = Notification.Name("EditorModifiedStateChanged")
 
+    /// An editor pane now shows a different file (a link clicked in Markdown
+    /// read mode). `object` is the editor; the pane re-reads `fileName`.
+    static let editorFileChanged = Notification.Name("EditorFileChanged")
+
     /// The pending diff-approval queue gained or lost entries. `object` is the
     /// `ApprovalQueue`; read its `pending` list for the current state.
     static let pendingApprovalsChanged = Notification.Name("PendingApprovalsChanged")

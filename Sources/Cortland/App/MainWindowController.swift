@@ -1237,6 +1237,19 @@ extension MainWindowController: SidebarContainerDelegate {
         }
     }
 
+    func refreshFileTree() {
+        sidebarContainerView.refreshFileTree()
+    }
+
+    func toggleMarkdownReadMode() {
+        guard let activeTab = tabs[safe: activeTabIndex] else { return }
+        let editorPane =
+            activeTab.panes.first { $0.editorViewController?.isEditorFocused == true } ??
+            activeTab.activePane.flatMap { $0.paneType == .editor ? $0 : nil } ??
+            currentPaneSplitController?.activePane.flatMap { $0.paneType == .editor ? $0 : nil }
+        editorPane?.editorViewController?.toggleReadMode()
+    }
+
     /// Sends the command to the active tab's first terminal pane and returns
     /// that pane, so callers can track which pane ran the command.
     @discardableResult
@@ -1310,6 +1323,10 @@ extension MainWindowController {
         // With the arcade disabled (the default), ⌃` falls through to the
         // terminal rather than being swallowed by a no-op command.
         if command == .toggleArcade && !isArcadeEnabled {
+            return false
+        }
+        // Likewise ⇧⌘M when Markdown read mode is switched off in config.
+        if command == .toggleMarkdownReadMode && !isMarkdownReadModeEnabled {
             return false
         }
 
@@ -1669,6 +1686,10 @@ extension MainWindowController: PaletteCommandHost {
 
     var isArcadeEnabled: Bool {
         config.arcade?.enabled ?? false
+    }
+
+    var isMarkdownReadModeEnabled: Bool {
+        config.editor?.markdownReadMode ?? EditorConfig().markdownReadMode
     }
 
     var paletteSkillRoots: [URL] {

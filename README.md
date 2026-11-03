@@ -161,6 +161,26 @@ a file from the sidebar:
 A separate checkbox toggles whether hidden (dot) files show up, dimmed, in
 the file tree.
 
+Two more checkboxes shape how the built-in editor behaves around files that
+change underneath it, which is routine when an agent in the next pane is
+writing to them:
+
+- **Reload open files when they change on disk** (`live_reload`, on by
+  default): a pane with no unsaved edits follows the file, keeping its scroll
+  position (or staying pinned to the bottom if that is where you were, so a
+  note an agent is appending to keeps scrolling). A pane with unsaved edits
+  shows a bar offering Reload or Keep Mine instead, and the save-time
+  overwrite check still applies to whatever you keep. Off, the editor only
+  notices the change when you save, as before.
+- **Open Markdown files in read mode** (`markdown_read_mode`, on by default):
+  `.md` files open rendered (headings, lists, quotes, code, links, local
+  images, `[[wikilinks]]`) in a centered reading column, and `⇧⌘M` or the
+  Edit control switches to the editor and back. Links to neighbouring files
+  open in the same pane. The buffer is shared between the two views, so
+  switching to read shows unsaved edits and live reload re-renders as the
+  file grows. Off, Markdown opens in the editor like any other file and the
+  shortcut falls through.
+
 ### Agents
 
 **Preferences → Agents** has one row per supported agent (Claude Code, Codex,
@@ -220,6 +240,7 @@ via `⌘K` ("Keyboard Shortcuts").
 | `⇧⌘E` / `⇧⌘G` / `⇧⌘F` | Files / Git / Search panel |
 | `⌘P` / `⇧⌘P` | Quick open / command palette |
 | `⇧⌘J` | Jump to the next agent that needs attention |
+| `⇧⌘M` | Markdown: switch an editor pane between reader and editor |
 | `⌃⇧S` | Session Recall: find, preview, and resume past agent sessions |
 | `⌘B` | Toggle sidebar |
 | `⌘=` / `⌘-` / `⌘0` | Zoom in / out / reset |
@@ -481,6 +502,8 @@ font_family = ""
 word_wrap = true
 font_size = 13
 show_hidden_files = false
+live_reload = true           # follow files an agent rewrites; ask before dropping unsaved edits
+markdown_read_mode = true    # open .md rendered; ⇧⌘M toggles the editor
 ```
 
 Drop custom theme palettes (same JSON schema as the built-ins) into

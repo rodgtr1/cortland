@@ -44,6 +44,8 @@ class PreferencesWindowController: NSWindowController {
     private var editorFontSizeSlider: NSSlider!
     private var editorFontSizeLabel: NSTextField!
     private var wordWrapCheckbox: NSButton!
+    private var liveReloadCheckbox: NSButton!
+    private var markdownReadModeCheckbox: NSButton!
     private var showHiddenFilesCheckbox: NSButton!
     private var agentStatusLabels: [AgentIntegrationInstaller.AgentID: NSTextField] = [:]
     private var agentInstallButtons: [AgentIntegrationInstaller.AgentID: NSButton] = [:]
@@ -627,6 +629,20 @@ class PreferencesWindowController: NSWindowController {
         )
         showHiddenFilesCheckbox.font = NSFont.systemFont(ofSize: 13)
 
+        liveReloadCheckbox = NSButton(
+            checkboxWithTitle: "Reload open files when they change on disk (unsaved edits are never discarded without asking)",
+            target: self,
+            action: #selector(liveReloadChanged(_:))
+        )
+        liveReloadCheckbox.font = NSFont.systemFont(ofSize: 13)
+
+        markdownReadModeCheckbox = NSButton(
+            checkboxWithTitle: "Open Markdown files in read mode (⇧⌘M switches to the editor and back)",
+            target: self,
+            action: #selector(markdownReadModeChanged(_:))
+        )
+        markdownReadModeCheckbox.font = NSFont.systemFont(ofSize: 13)
+
         form.fieldLabel("File Tree Opens:", gapAbove: 30)
         form.leadingControl(fileOpenModePopup, gapAbove: 10, width: 200)
         form.fieldLabel("Font Family:", gapAbove: 24)
@@ -635,6 +651,8 @@ class PreferencesWindowController: NSWindowController {
         form.sliderRow(editorFontSizeSlider, valueLabel: editorFontSizeLabel, gapAbove: 10)
         form.checkbox(wordWrapCheckbox, gapAbove: 24)
         form.checkbox(showHiddenFilesCheckbox, gapAbove: 12)
+        form.checkbox(liveReloadCheckbox, gapAbove: 12)
+        form.checkbox(markdownReadModeCheckbox, gapAbove: 12)
         form.finish()
 
         addTab(editorView, identifier: "editor", label: "Editor", symbol: "square.and.pencil")
@@ -716,6 +734,8 @@ class PreferencesWindowController: NSWindowController {
         updateEditorFontSizeLabel()
         wordWrapCheckbox.state = editorConfig.wordWrap ? .on : .off
         showHiddenFilesCheckbox.state = editorConfig.showHiddenFiles ? .on : .off
+        liveReloadCheckbox.state = editorConfig.liveReload ? .on : .off
+        markdownReadModeCheckbox.state = editorConfig.markdownReadMode ? .on : .off
 
         // Select the active theme (or "Auto") in the Appearance popup
         if let themeIndex = themeSelectionNames.firstIndex(of: config.theme.name) {
@@ -901,6 +921,18 @@ class PreferencesWindowController: NSWindowController {
     @objc private func showHiddenFilesChanged(_ sender: NSButton) {
         let on = sender.state == .on
         mutateConfig { Self.ensuringEditor(&$0); $0.editor?.showHiddenFiles = on }
+        mainWindowController?.applyRuntimeConfig(config)
+    }
+
+    @objc private func liveReloadChanged(_ sender: NSButton) {
+        let on = sender.state == .on
+        mutateConfig { Self.ensuringEditor(&$0); $0.editor?.liveReload = on }
+        mainWindowController?.applyRuntimeConfig(config)
+    }
+
+    @objc private func markdownReadModeChanged(_ sender: NSButton) {
+        let on = sender.state == .on
+        mutateConfig { Self.ensuringEditor(&$0); $0.editor?.markdownReadMode = on }
         mainWindowController?.applyRuntimeConfig(config)
     }
 

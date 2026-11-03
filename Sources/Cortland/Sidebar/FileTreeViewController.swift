@@ -265,6 +265,10 @@ class FileTreeViewController: NSViewController {
         }
     }
 
+    @objc private func refreshFromMenu(_ sender: Any?) {
+        refresh()
+    }
+
     // MARK: - Reveal / select a file
 
     /// Expand the folders leading to `url` and select it. If the tree is still
@@ -580,10 +584,17 @@ extension FileTreeViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
+        // Refresh is offered everywhere, including on empty space below the
+        // rows, so a tree that fell behind the disk can be brought back by hand.
+        let refreshItem = NSMenuItem(title: "Refresh", action: #selector(refreshFromMenu(_:)), keyEquivalent: "")
+        refreshItem.target = self
+        menu.addItem(refreshItem)
+
         let row = outlineView.clickedRow
         guard row >= 0, let node = outlineView.item(atRow: row) as? FileTreeNode else { return }
 
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        menu.addItem(.separator())
 
         let openInFinderItem = NSMenuItem(
             title: "Open in Finder",
@@ -771,13 +782,41 @@ extension FileTreeViewController: NSOutlineViewDelegate {
                 }
             }
         } else if !isBulkExpanding {
-            // Item is already loaded, just reload to update icon
+            // Already loaded: refresh the icon now, and re-scan in the
+            // background in case the folder changed while it was collapsed.
+            // Its cached children were committed when it was first opened,
+            // and only a full rebuild replaces them; if that rebuild never
+            // came (a missed event, a sync that ran under another tab), the
+            // user's collapse-and-expand is the one refresh they can reach.
             DispatchQueue.main.async {
                 outlineView.reloadItem(node, reloadChildren: false)
+            }
+            if node.isDirectory {
+                rescanLoadedFolder(node)
             }
         }
 
         return true
+    }
+
+    /// Re-reads a loaded folder's listing off the main thread and, only if the
+    /// entries changed (names or kinds), swaps the children in and reloads its
+    /// rows. An unchanged folder costs one directory read and no redraw.
+    private func rescanLoadedFolder(_ node: FileTreeNode) {
+        let currentShowHidden = showHidden
+        let currentGitIgnoreChecker = gitIgnoreChecker
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, weak node] in
+            guard let scanTarget = node else { return }
+            let scanned = scanTarget.scanChildren(showHidden: currentShowHidden, gitIgnoreChecker: currentGitIgnoreChecker)
+            DispatchQueue.main.async { [weak node] in
+                guard let self, let node, node.isLoaded else { return }
+                let before = node.children.map { ($0.name, $0.isDirectory) }
+                let after = scanned.map { ($0.name, $0.isDirectory) }
+                guard before.count != after.count || zip(before, after).contains(where: { $0 != $1 }) else { return }
+                node.commitChildren(scanned)
+                self.outlineView.reloadItem(node, reloadChildren: true)
+            }
+        }
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldCollapseItem item: Any) -> Bool {

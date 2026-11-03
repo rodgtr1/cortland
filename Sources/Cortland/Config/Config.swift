@@ -693,6 +693,16 @@ public struct EditorConfig: Codable {
     public var showHiddenFiles: Bool
     /// Editor font family. Empty means use the system monospaced font.
     public var fontFamily: String
+    /// Reload an open file when something else (an agent, git, another
+    /// editor) changes it on disk. A clean buffer reloads in place; a buffer
+    /// with unsaved edits shows a Reload / Keep bar instead, so nothing typed
+    /// is ever thrown away silently. Off restores the old behavior: the editor
+    /// only notices the change when you save.
+    public var liveReload: Bool
+    /// Open Markdown files rendered for reading, with ⇧⌘M switching to the
+    /// editor and back. Off hides the mode entirely: Markdown opens in the
+    /// editor like any other file and the shortcut falls through.
+    public var markdownReadMode: Bool
 
     enum CodingKeys: String, CodingKey {
         case fileOpenMode = "file_open_mode"
@@ -700,6 +710,8 @@ public struct EditorConfig: Codable {
         case fontSize = "font_size"
         case showHiddenFiles = "show_hidden_files"
         case fontFamily = "font_family"
+        case liveReload = "live_reload"
+        case markdownReadMode = "markdown_read_mode"
     }
 
     public init() {
@@ -708,6 +720,8 @@ public struct EditorConfig: Codable {
         self.fontSize = 13
         self.showHiddenFiles = false
         self.fontFamily = ""
+        self.liveReload = true
+        self.markdownReadMode = true
     }
 
     public init(from decoder: Decoder) throws {
@@ -717,6 +731,8 @@ public struct EditorConfig: Codable {
         self.fontSize = try container.decodeIfPresent(Int.self, forKey: .fontSize) ?? 13
         self.showHiddenFiles = try container.decodeIfPresent(Bool.self, forKey: .showHiddenFiles) ?? false
         self.fontFamily = try container.decodeIfPresent(String.self, forKey: .fontFamily) ?? ""
+        self.liveReload = try container.decodeIfPresent(Bool.self, forKey: .liveReload) ?? true
+        self.markdownReadMode = try container.decodeIfPresent(Bool.self, forKey: .markdownReadMode) ?? true
     }
 }
 

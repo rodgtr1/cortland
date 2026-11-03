@@ -21,6 +21,26 @@ class EditorViewController: NSViewController {
     private var pendingHighlightRange: NSRange?
     private var isProgrammaticLoad = false
 
+    // Live reload: an FSEvents stream over the file's directory (the same
+    // watcher git state uses). A clean buffer follows the file; a dirty one
+    // gets the bar below and keeps its edits until the user picks.
+    private var fileWatcher: RepositoryWatcher?
+    private var liveReloadEnabled = true
+    private var changeBar: NSView!
+    private var changeBarLabel: NSTextField!
+    private var changeBarHeight: NSLayoutConstraint!
+    /// The on-disk date the user chose "Keep Mine" against, so the bar does
+    /// not come straight back for a change they already answered. The
+    /// save-time overwrite check still sees that change.
+    private var dismissedExternalDate: Date?
+
+    // Markdown read mode: the rendered view sits over the editor and the
+    // buffer stays the single source of truth for both.
+    private var readerView: MarkdownReaderView!
+    private var markdownReadModeEnabled = true
+    private var editorFontSize: CGFloat = 13
+    private(set) var isReadMode = false
+
     var isModified: Bool = false {
         didSet {
             updateTitle()
@@ -35,7 +55,7 @@ class EditorViewController: NSViewController {
     }
 
     var isEditorFocused: Bool {
-        return textView.window?.firstResponder === textView
+        return textView.window?.firstResponder === textView || readerView?.isFocused == true
     }
 
     override func loadView() {
@@ -54,6 +74,13 @@ class EditorViewController: NSViewController {
 
         // Load config
         let config = Config.load()
+        let editorConfig = config.editor ?? EditorConfig()
+        liveReloadEnabled = editorConfig.liveReload
+        markdownReadModeEnabled = editorConfig.markdownReadMode
+        editorFontSize = CGFloat(editorConfig.fontSize)
+
+        changeBar = makeChangeBar()
+        view.addSubview(changeBar)
 
         let wordWrap = config.editor?.wordWrap ?? true
 
@@ -130,15 +157,31 @@ class EditorViewController: NSViewController {
         view.addSubview(lineNumberRuler)
         view.addSubview(scrollView)
 
+        readerView = MarkdownReaderView(frame: .zero)
+        readerView.translatesAutoresizingMaskIntoConstraints = false
+        readerView.isHidden = true
+        readerView.onEditRequested = { [weak self] in self?.setReadMode(false) }
+        readerView.onOpenFile = { [weak self] url in self?.followLink(to: url) }
+        view.addSubview(readerView)
+
+        changeBarHeight = changeBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
-            lineNumberRuler.topAnchor.constraint(equalTo: view.topAnchor),
+            changeBar.topAnchor.constraint(equalTo: view.topAnchor),
+            changeBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            changeBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            changeBarHeight,
+            lineNumberRuler.topAnchor.constraint(equalTo: changeBar.bottomAnchor),
             lineNumberRuler.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             lineNumberRuler.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             lineNumberRuler.widthAnchor.constraint(equalToConstant: lineNumberRuler.ruleThickness),
-            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
+            scrollView.topAnchor.constraint(equalTo: changeBar.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: lineNumberRuler.trailingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            readerView.topAnchor.constraint(equalTo: changeBar.bottomAnchor),
+            readerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            readerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            readerView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
         // Initialize syntax highlighter
@@ -174,6 +217,20 @@ class EditorViewController: NSViewController {
         let font = Self.editorFont(for: editorConfig)
         Log.debug("applyConfig: font=\(font.fontName) size=\(editorConfig.fontSize) wrap=\(editorConfig.wordWrap)", category: "editor")
         textView.font = font
+        editorFontSize = CGFloat(editorConfig.fontSize)
+
+        liveReloadEnabled = editorConfig.liveReload
+        if liveReloadEnabled, fileWatcher == nil, let url = currentURL {
+            startWatching(url)
+        } else if !liveReloadEnabled {
+            stopWatching()
+            hideChangeBar()
+        }
+
+        markdownReadModeEnabled = editorConfig.markdownReadMode
+        if !markdownReadModeEnabled, isReadMode {
+            setReadMode(false)
+        }
 
         textView.isHorizontallyResizable = !editorConfig.wordWrap
         textView.textContainer?.widthTracksTextView = editorConfig.wordWrap
@@ -192,6 +249,12 @@ class EditorViewController: NSViewController {
         syntaxHighlighter = SyntaxHighlighter(textView: textView)
         syntaxHighlighter.fileExtension = ext
         syntaxHighlighter.highlightSyntax()
+
+        readerView.applyTheme()
+        styleChangeBar()
+        if isReadMode {
+            renderReader(preserveScroll: true)
+        }
 
         refreshLayout()
     }
@@ -234,6 +297,7 @@ class EditorViewController: NSViewController {
         textView.needsLayout = true
         textView.needsDisplay = true
         lineNumberRuler?.needsDisplay = true
+        readerView?.needsLayout = true
     }
 
     /// Test hook: the editor's text view, so a test can type into it and drive
@@ -276,10 +340,13 @@ class EditorViewController: NSViewController {
             isProgrammaticLoad = true
             textView.string = content
             isProgrammaticLoad = false
+            textView.undoManager?.removeAllActions()
             pendingHighlightRange = nil
             currentURL = url
             fileEncoding = encoding
             lastKnownModificationDate = Self.modificationDate(of: url)
+            dismissedExternalDate = nil
+            hideChangeBar()
             isModified = false
             updateTitle()
 
@@ -292,6 +359,11 @@ class EditorViewController: NSViewController {
                 highlighter.highlightSyntax()
                 applySearchHighlights()
             }
+
+            // Markdown opens for reading when the mode is on; anything else,
+            // and Markdown with it off, lands in the editor as before.
+            setReadMode(canUseReadMode, preserveScroll: false)
+            startWatching(url)
         } catch {
             Log.error("Failed to open \(url.path): \(error.localizedDescription)", category: "editor")
             showError("Failed to open file: \(error.localizedDescription)")
@@ -344,6 +416,8 @@ class EditorViewController: NSViewController {
             try Self.write(textView.string, to: url, encoding: encoding)
             fileEncoding = encoding
             lastKnownModificationDate = Self.modificationDate(of: url)
+            dismissedExternalDate = nil
+            hideChangeBar()
             isModified = false
             return true
         } catch {
@@ -466,6 +540,11 @@ class EditorViewController: NSViewController {
     }
 
     func navigateToLine(_ line: Int) {
+        // A line number is an editor concept; a search hit or quick-open
+        // target lands in the editor even if the file opened for reading.
+        if isReadMode {
+            setReadMode(false)
+        }
         DispatchQueue.main.async { [weak self] in
             guard let self = self,
                   let textView = self.textView else { return }
@@ -547,11 +626,231 @@ class EditorViewController: NSViewController {
     }
 
     func focusEditor() {
-        textView.window?.makeFirstResponder(textView)
+        if isReadMode {
+            readerView.focus()
+        } else {
+            textView.window?.makeFirstResponder(textView)
+        }
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+
+    // MARK: - Markdown read mode
+
+    /// Whether this file can be shown rendered: a Markdown file, with the mode
+    /// enabled in config.
+    var canUseReadMode: Bool {
+        guard markdownReadModeEnabled, let url = currentURL else { return false }
+        return MarkdownRenderer.isMarkdown(extension: url.pathExtension)
+    }
+
+    /// ⇧⌘M. No-op for files that cannot render, so the shortcut never
+    /// hides a source file behind an empty reader.
+    func toggleReadMode() {
+        guard canUseReadMode else { return }
+        setReadMode(!isReadMode)
+    }
+
+    /// Switches between the reader and the editor. The buffer is always what
+    /// the reader renders, so unsaved edits show up when switching to read.
+    func setReadMode(_ on: Bool, preserveScroll: Bool = true) {
+        let wasReadMode = isReadMode
+        isReadMode = on && canUseReadMode
+        if isReadMode {
+            renderReader(preserveScroll: preserveScroll && wasReadMode)
+        }
+        readerView.isHidden = !isReadMode
+        scrollView.isHidden = isReadMode
+        lineNumberRuler.isHidden = isReadMode
+        if view.window != nil, wasReadMode != isReadMode || !isReadMode {
+            focusEditor()
+        }
+        if !isReadMode {
+            refreshLayout()
+        }
+    }
+
+    private func renderReader(preserveScroll: Bool) {
+        let codeFont = textView.font ?? NSFont.monospacedSystemFont(ofSize: editorFontSize, weight: .regular)
+        let style = MarkdownRenderer.Style.current(bodySize: editorFontSize + 2, codeFont: codeFont)
+        let rendered = MarkdownRenderer.render(
+            textView.string,
+            baseURL: currentURL?.deletingLastPathComponent(),
+            style: style
+        )
+        readerView.setContent(rendered, preserveScroll: preserveScroll)
+    }
+
+    /// A link in the reader that points at a local file: open it in this
+    /// pane, like following a link in a wiki. Not while the buffer holds
+    /// unsaved edits, since opening replaces the buffer.
+    private func followLink(to url: URL) {
+        guard !isModified else {
+            NSSound.beep()
+            return
+        }
+        openFile(url)
+        NotificationCenter.default.post(name: .editorFileChanged, object: self)
+    }
+
+    /// Test hook: the rendered reader text (nil while in the editor).
+    var _readerText: NSAttributedString? { isReadMode ? readerView._renderedText : nil }
+
+    // MARK: - Live reload
+
+    private func startWatching(_ url: URL) {
+        stopWatching()
+        guard liveReloadEnabled else { return }
+        let directory = url.resolvingSymlinksInPath().deletingLastPathComponent().path
+        let watcher = RepositoryWatcher(debounce: 0.15, latency: 0.2)
+        watcher.onChange = { [weak self] in self?.checkForExternalChange() }
+        watcher.start(root: directory)
+        fileWatcher = watcher
+    }
+
+    private func stopWatching() {
+        fileWatcher?.stop()
+        fileWatcher = nil
+    }
+
+    /// The watcher fired for something in the file's directory. Only our
+    /// file's modification date decides whether anything happens, so an
+    /// agent writing sibling files costs one stat each burst.
+    private func checkForExternalChange() {
+        guard let url = currentURL else { return }
+        let current = Self.modificationDate(of: url)
+        guard Self.fileChangedExternally(recorded: lastKnownModificationDate, current: current) else { return }
+
+        if isModified {
+            if let current, let dismissed = dismissedExternalDate,
+               !Self.fileChangedExternally(recorded: dismissed, current: current) {
+                return
+            }
+            showChangeBar()
+        } else {
+            reloadFromDisk()
+        }
+    }
+
+    /// Replaces the buffer with the file as it is now, keeping the caret and
+    /// scroll position (or the bottom, if that is where the user was, so an
+    /// appended note keeps scrolling with them). Unsaved edits are gone: the
+    /// callers are the clean-buffer path and the explicit Reload button.
+    func reloadFromDisk() {
+        guard let url = currentURL else { return }
+        do {
+            let (content, encoding) = try Self.read(contentsOf: url)
+            let selection = textView.selectedRange()
+            let clip = scrollView.contentView
+            let previousOrigin = clip.bounds.origin
+            let wasAtBottom = textView.frame.height - clip.bounds.maxY < 4
+
+            isProgrammaticLoad = true
+            textView.string = content
+            isProgrammaticLoad = false
+            textView.undoManager?.removeAllActions()
+            pendingHighlightRange = nil
+            fileEncoding = encoding
+            lastKnownModificationDate = Self.modificationDate(of: url)
+            dismissedExternalDate = nil
+            hideChangeBar()
+            isModified = false
+
+            syntaxHighlighter?.highlightSyntax()
+            applySearchHighlights()
+
+            let length = (textView.string as NSString).length
+            let location = min(selection.location, length)
+            textView.setSelectedRange(NSRange(location: location, length: min(selection.length, length - location)))
+            if let layoutManager = textView.layoutManager, let container = textView.textContainer {
+                layoutManager.ensureLayout(for: container)
+            }
+            if wasAtBottom {
+                textView.scrollToEndOfDocument(nil)
+            } else {
+                let maxY = max(0, textView.frame.height - clip.bounds.height)
+                clip.scroll(to: NSPoint(x: previousOrigin.x, y: min(previousOrigin.y, maxY)))
+                scrollView.reflectScrolledClipView(clip)
+            }
+
+            if isReadMode {
+                renderReader(preserveScroll: true)
+            }
+        } catch {
+            Log.error("Failed to reload \(url.path): \(error.localizedDescription)", category: "editor")
+        }
+    }
+
+    /// Test hook: whether the "changed on disk" bar is up.
+    var isShowingExternalChangeBar: Bool { changeBarHeight.constant > 0 }
+
+    private func makeChangeBar() -> NSView {
+        let bar = NSView()
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.wantsLayer = true
+        bar.isHidden = true
+
+        changeBarLabel = NSTextField(labelWithString: "")
+        changeBarLabel.font = NSFont.systemFont(ofSize: 12)
+        changeBarLabel.lineBreakMode = .byTruncatingMiddle
+        changeBarLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let reload = NSButton(title: "Reload", target: self, action: #selector(reloadTapped))
+        let keep = NSButton(title: "Keep Mine", target: self, action: #selector(keepTapped))
+        for button in [reload, keep] {
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.font = NSFont.systemFont(ofSize: 11)
+            button.translatesAutoresizingMaskIntoConstraints = false
+        }
+        reload.keyEquivalent = ""
+
+        bar.addSubview(changeBarLabel)
+        bar.addSubview(reload)
+        bar.addSubview(keep)
+        NSLayoutConstraint.activate([
+            changeBarLabel.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 12),
+            changeBarLabel.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            changeBarLabel.trailingAnchor.constraint(lessThanOrEqualTo: reload.leadingAnchor, constant: -12),
+            keep.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            keep.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            reload.trailingAnchor.constraint(equalTo: keep.leadingAnchor, constant: -6),
+            reload.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
+        ])
+        return bar
+    }
+
+    private func styleChangeBar() {
+        changeBar?.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        changeBarLabel?.textColor = AppTheme.primaryText
+    }
+
+    private func showChangeBar() {
+        styleChangeBar()
+        changeBarLabel.stringValue = "\(fileName) changed on disk. Reload it, or keep your unsaved edits?"
+        changeBar.isHidden = false
+        changeBarHeight.constant = 32
+        view.needsLayout = true
+    }
+
+    private func hideChangeBar() {
+        guard let changeBar, !changeBar.isHidden else { return }
+        changeBar.isHidden = true
+        changeBarHeight.constant = 0
+        view.needsLayout = true
+    }
+
+    @objc private func reloadTapped() {
+        reloadFromDisk()
+    }
+
+    @objc private func keepTapped() {
+        if let url = currentURL {
+            dismissedExternalDate = Self.modificationDate(of: url)
+        }
+        hideChangeBar()
     }
 }
 
