@@ -4,6 +4,13 @@
 
 set -e
 
+echo "Checking for Metal Toolchain..."
+
+if ! xcrun metal --version >/dev/null 2>&1; then
+  echo "⚙️  Metal Toolchain missing — downloading..."
+  xcodebuild -downloadComponent MetalToolchain
+fi
+
 echo "🔨 Building Cortland..."
 
 # Build the Swift package
