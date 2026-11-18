@@ -41,6 +41,17 @@ class EditorViewController: NSViewController {
     private var editorFontSize: CGFloat = 13
     private(set) var isReadMode = false
 
+    // Format Document: the corner control, and a guard so a second request
+    // while the formatter is still running does nothing.
+    private var formatButton: NSButton!
+    private var isFormatting = false
+    /// The "add a Prettier config" suggestion shows once per launch, not on
+    /// every format of a project that has chosen to go without one.
+    private static var didSuggestPrettierConfig = false
+    /// Test hook: the search path the formatter is looked up on, in place of
+    /// the user's shell PATH.
+    var _formatterSearchPath: String?
+
     var isModified: Bool = false {
         didSet {
             updateTitle()
@@ -164,6 +175,19 @@ class EditorViewController: NSViewController {
         readerView.onOpenFile = { [weak self] url in self?.followLink(to: url) }
         view.addSubview(readerView)
 
+        formatButton = NSButton(title: "Format", target: self, action: #selector(formatTapped))
+        formatButton.bezelStyle = .inline
+        formatButton.isBordered = false
+        formatButton.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        formatButton.toolTip = "Format Document (\(KeyboardCommand.formatDocument.displayShortcut ?? ""))"
+        formatButton.translatesAutoresizingMaskIntoConstraints = false
+        // A filled chip, so the label stays readable over a long first line.
+        formatButton.wantsLayer = true
+        formatButton.layer?.cornerRadius = 5
+        formatButton.isHidden = true
+        view.addSubview(formatButton)
+        styleFormatButton()
+
         changeBarHeight = changeBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             changeBar.topAnchor.constraint(equalTo: view.topAnchor),
@@ -181,7 +205,11 @@ class EditorViewController: NSViewController {
             readerView.topAnchor.constraint(equalTo: changeBar.bottomAnchor),
             readerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             readerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            readerView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            readerView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            formatButton.topAnchor.constraint(equalTo: changeBar.bottomAnchor, constant: 8),
+            // Clear of the pane's close button, which sits in this corner.
+            formatButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -38),
+            formatButton.heightAnchor.constraint(equalToConstant: 22)
         ])
 
         // Initialize syntax highlighter
@@ -252,6 +280,7 @@ class EditorViewController: NSViewController {
 
         readerView.applyTheme()
         styleChangeBar()
+        styleFormatButton()
         if isReadMode {
             renderReader(preserveScroll: true)
         }
@@ -664,6 +693,7 @@ class EditorViewController: NSViewController {
         readerView.isHidden = !isReadMode
         scrollView.isHidden = isReadMode
         lineNumberRuler.isHidden = isReadMode
+        formatButton.isHidden = !canFormatDocument
         if view.window != nil, wasReadMode != isReadMode || !isReadMode {
             focusEditor()
         }
@@ -697,6 +727,100 @@ class EditorViewController: NSViewController {
 
     /// Test hook: the rendered reader text (nil while in the editor).
     var _readerText: NSAttributedString? { isReadMode ? readerView._renderedText : nil }
+
+    // MARK: - Format Document
+
+    /// Whether Format Document applies: a file type with a known formatter,
+    /// shown in the editor rather than the Markdown reader.
+    var canFormatDocument: Bool {
+        guard !isReadMode, let url = currentURL else { return false }
+        return !DocumentFormatter.tools(forExtension: url.pathExtension.lowercased()).isEmpty
+    }
+
+    /// ⇧⌥F, the Format control, or the palette. Pipes the buffer through the
+    /// project's formatter off the main thread and applies the result as one
+    /// undoable edit. The file is not saved.
+    func formatDocument() {
+        guard canFormatDocument, !isFormatting, let url = currentURL else { return }
+        let original = textView.string
+        let searchPath = _formatterSearchPath
+        isFormatting = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let path = searchPath ?? DocumentFormatter.shellSearchPath
+            let outcome = DocumentFormatter.format(original, fileURL: url, searchPath: path)
+            var configMissing = false
+            if case .formatted = outcome {
+                configMissing = DocumentFormatter.prettierConfigMissing(for: url, searchPath: path)
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.finishFormatting(outcome, original: original, url: url)
+                if configMissing {
+                    self?.suggestPrettierConfig()
+                }
+            }
+        }
+    }
+
+    private func finishFormatting(_ outcome: DocumentFormatter.Outcome, original: String, url: URL) {
+        isFormatting = false
+        switch outcome {
+        case .noFormatter(let tools):
+            showError("No formatter found for .\(url.pathExtension) files. "
+                + "Install \(tools.joined(separator: " or ")) in the project or on your PATH.")
+        case .failed(let message):
+            showError("Formatting failed:\n\(message)")
+        case .formatted(let formatted):
+            // The result describes the text that was sent. If the buffer moved
+            // on while the formatter ran (typing, a live reload, another
+            // file), applying it would discard those changes.
+            guard currentURL == url, textView.string == original, formatted != original else { return }
+
+            let edit = DocumentFormatter.minimalEdit(from: original, to: formatted)
+            let caret = textView.selectedRange().location
+            guard textView.shouldChangeText(in: edit.range, replacementString: edit.replacement) else { return }
+            textView.textStorage?.replaceCharacters(in: edit.range, with: edit.replacement)
+            textView.didChangeText()
+
+            // Keep the caret on the text it was on: untouched before the edit,
+            // shifted with the text after it, clamped inside it.
+            let replacementLength = (edit.replacement as NSString).length
+            let newCaret: Int
+            if caret <= edit.range.location {
+                newCaret = caret
+            } else if caret >= NSMaxRange(edit.range) {
+                newCaret = caret + replacementLength - edit.range.length
+            } else {
+                newCaret = edit.range.location + min(caret - edit.range.location, replacementLength)
+            }
+            textView.setSelectedRange(NSRange(location: newCaret, length: 0))
+        }
+    }
+
+    /// Prettier ran with no config file anywhere above the file, so the result
+    /// is its built-in style rather than anything the user chose. Say so, and
+    /// say where a config goes.
+    private func suggestPrettierConfig() {
+        guard !Self.didSuggestPrettierConfig else { return }
+        Self.didSuggestPrettierConfig = true
+
+        let alert = NSAlert()
+        alert.messageText = "No Prettier config found"
+        alert.informativeText = "\(fileName) was formatted with Prettier's built-in defaults. "
+            + "To set your own style, add a .prettierrc file to the project root, "
+            + "or to your home folder to cover every project that has none."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    @objc private func formatTapped() {
+        formatDocument()
+    }
+
+    private func styleFormatButton() {
+        formatButton?.contentTintColor = AppTheme.mutedText
+        formatButton?.layer?.backgroundColor = AppTheme.windowBackground.withAlphaComponent(0.9).cgColor
+    }
 
     // MARK: - Live reload
 

@@ -161,6 +161,18 @@ a file from the sidebar:
 A separate checkbox toggles whether hidden (dot) files show up, dimmed, in
 the file tree.
 
+**Format Document.** `⇧⌥F`, the Format control in the pane's corner, or
+"Format Document" in the command palette runs the buffer through the
+formatter your project already uses and applies the result as one undoable
+edit (the file is not saved). Cortland bundles no formatter. It looks for
+Prettier (JS, TS, JSON, CSS, HTML, Markdown, YAML and friends) in the nearest
+`node_modules/.bin` and then on your shell's `PATH`, and for `swift-format`,
+`rustfmt`, `gofmt`, and `ruff` or `black` on your `PATH`. The tool runs from
+the file's directory, so `.prettierrc`, `rustfmt.toml`, and `.swift-format`
+apply as they do on the command line. When Prettier finds no config file
+above the file, the document is still formatted with Prettier's defaults and
+Cortland suggests adding a `.prettierrc` (once per launch).
+
 Two more checkboxes shape how the built-in editor behaves around files that
 change underneath it, which is routine when an agent in the next pane is
 writing to them:
@@ -241,6 +253,7 @@ via `⌘K` ("Keyboard Shortcuts").
 | `⌘P` / `⇧⌘P` | Quick open / command palette |
 | `⇧⌘J` | Jump to the next agent that needs attention |
 | `⇧⌘M` | Markdown: switch an editor pane between reader and editor |
+| `⇧⌥F` | Format the document in an editor pane with the project's formatter |
 | `⌃⇧S` | Session Recall: find, preview, and resume past agent sessions |
 | `⌘B` | Toggle sidebar |
 | `⌘=` / `⌘-` / `⌘0` | Zoom in / out / reset |

@@ -1250,6 +1250,15 @@ extension MainWindowController: SidebarContainerDelegate {
         editorPane?.editorViewController?.toggleReadMode()
     }
 
+    func formatCurrentDocument() {
+        guard let activeTab = tabs[safe: activeTabIndex] else { return }
+        let editorPane =
+            activeTab.panes.first { $0.editorViewController?.isEditorFocused == true } ??
+            activeTab.activePane.flatMap { $0.paneType == .editor ? $0 : nil } ??
+            currentPaneSplitController?.activePane.flatMap { $0.paneType == .editor ? $0 : nil }
+        editorPane?.editorViewController?.formatDocument()
+    }
+
     /// Sends the command to the active tab's first terminal pane and returns
     /// that pane, so callers can track which pane ran the command.
     @discardableResult
@@ -1327,6 +1336,12 @@ extension MainWindowController {
         }
         // Likewise ⇧⌘M when Markdown read mode is switched off in config.
         if command == .toggleMarkdownReadMode && !isMarkdownReadModeEnabled {
+            return false
+        }
+
+        // ⇧⌥F belongs to the file editor; anywhere else it is a keystroke for
+        // the terminal.
+        if command == .formatDocument && !(window?.firstResponder is CodeTextView) {
             return false
         }
 

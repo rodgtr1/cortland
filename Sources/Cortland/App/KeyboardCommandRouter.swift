@@ -25,6 +25,7 @@ enum KeyboardCommand: Equatable {
     case toggleArcade
     case showSessions
     case toggleMarkdownReadMode
+    case formatDocument
 }
 
 extension KeyboardCommand {
@@ -61,6 +62,7 @@ extension KeyboardCommand {
         case .toggleArcade: return "⌃`"
         case .showSessions: return "⌃⇧S"
         case .toggleMarkdownReadMode: return "⇧⌘M"
+        case .formatDocument: return "⇧⌥F"
         default: return nil
         }
     }
@@ -96,6 +98,13 @@ struct KeyboardCommandRouter {
         // ⌃⇧Tab is bound, and keyCode 48 returned above), so no collision.
         if keyCode == 1 && modifiers == [.control, .shift] {
             return .showSessions
+        }
+
+        // ⇧⌥F formats the document, as in VS Code. The window controller only
+        // takes it while the file editor has focus, so a terminal still gets
+        // the keystroke.
+        if keyCode == 3 && modifiers == [.shift, .option] {
+            return .formatDocument
         }
 
         if modifiers == [.command, .shift] {
