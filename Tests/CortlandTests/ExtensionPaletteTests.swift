@@ -86,7 +86,7 @@ final class ExtensionPaletteTests: XCTestCase {
         var completions: [@MainActor (Result<ExtensionActionResult, ExtensionPanelError>) -> Void] = []
 
         func make() -> ExtensionPanelActionRunner {
-            ExtensionPanelActionRunner { [unowned self] actionID, rowID, completion in
+            ExtensionPanelActionRunner { [unowned self] actionID, rowID, _, completion in
                 calls.append((actionID, rowID))
                 completions.append(completion)
             }
@@ -164,7 +164,7 @@ final class ExtensionPaletteTests: XCTestCase {
     /// A runner whose action prints `stdout`, decoded as the real command
     /// would decode it.
     private func runner(printing stdout: String) -> ExtensionPanelActionRunner {
-        ExtensionPanelActionRunner { _, _, completion in
+        ExtensionPanelActionRunner { _, _, _, completion in
             completion(Result { () throws(ExtensionPanelError) in try ExtensionActionResult.decode(Data(stdout.utf8)) })
         }
     }

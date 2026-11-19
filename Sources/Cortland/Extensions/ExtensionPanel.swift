@@ -15,7 +15,7 @@ import AppKit
 ///     }
 ///
 /// Top-level `actions` and row `actions` are optional lists of
-/// `{ "id", "title", "confirm"?, "icon"?, "menu"? }`; see
+/// `{ "id", "title", "confirm"?, "icon"?, "menu"?, "choose"? }`; see
 /// `ExtensionPanelAction` and `ExtensionPanelMenuItem`.
 ///
 /// Unknown keys are ignored at every level, so output written for a later
@@ -95,6 +95,8 @@ nonisolated struct ExtensionPanelContent: Equatable, Sendable, Decodable {
         let content: ExtensionPanelContent
         do {
             content = try JSONDecoder().decode(ExtensionPanelContent.self, from: data)
+        } catch let error as ExtensionPanelError {
+            throw error
         } catch let error as DecodingError {
             throw .invalidOutput(describe(error))
         } catch {
@@ -134,29 +136,47 @@ nonisolated struct ExtensionPanelContent: Equatable, Sendable, Decodable {
 }
 
 /// Something the user can do to a row or to the whole panel. Running it runs
-/// `<command> action <id> [<row id>]`. With `confirm`, the user is asked first.
-/// With `menu`, choosing it in the panel opens that menu instead of running.
+/// `<command> action <id> [<row id>] [<path>]`. With `confirm`, the user is
+/// asked first. With `menu`, choosing it in the panel opens that menu instead
+/// of running. With `choose`, the user picks a folder first and its path is
+/// the last argument.
 nonisolated struct ExtensionPanelAction: Equatable, Sendable, Decodable {
     let id: String
     let title: String
     let confirm: String?
     /// An SF Symbol name. A panel action with a real symbol gets its own
     /// button in the panel's top bar; without one it goes in the Actions menu.
-    /// Ignored on row actions.
+    /// A row action with a real symbol gets a button on its row, shown while
+    /// the pointer is over the row.
     let icon: String?
     /// Items shown when the action is chosen in the panel, in place of
     /// running it. Non-empty when present. The command palette ignores it
     /// and runs the action itself.
     let menu: [ExtensionPanelMenuItem]?
+    /// What the user picks before the action runs, or nil for nothing.
+    let choose: Choice?
 
-    private enum CodingKeys: String, CodingKey { case id, title, confirm, icon, menu }
+    /// Something the user picks in a system panel before an action runs.
+    enum Choice: String, Equatable, Sendable {
+        case folder
+    }
 
-    init(id: String, title: String, confirm: String? = nil, icon: String? = nil, menu: [ExtensionPanelMenuItem]? = nil) {
+    private enum CodingKeys: String, CodingKey { case id, title, confirm, icon, menu, choose }
+
+    init(
+        id: String,
+        title: String,
+        confirm: String? = nil,
+        icon: String? = nil,
+        menu: [ExtensionPanelMenuItem]? = nil,
+        choose: Choice? = nil
+    ) {
         self.id = id
         self.title = title
         self.confirm = confirm
         self.icon = icon
         self.menu = menu
+        self.choose = choose
     }
 
     init(from decoder: Decoder) throws {
@@ -166,10 +186,18 @@ nonisolated struct ExtensionPanelAction: Equatable, Sendable, Decodable {
         confirm = try container.decodeIfPresent(String.self, forKey: .confirm)
         icon = try container.decodeIfPresent(String.self, forKey: .icon)
         menu = try container.decodeIfPresent([ExtensionPanelMenuItem].self, forKey: .menu)
+        if let name = try container.decodeIfPresent(String.self, forKey: .choose) {
+            guard let choice = Choice(rawValue: name) else {
+                throw ExtensionPanelError.invalidOutput("action \"\(id)\" has \"choose\": \"\(name)\"; the only value is \"folder\"")
+            }
+            choose = choice
+        } else {
+            choose = nil
+        }
     }
 
-    /// Non-empty ids and titles, ids unique within one list, and a valid
-    /// `menu` when present.
+    /// Non-empty ids and titles, ids unique within one list, a valid `menu`
+    /// when present, and never both `menu` and `choose`.
     fileprivate static func validate(_ actions: [ExtensionPanelAction], in owner: String) throws(ExtensionPanelError) {
         var seen = Set<String>()
         for action in actions {
@@ -177,6 +205,9 @@ nonisolated struct ExtensionPanelAction: Equatable, Sendable, Decodable {
             guard !action.title.isEmpty else { throw .invalidOutput("action \"\(action.id)\" in \(owner) has an empty \"title\"") }
             guard seen.insert(action.id).inserted else { throw .invalidOutput("duplicate action id \"\(action.id)\" in \(owner)") }
             if let menu = action.menu {
+                guard action.choose == nil else {
+                    throw .invalidOutput("action \"\(action.id)\" in \(owner) has both \"menu\" and \"choose\"")
+                }
                 try ExtensionPanelMenuItem.validate(menu, depth: 1, in: "action \"\(action.id)\" in \(owner)")
             }
         }
@@ -410,15 +441,18 @@ nonisolated struct ExtensionPanelCommand: Sendable {
         }
     }
 
-    /// Runs `<command> action <actionID> [<rowID>]` and decodes its result.
-    /// A nil `rowID` is a panel action.
+    /// Runs `<command> action <actionID> [<rowID>] [<path>]` and decodes its
+    /// result. A nil `rowID` is a panel action. `path` is what the user chose
+    /// for an action with `choose`.
     func runAction(
         _ actionID: String,
         rowID: String?,
+        path: String? = nil,
         searchPath: String = DocumentFormatter.shellSearchPath
     ) -> Result<ExtensionActionResult, ExtensionPanelError> {
         var arguments = ["action", actionID]
         if let rowID { arguments.append(rowID) }
+        if let path { arguments.append(path) }
         return execute(arguments: arguments, searchPath: searchPath).flatMap { stdout in
             Result { () throws(ExtensionPanelError) in try ExtensionActionResult.decode(Data(stdout.utf8)) }
         }
@@ -557,11 +591,13 @@ final class ExtensionPanelRefresher {
 /// palette share one runner per extension, so both go through this one path
 /// and the one-at-a-time rule covers both.
 final class ExtensionPanelActionRunner {
-    /// Starts one action run (`rowID` nil for a panel action) and calls the
-    /// completion on the main actor. Injected so tests can hold a run open.
+    /// Starts one action run (`rowID` nil for a panel action, `path` nil
+    /// unless the action has `choose`) and calls the completion on the main
+    /// actor. Injected so tests can hold a run open.
     typealias Performer = (
         _ actionID: String,
         _ rowID: String?,
+        _ path: String?,
         _ completion: @escaping @MainActor (Result<ExtensionActionResult, ExtensionPanelError>) -> Void
     ) -> Void
 
@@ -575,6 +611,11 @@ final class ExtensionPanelActionRunner {
     /// Asks the user to confirm an action that has `confirm`; true runs it.
     /// Injected so tests do not show an alert.
     var confirmAction: @MainActor (ExtensionPanelAction) -> Bool = ExtensionPanelActionRunner.confirmWithAlert
+    /// Asks the user for the folder an action with `choose` needs, and calls
+    /// the completion with its path, or nil when they cancel. Injected so
+    /// tests do not show a panel.
+    var chooseFolder: @MainActor (ExtensionPanelAction, @escaping @MainActor (String?) -> Void) -> Void =
+        ExtensionPanelActionRunner.chooseFolderWithOpenPanel
     /// Shows a failed action's title and reason. Injected for tests.
     var showFailure: @MainActor (_ title: String, _ reason: String) -> Void = ExtensionPanelActionRunner.showFailureAlert
     /// Called after every run, success or failure.
@@ -588,29 +629,39 @@ final class ExtensionPanelActionRunner {
 
     /// The standard performer: runs `command` on a background queue.
     convenience init(command: ExtensionPanelCommand) {
-        self.init { actionID, rowID, completion in
+        self.init { actionID, rowID, path, completion in
             DispatchQueue.global(qos: .userInitiated).async {
-                let result = command.runAction(actionID, rowID: rowID)
+                let result = command.runAction(actionID, rowID: rowID, path: path)
                 DispatchQueue.main.async { completion(result) }
             }
         }
     }
 
-    /// Runs `action`, for the row with `rowID` or (nil) for the panel: asks
-    /// first when it has `confirm`, and does nothing while another runs.
+    /// Runs `action`, for the row with `rowID` or (nil) for the panel: has
+    /// the user pick a folder first when it has `choose`, asks when it has
+    /// `confirm`, and does nothing while another runs. Cancelling either
+    /// runs nothing.
     func perform(_ action: ExtensionPanelAction, rowID: String?) {
         guard !isRunning else { return }
-        if action.confirm != nil, !confirmAction(action) { return }
-        run(action, rowID: rowID)
+        guard action.choose != nil else {
+            if action.confirm != nil, !confirmAction(action) { return }
+            run(action, rowID: rowID)
+            return
+        }
+        chooseFolder(action) { [weak self] path in
+            guard let self, let path else { return }
+            if action.confirm != nil, !self.confirmAction(action) { return }
+            self.run(action, rowID: rowID, path: path)
+        }
     }
 
     /// Starts `action` without asking. Returns false, running nothing, while
     /// another runs.
     @discardableResult
-    func run(_ action: ExtensionPanelAction, rowID: String?) -> Bool {
+    func run(_ action: ExtensionPanelAction, rowID: String?, path: String? = nil) -> Bool {
         guard !isRunning else { return false }
         isRunning = true
-        perform(action.id, rowID) { [weak self] result in
+        perform(action.id, rowID, path) { [weak self] result in
             self?.finish(action, result)
         }
         return true
@@ -641,6 +692,32 @@ final class ExtensionPanelActionRunner {
         alert.addButton(withTitle: action.title)
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// The real `chooseFolder`: an open panel that picks one folder, as a
+    /// sheet on the main window when there is one. The action's title, less
+    /// a trailing ellipsis, is the panel's message.
+    private static func chooseFolderWithOpenPanel(
+        _ action: ExtensionPanelAction,
+        completion: @escaping @MainActor (String?) -> Void
+    ) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.message = action.title.trimmingCharacters(in: CharacterSet(charactersIn: "…. "))
+        panel.prompt = "Choose"
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            MainActor.assumeIsolated {
+                completion(response == .OK ? panel.url?.path : nil)
+            }
+        }
+        if let window = NSApp.mainWindow {
+            panel.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            panel.begin(completionHandler: finish)
+        }
     }
 
     /// The failure alert: `title` as the message, `reason` below it.

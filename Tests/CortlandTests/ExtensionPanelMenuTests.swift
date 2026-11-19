@@ -67,7 +67,7 @@ final class ExtensionPanelMenuTests: XCTestCase {
         var completions: [@MainActor (Result<ExtensionActionResult, ExtensionPanelError>) -> Void] = []
 
         func make() -> ExtensionPanelActionRunner {
-            ExtensionPanelActionRunner { [unowned self] actionID, rowID, completion in
+            ExtensionPanelActionRunner { [unowned self] actionID, rowID, _, completion in
                 calls.append((actionID, rowID))
                 completions.append(completion)
             }

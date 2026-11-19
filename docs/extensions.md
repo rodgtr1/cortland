@@ -164,7 +164,9 @@ An action is something the user can do. List row actions in a row's `actions`, a
 - Double-clicking a row runs its first action, so put the most common one first.
 - Right-clicking a row lists all of its actions.
 - A panel action with an `icon` gets its own button at the top of the panel. Panel actions without one go in a "…" menu.
+- A row action with an `icon` also gets a small button on its row, shown while the pointer is over the row.
 - An action with `confirm` makes Cortland ask before running it. Use it for anything destructive.
+- An action with `"choose": "folder"` makes Cortland show a folder picker first. The chosen folder's path arrives as one more argument, after the row id. Cancelling runs nothing.
 - An action with a `menu` opens a menu instead of running (a dropdown under its top-bar button, or a submenu in a menu). Each item runs its own action id, as a row action when it has a `row`.
 
 ```json

@@ -2,7 +2,8 @@ import Cocoa
 
 /// A sidebar panel filled by an extension's `command panel` output: an
 /// optional message, then section headers and rows. Rows and the panel may
-/// carry actions: a row's in its context menu (the first also on double-click),
+/// carry actions: a row's in its context menu (the first also on double-click,
+/// and those with an icon as buttons on the row while the pointer is over it),
 /// the panel's as icon buttons in the top bar, or behind the Actions button
 /// when they have no icon. An action with a `menu` opens that menu (a
 /// submenu, inside a menu) instead of running.
@@ -268,6 +269,21 @@ final class ExtensionPanelViewController: NSViewController {
         return NSImage(systemSymbolName: icon, accessibilityDescription: nil) != nil
     }
 
+    /// Row actions drawn as a button on the row: those whose `icon` is a real
+    /// SF Symbol.
+    static func iconRowActions(_ row: ExtensionPanelContent.Row) -> [ExtensionPanelAction] {
+        row.actions.filter(hasSymbol)
+    }
+
+    /// Runs a row button's action, or shows its menu when it has one.
+    private func rowActionClicked(_ action: ExtensionPanelAction, rowID: String, button: NSView) {
+        if let menu = buttonMenu(for: action) {
+            showMenu(menu, button)
+        } else {
+            perform(action, rowID: rowID)
+        }
+    }
+
     /// The id of the selected row, if a row is selected.
     var selectedRowID: String? {
         guard let tableView, let index = tableView.selectedRowIndexes.first else { return nil }
@@ -451,54 +467,11 @@ extension ExtensionPanelViewController: NSTableViewDelegate {
                 label.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
             ])
         case .row(let entry):
-            let titleLabel = NSTextField(labelWithString: entry.title)
-            titleLabel.font = NSFont.systemFont(ofSize: 13)
-            titleLabel.textColor = AppTheme.primaryText
-            titleLabel.lineBreakMode = .byTruncatingTail
-            titleLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
-            titleLabel.translatesAutoresizingMaskIntoConstraints = false
-            titleLabel.toolTip = entry.detail.map { "\(entry.title)\n\($0)" } ?? entry.title
-            cell.addSubview(titleLabel)
-
-            var leading = cell.leadingAnchor
-            var leadingInset: CGFloat = 12
-            if let iconName = entry.icon,
-               let image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil) {
-                let icon = NSImageView(image: image)
-                icon.contentTintColor = AppTheme.accent
-                icon.translatesAutoresizingMaskIntoConstraints = false
-                cell.addSubview(icon)
-                NSLayoutConstraint.activate([
-                    icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12),
-                    icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                    icon.widthAnchor.constraint(equalToConstant: 14),
-                    icon.heightAnchor.constraint(equalToConstant: 14)
-                ])
-                leading = icon.trailingAnchor
-                leadingInset = 7
+            let rowCell = ExtensionPanelRowCellView(entry: entry, iconActions: Self.iconRowActions(entry))
+            rowCell.onAction = { [weak self] action, button in
+                self?.rowActionClicked(action, rowID: entry.id, button: button)
             }
-
-            NSLayoutConstraint.activate([
-                titleLabel.leadingAnchor.constraint(equalTo: leading, constant: leadingInset),
-                titleLabel.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
-            ])
-
-            if let detail = entry.detail, !detail.isEmpty {
-                let detailLabel = NSTextField(labelWithString: detail)
-                detailLabel.font = NSFont.systemFont(ofSize: 11)
-                detailLabel.textColor = AppTheme.secondaryText
-                detailLabel.lineBreakMode = .byTruncatingTail
-                detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-                detailLabel.translatesAutoresizingMaskIntoConstraints = false
-                cell.addSubview(detailLabel)
-                NSLayoutConstraint.activate([
-                    detailLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
-                    detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8),
-                    detailLabel.firstBaselineAnchor.constraint(equalTo: titleLabel.firstBaselineAnchor)
-                ])
-            } else {
-                titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -8).isActive = true
-            }
+            return rowCell
         }
 
         return cell
@@ -512,5 +485,194 @@ extension ExtensionPanelViewController: NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
         if case .row = items[row] { return true }
         return false
+    }
+}
+
+// MARK: - Row cell
+
+/// One panel row: icon, title, detail, and a button for each row action that
+/// has an icon. The buttons fade in while the pointer is over the row, and
+/// the text gives way to them.
+final class ExtensionPanelRowCellView: NSTableCellView {
+    /// Called with the action of a clicked button, and the button.
+    var onAction: ((ExtensionPanelAction, NSView) -> Void)?
+    /// One per icon action, in order.
+    private(set) var actionButtons: [NSButton] = []
+
+    private let iconActions: [ExtensionPanelAction]
+    private let actionStack = NSStackView()
+    /// The text ends at the cell's edge, or before the buttons.
+    private var restingTrailing: NSLayoutConstraint?
+    private var hoverTrailing: NSLayoutConstraint?
+    private var isHovered = false
+
+    init(entry: ExtensionPanelContent.Row, iconActions: [ExtensionPanelAction]) {
+        self.iconActions = iconActions
+        super.init(frame: .zero)
+        setup(entry)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    private func setup(_ entry: ExtensionPanelContent.Row) {
+        let titleLabel = NSTextField(labelWithString: entry.title)
+        titleLabel.font = NSFont.systemFont(ofSize: 13)
+        titleLabel.textColor = AppTheme.primaryText
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.toolTip = entry.detail.map { "\(entry.title)\n\($0)" } ?? entry.title
+        addSubview(titleLabel)
+
+        var leading = leadingAnchor
+        var leadingInset: CGFloat = 12
+        if let iconName = entry.icon,
+           let image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil) {
+            let icon = NSImageView(image: image)
+            icon.contentTintColor = AppTheme.accent
+            icon.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(icon)
+            NSLayoutConstraint.activate([
+                icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+                icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+                icon.widthAnchor.constraint(equalToConstant: 14),
+                icon.heightAnchor.constraint(equalToConstant: 14)
+            ])
+            leading = icon.trailingAnchor
+            leadingInset = 7
+        }
+
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: leading, constant: leadingInset),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+
+        var lastLabel = titleLabel
+        if let detail = entry.detail, !detail.isEmpty {
+            let detailLabel = NSTextField(labelWithString: detail)
+            detailLabel.font = NSFont.systemFont(ofSize: 11)
+            detailLabel.textColor = AppTheme.secondaryText
+            detailLabel.lineBreakMode = .byTruncatingTail
+            detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            detailLabel.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(detailLabel)
+            NSLayoutConstraint.activate([
+                detailLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
+                detailLabel.firstBaselineAnchor.constraint(equalTo: titleLabel.firstBaselineAnchor)
+            ])
+            lastLabel = detailLabel
+        }
+        let resting = lastLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8)
+        resting.isActive = true
+        restingTrailing = resting
+
+        guard !iconActions.isEmpty else { return }
+        actionButtons = iconActions.enumerated().map { index, action in
+            let button = ExtensionRowActionButton(action: action)
+            button.target = self
+            button.action = #selector(actionClicked(_:))
+            button.tag = index
+            return button
+        }
+        actionStack.orientation = .horizontal
+        actionStack.spacing = 2
+        actionStack.alphaValue = 0
+        actionStack.translatesAutoresizingMaskIntoConstraints = false
+        actionButtons.forEach(actionStack.addArrangedSubview)
+        addSubview(actionStack)
+        NSLayoutConstraint.activate([
+            actionStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            actionStack.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+        hoverTrailing = lastLabel.trailingAnchor.constraint(lessThanOrEqualTo: actionStack.leadingAnchor, constant: -6)
+
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    @objc private func actionClicked(_ sender: NSButton) {
+        guard let action = iconActions[safe: sender.tag] else { return }
+        onAction?(action, sender)
+    }
+
+    /// A reload can build this cell under a pointer that never moves, so no
+    /// entered event arrives; ask where the pointer is.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        guard !iconActions.isEmpty, let window else { return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        setHovered(bounds.contains(point), animated: false)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        setHovered(true, animated: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setHovered(false, animated: true)
+    }
+
+    private func setHovered(_ hovered: Bool, animated: Bool) {
+        guard hovered != isHovered else { return }
+        isHovered = hovered
+        // Never both active: the one being dropped goes first.
+        if hovered {
+            restingTrailing?.isActive = false
+            hoverTrailing?.isActive = true
+        } else {
+            hoverTrailing?.isActive = false
+            restingTrailing?.isActive = true
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = animated ? 0.12 : 0
+            actionStack.animator().alphaValue = hovered ? 1 : 0
+        }
+    }
+}
+
+/// A small borderless icon button on a row. Quiet until the pointer is over
+/// it, then it brightens and gains a soft rounded backing.
+private final class ExtensionRowActionButton: NSButton {
+    init(action: ExtensionPanelAction) {
+        super.init(frame: .zero)
+        let symbol = action.icon.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: action.title) }
+        image = symbol?.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
+        imagePosition = .imageOnly
+        isBordered = false
+        toolTip = action.title
+        contentTintColor = AppTheme.secondaryText
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 20),
+            heightAnchor.constraint(equalToConstant: 20)
+        ])
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        contentTintColor = AppTheme.primaryText
+        layer?.backgroundColor = AppTheme.primaryText.withAlphaComponent(0.12).cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        contentTintColor = AppTheme.secondaryText
+        layer?.backgroundColor = nil
     }
 }

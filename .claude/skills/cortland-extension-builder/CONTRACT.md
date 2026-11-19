@@ -63,6 +63,8 @@ Cortland runs the command in two forms:
 <command> action <action-id> <row-id>   # a row action
 ```
 
+An action with `choose` gets one more argument, always last: the absolute path the user chose.
+
 - The executable is `command` resolved to its real path inside the folder.
 - The working directory is the extension folder.
 - The environment is Cortland's own, with `PATH` replaced by the user's login shell `PATH` (asked once per app launch; the app's own `PATH` if that fails), and `GIT_TERMINAL_PROMPT=0` and `GIT_ASKPASS=/usr/bin/true` set.
@@ -120,10 +122,11 @@ What `<command> panel` prints:
 | `id` | action | yes | Non-empty string, unique within its list. Passed back as `<action-id>`. |
 | `title` | action | yes | Non-empty string. The menu item, button tooltip, and confirm button text. |
 | `confirm` | action | no | String. When present, Cortland asks first in an alert with this text, a button titled with the action's title, and Cancel. |
-| `icon` | action | no | SF Symbol name. Used only on panel actions; ignored on row actions. |
+| `icon` | action | no | SF Symbol name. A panel action with one gets a top-bar button; a row action with one gets a button on its row. See "How rows and actions surface". |
 | `menu` | action | no | Non-empty array of menu items. Choosing the action in the panel opens this menu instead of running the action. See "Action menus". |
+| `choose` | action | no | `"folder"`, the only value. Cortland shows a folder picker before running the action and passes the chosen folder's absolute path as the last argument. Cancel runs nothing. Not allowed together with `menu`. |
 
-Unknown keys are ignored at every level. A wrong type, a missing required key, an empty id or action title, a duplicate row id, a duplicate action id within one list, or a broken `menu` rule (see "Action menus") makes the whole output invalid, and the panel shows the error instead.
+Unknown keys are ignored at every level. A wrong type, a missing required key, an empty id or action title, a duplicate row id, a duplicate action id within one list, a `choose` other than `"folder"`, a `choose` beside a `menu`, or a broken `menu` rule (see "Action menus") makes the whole output invalid, and the panel shows the error instead.
 
 ## Action menus
 
@@ -170,16 +173,20 @@ Rules (any violation makes the whole output invalid):
 
 A leaf item runs exactly as an action does: `confirm`, the failure alert, the result's effects, one action at a time, and the refresh afterwards.
 
+**Older Cortland builds** do not know `choose` either. They run the action without the path argument, so an action that needs one must fail with a clear stderr line when it is missing.
+
 **Older Cortland builds** do not know `menu`. They ignore it as an unknown key and run the parent action itself. Give the parent an `id` that does something sensible when run directly. In the example, clicking "+" in an older build runs `new`, the same as the menu's first item.
 
 ## How rows and actions surface
 
 - **Double-click** a row: runs the row's first action. When that action has a `menu`, double-click does nothing, since a menu cannot open from a double-click.
 - **Context menu** on a row: lists all of the row's actions in order. An action with a `menu` is an item with a submenu.
+- **Row buttons**: a row action whose `icon` is a real SF Symbol also gets a small icon button at the row's trailing edge, in listed order, visible while the pointer is over the row. Its tooltip is the action's title. Clicking one whose action has a `menu` shows that menu.
 - **Panel actions** whose `icon` is a real SF Symbol get their own button in the panel's top bar, in listed order, left of the Refresh button. Clicking a button whose action has a `menu` shows that menu below the button and runs nothing. The rest are listed in the **Actions** menu (an ellipsis button), which is hidden when there are none; there an action with a `menu` is an item with a submenu.
 - Nested menus are submenus.
 - **Refresh** button in the top bar runs `panel` now.
 - An action with `confirm` asks first; Cancel runs nothing.
+- An action with `choose` shows the folder picker first, then asks when it also has `confirm`. This holds wherever the action is run from, the palette included. Menu items cannot carry `choose`.
 - One action runs at a time per extension, shared between the panel and the palette. A request while one is running is ignored.
 
 ## Action result

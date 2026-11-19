@@ -326,7 +326,7 @@ final class ExtensionPanelActionTests: XCTestCase {
         var completions: [@MainActor (Result<ExtensionActionResult, ExtensionPanelError>) -> Void] = []
 
         func make() -> ExtensionPanelActionRunner {
-            ExtensionPanelActionRunner { [unowned self] actionID, rowID, completion in
+            ExtensionPanelActionRunner { [unowned self] actionID, rowID, _, completion in
                 calls.append((actionID, rowID))
                 completions.append(completion)
             }
@@ -582,6 +582,99 @@ final class ExtensionPanelActionTests: XCTestCase {
         let controller = try controllerWithRows(runs: runs, loads: loads, content: content)
         XCTAssertEqual(controller.iconPanelActions.map(\.id), ["new"])
         XCTAssertFalse(controller.isActionsButtonVisible)
+    }
+
+    // MARK: - Choosing a folder
+
+    func testChooseFolderDecodes() throws {
+        let content = try decode(#"{"sections":[{"title":"S","rows":[{"id":"a","title":"a","actions":[{"id":"upload","title":"Upload Folder…","icon":"arrow.up","choose":"folder"},{"id":"open","title":"Open"}]}]}]}"#)
+        let actions = content.sections[0].rows[0].actions
+        XCTAssertEqual(actions[0].choose, .folder)
+        XCTAssertNil(actions[1].choose)
+    }
+
+    func testUnknownChooseValueIsInvalid() {
+        XCTAssertEqual(
+            decodeError(#"{"actions":[{"id":"up","title":"Up","choose":"file"}]}"#),
+            .invalidOutput(#"action "up" has "choose": "file"; the only value is "folder""#))
+    }
+
+    func testChooseWithMenuIsInvalid() {
+        XCTAssertEqual(
+            decodeError(#"{"actions":[{"id":"up","title":"Up","choose":"folder","menu":[{"id":"x","title":"X"}]}]}"#),
+            .invalidOutput(#"action "up" in the panel has both "menu" and "choose""#))
+    }
+
+    func testChosenPathIsTheLastArgument() {
+        let rowRunner = FakeRunner(stdout: "{}")
+        _ = command(rowRunner).runAction("upload", rowID: "widget/alpha", path: "/tmp/my folder", searchPath: "/opt/bin:/usr/bin")
+        XCTAssertEqual(rowRunner.arguments, [["action", "upload", "widget/alpha", "/tmp/my folder"]])
+
+        let panelRunner = FakeRunner(stdout: "{}")
+        _ = command(panelRunner).runAction("import", rowID: nil, path: "/tmp/in", searchPath: "/opt/bin:/usr/bin")
+        XCTAssertEqual(panelRunner.arguments, [["action", "import", "/tmp/in"]])
+    }
+
+    func testChooseActionRunsWithTheChosenPath() {
+        var runs: [(String, String?, String?)] = []
+        let runner = ExtensionPanelActionRunner { actionID, rowID, path, completion in
+            runs.append((actionID, rowID, path))
+            completion(.success(ExtensionActionResult()))
+        }
+        var asked: [String] = []
+        runner.chooseFolder = { action, completion in
+            asked.append(action.id)
+            completion("/Users/me/site")
+        }
+        runner.perform(ExtensionPanelAction(id: "upload", title: "Upload", choose: .folder), rowID: "a")
+        runner.perform(ExtensionPanelAction(id: "open", title: "Open"), rowID: "a")
+
+        XCTAssertEqual(asked, ["upload"], "only an action with choose asks for a folder")
+        XCTAssertEqual(runs.map(\.0), ["upload", "open"])
+        XCTAssertEqual(runs.map(\.2), ["/Users/me/site", nil])
+    }
+
+    func testCancellingTheFolderRunsNothing() {
+        var runCount = 0
+        let runner = ExtensionPanelActionRunner { _, _, _, completion in
+            runCount += 1
+            completion(.success(ExtensionActionResult()))
+        }
+        var confirmations = 0
+        var finishes = 0
+        runner.chooseFolder = { _, completion in completion(nil) }
+        runner.confirmAction = { _ in confirmations += 1; return true }
+        runner.onFinish = { finishes += 1 }
+        runner.perform(ExtensionPanelAction(id: "upload", title: "Upload", confirm: "Sure?", choose: .folder), rowID: "a")
+
+        XCTAssertEqual(runCount, 0)
+        XCTAssertEqual(confirmations, 0)
+        XCTAssertEqual(finishes, 0)
+    }
+
+    // MARK: - Row buttons
+
+    func testRowActionWithAnIconGetsARowButtonThatRunsIt() throws {
+        let runs = HeldRuns()
+        let loads = HeldLoads()
+        let rows = ExtensionPanelContent(sections: [.init(title: "S", rows: [
+            .init(id: "a", title: "a", actions: [
+                ExtensionPanelAction(id: "open", title: "Open"),
+                ExtensionPanelAction(id: "upload", title: "Upload", icon: "arrow.up"),
+                ExtensionPanelAction(id: "odd", title: "Odd", icon: "not.a.real.symbol.name")
+            ])
+        ])])
+        let controller = try controllerWithRows(runs: runs, loads: loads, content: rows)
+        let index = try XCTUnwrap(controller.items.firstIndex(of: .row(rows.sections[0].rows[0])))
+        let table = NSTableView()
+        let cell = try XCTUnwrap(controller.tableView(table, viewFor: nil, row: index) as? ExtensionPanelRowCellView)
+
+        XCTAssertEqual(cell.actionButtons.map(\.toolTip), ["Upload"])
+        XCTAssertEqual(controller.contextMenuItems(rowAt: index).map(\.title), ["Open", "Upload", "Odd"])
+
+        cell.actionButtons[0].performClick(nil)
+        XCTAssertEqual(runs.calls.map(\.0), ["upload"])
+        XCTAssertEqual(runs.calls.map(\.1), ["a"])
     }
 
     // MARK: - Selection across reloads
