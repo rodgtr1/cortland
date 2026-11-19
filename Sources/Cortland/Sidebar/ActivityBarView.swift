@@ -73,6 +73,9 @@ class ActivityBarView: NSView {
     /// The extension ids behind `extensionButtons`, in the same order.
     private(set) var extensionPanelIDs: [String] = []
     private var agentsBadge: NSTextField?
+    /// A one-pixel rule down the trailing edge, so the icon column reads as
+    /// separate from the sidebar panel (or the terminal) beside it.
+    private let trailingRule = NSView()
     private var themeObserver: ThemeObserver?
     private let buttonSize: CGFloat = 40
     private let buttonSpacing: CGFloat = 4
@@ -94,6 +97,15 @@ class ActivityBarView: NSView {
 
     private func setupView() {
         wantsLayer = true
+        trailingRule.wantsLayer = true
+        trailingRule.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(trailingRule)
+        NSLayoutConstraint.activate([
+            trailingRule.topAnchor.constraint(equalTo: topAnchor),
+            trailingRule.bottomAnchor.constraint(equalTo: bottomAnchor),
+            trailingRule.trailingAnchor.constraint(equalTo: trailingAnchor),
+            trailingRule.widthAnchor.constraint(equalToConstant: 1)
+        ])
         applyBackground(enableBlur: true) // Default to blur enabled
         createActivityButtons()
         themeObserver = ThemeObserver { [weak self] in self?.applyThemeColors() }
@@ -110,6 +122,7 @@ class ActivityBarView: NSView {
         let bgColor = Theme.shared.current.windowBackground
         layer?.backgroundColor = bgColor.cgColor
         layer?.isOpaque = true
+        trailingRule.layer?.backgroundColor = Theme.shared.current.separator.cgColor
     }
 
     private func createActivityButtons() {
