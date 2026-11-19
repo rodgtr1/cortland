@@ -337,6 +337,26 @@ so far:
   closing the panel. Entries append to `~/.config/cortland/journal/`, one
   plain markdown file per month that you own.
 
+## Extensions
+
+An extension adds a panel to the sidebar and commands to the palette. It is a
+folder with a manifest (`extension.toml`) and one executable, written in any
+language. Cortland runs the executable as a separate process and draws the
+JSON it prints: rows to show, actions the user can take, and what each action
+should do (open a terminal tab, open a link, copy text).
+
+Each extension lives in its own git repository. Install one with **Install
+from URL…** in Preferences → Extensions, or `cortland-ctl extension install
+<url>`, then check **Enabled** next to it. Extensions start disabled, Update
+pulls the latest version, and Remove moves one to the Trash. An extension runs
+as you, with your access, so only install ones you trust.
+
+To build one, see [Building Cortland extensions](docs/extensions.md). It
+walks through a first extension, the manifest, and the rules that keep a
+panel well behaved. `cortland-ctl extension validate <folder>` checks a folder
+against the contract, and the `cortland-extension-builder` skill in
+`.claude/skills/` teaches an AI agent to build one for you.
+
 ## MCP Server
 
 `cortland-mcp` exposes Cortland's pane orchestration as MCP tools over

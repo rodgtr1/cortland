@@ -38,9 +38,13 @@ nonisolated struct IPCCommand: Codable, Sendable {
     /// pre-handshake helpers, which is exactly what makes them detectable —
     /// see `AgentStatusReport.legacyProtocolVersion`.
     let protocolVersion: Int?
+    /// Repository location for `extension_install`.
+    let url: String?
+    /// Extension id for `extension_update`.
+    let id: String?
 
     enum CodingKeys: String, CodingKey {
-        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, since, status, match, format, worktree, force, type, backlog, telemetry
+        case action, path, old, new, cwd, direction, focus, command, text, key, source, lines, since, status, match, format, worktree, force, type, backlog, telemetry, url, id
         case paneID = "pane_id"
         case timeoutMS = "timeout_ms"
         case protocolVersion = "protocol_version"
@@ -134,6 +138,12 @@ nonisolated struct IPCResult: Codable, Sendable {
     /// True when a `since` cursor couldn't be served as a delta (stale or
     /// evicted) and `text` is a full re-read instead. Absent otherwise.
     let truncated: Bool?
+    /// The report from `extension_validate`.
+    let validation: ExtensionValidationReport?
+    /// The installed extension from `extension_install`.
+    let installation: ExtensionInstallResult?
+    /// The outcome of `extension_update`.
+    let update: ExtensionUpdateResult?
 
     init(
         panes: [IPCPaneInfo]? = nil,
@@ -144,7 +154,10 @@ nonisolated struct IPCResult: Codable, Sendable {
         commands: [IPCCommandRecord]? = nil,
         worktrees: [IPCWorktreeInfo]? = nil,
         cursor: String? = nil,
-        truncated: Bool? = nil
+        truncated: Bool? = nil,
+        validation: ExtensionValidationReport? = nil,
+        installation: ExtensionInstallResult? = nil,
+        update: ExtensionUpdateResult? = nil
     ) {
         self.panes = panes
         self.pane = pane
@@ -155,6 +168,9 @@ nonisolated struct IPCResult: Codable, Sendable {
         self.worktrees = worktrees
         self.cursor = cursor
         self.truncated = truncated
+        self.validation = validation
+        self.installation = installation
+        self.update = update
     }
 }
 
@@ -198,6 +214,9 @@ nonisolated enum IPCCommandType {
     case worktreePrune(cwd: String?)
     case reportTelemetry(paneID: UUID, usage: TranscriptUsage)
     case resetTelemetry(paneID: UUID)
+    case extensionValidate(folder: String)
+    case extensionInstall(url: String)
+    case extensionUpdate(id: String)
 
     /// Outcome of parsing an `IPCCommand`, distinguishing "unknown command"
     /// from "known command, invalid arguments" straight from the switch in
@@ -360,6 +379,19 @@ nonisolated enum IPCCommandType {
         case "reset_telemetry":
             guard let paneID = uuid(command.paneID) else { return .invalidArguments }
             return .command(.resetTelemetry(paneID: paneID))
+        case "extension_validate":
+            guard let path = command.path, let folder = validatedExtensionFolder(path) else { return .invalidArguments }
+            return .command(.extensionValidate(folder: folder))
+        case "extension_install":
+            guard let raw = command.url, case .success(let url) = ExtensionInstaller.validatedLocation(raw) else {
+                return .invalidArguments
+            }
+            return .command(.extensionInstall(url: url))
+        case "extension_update":
+            guard let id = command.id, !id.isEmpty, !id.contains("/"), id != ".", id != ".." else {
+                return .invalidArguments
+            }
+            return .command(.extensionUpdate(id: id))
         default:
             return .unknownAction
         }
@@ -417,6 +449,18 @@ nonisolated enum IPCCommandType {
             return nil
         }
         return resolved
+    }
+
+    /// Requires an absolute path to an existing directory. Symlinks are not
+    /// resolved, because an extension's folder name must equal its id and an
+    /// installed extension is often a symlink named for its id.
+    private static func validatedExtensionFolder(_ path: String) -> String? {
+        guard path.hasPrefix("/") else { return nil }
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: standardized, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return nil }
+        return standardized
     }
 
     /// Resolves symlinks and requires an absolute path to an existing directory.

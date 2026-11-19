@@ -64,6 +64,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // consent before its first automatic check; nothing installs silently.
         SoftwareUpdater.shared.start()
 
+        // Find installed extensions once at launch; observers of
+        // .extensionsDidChange follow later changes.
+        ExtensionRegistry.shared.reload()
+
         mainWindowController = MainWindowController()
         Log.debug("✅ MainWindowController created", category: "app")
 

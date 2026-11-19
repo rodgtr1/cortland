@@ -116,7 +116,7 @@ final class PreferencesFormBuilder {
 
     /// A name label with a trailing action button on the same baseline, and a
     /// wrapping status label beneath — the repeating row on the Agents tab.
-    func agentRow(name: String, statusLabel: NSTextField, button: NSButton, gapAbove: CGFloat) {
+    func agentRow(name: String, statusLabel: NSTextField, button: NSView, gapAbove: CGFloat) {
         let nameLabel = NSTextField(labelWithString: name)
         nameLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)
         nameLabel.textColor = AppTheme.primaryText

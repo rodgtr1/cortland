@@ -401,6 +401,12 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             handleReportTelemetry(paneID: paneID, usage: usage, completion: completion)
         case .resetTelemetry(let paneID):
             handleResetTelemetry(paneID: paneID, completion: completion)
+        case .extensionValidate(let folder):
+            handleExtensionValidate(folder: folder, completion: completion)
+        case .extensionInstall(let url):
+            handleExtensionInstall(url: url, completion: completion)
+        case .extensionUpdate(let id):
+            handleExtensionUpdate(id: id, completion: completion)
         }
     }
 
@@ -741,6 +747,40 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
                 case .failure(let error):
                     completion(IPCResponse(ok: false, error: Self.worktreeErrorMessage(error)))
                 }
+            }
+        }
+    }
+
+    private func handleExtensionValidate(folder: String, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        // Runs the extension's own `panel` command, so check off the main
+        // thread and hop back to reply, like the worktree verbs.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let report = ExtensionValidator.validate(folder: URL(fileURLWithPath: folder, isDirectory: true))
+            DispatchQueue.main.async {
+                completion(IPCResponse(result: IPCResult(validation: report)))
+            }
+        }
+    }
+
+    private func handleExtensionInstall(url: String, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        // The registry clones off the main thread and rescans when done.
+        Task {
+            do {
+                let installed = try await ExtensionRegistry.shared.install(from: url)
+                completion(IPCResponse(result: IPCResult(installation: installed)))
+            } catch {
+                completion(IPCResponse(ok: false, error: error.localizedDescription))
+            }
+        }
+    }
+
+    private func handleExtensionUpdate(id: String, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        Task {
+            do {
+                let update = try await ExtensionRegistry.shared.update(id)
+                completion(IPCResponse(result: IPCResult(update: update)))
+            } catch {
+                completion(IPCResponse(ok: false, error: error.localizedDescription))
             }
         }
     }

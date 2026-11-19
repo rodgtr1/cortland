@@ -82,6 +82,21 @@ struct CortlandCtl {
                 printJSON((response["result"] as? [String: Any])?["agents"] ?? [])
             } else if args.prefix(2).elementsEqual(["worktree", "list"]) {
                 printJSON((response["result"] as? [String: Any])?["worktrees"] ?? [])
+            } else if args.prefix(2).elementsEqual(["extension", "validate"]) {
+                let validation = (response["result"] as? [String: Any])?["validation"] as? [String: Any]
+                guard let validation else { fail("Cortland returned no validation result") }
+                printJSON(validation)
+                if validation["valid"] as? Bool != true { exit(1) }
+            } else if args.prefix(2).elementsEqual(["extension", "install"]) {
+                guard let installation = (response["result"] as? [String: Any])?["installation"] else {
+                    fail("Cortland returned no install result")
+                }
+                printJSON(installation)
+            } else if args.prefix(2).elementsEqual(["extension", "update"]) {
+                guard let update = (response["result"] as? [String: Any])?["update"] else {
+                    fail("Cortland returned no update result")
+                }
+                printJSON(update)
             } else if args.prefix(2).elementsEqual(["worktree", "prune"]) {
                 if let text = (response["result"] as? [String: Any])?["text"] as? String, !text.isEmpty {
                     print(text)
@@ -122,8 +137,31 @@ struct CortlandCtl {
             return try waitRequest(Array(args.dropFirst()))
         case "worktree":
             return try worktreeRequest(Array(args.dropFirst()))
+        case "extension":
+            return try extensionRequest(Array(args.dropFirst()))
         default:
             throw CLIError("Unknown command: \(args[0])")
+        }
+    }
+
+    /// `extension validate <folder>`: the folder is sent as an absolute path,
+    /// a relative one resolved against the current directory.
+    /// `extension install <url>`: the repository location, sent as typed.
+    /// `extension update <id>`: an installed extension's id.
+    private static func extensionRequest(_ args: [String]) throws -> [String: Any] {
+        switch args.first {
+        case "validate":
+            guard args.count == 2 else { throw CLIError("extension validate requires exactly one folder") }
+            let folder = URL(fileURLWithPath: expandTilde(args[1])).standardizedFileURL.path
+            return ["action": "extension_validate", "path": folder]
+        case "install":
+            guard args.count == 2 else { throw CLIError("extension install requires exactly one repository URL") }
+            return ["action": "extension_install", "url": args[1]]
+        case "update":
+            guard args.count == 2 else { throw CLIError("extension update requires exactly one extension id") }
+            return ["action": "extension_update", "id": args[1]]
+        default:
+            throw CLIError("extension requires a subcommand: validate <folder> | install <url> | update <id>")
         }
     }
 
@@ -391,6 +429,15 @@ struct CortlandCtl {
           worktree prune [--cwd dir]                       drop stale worktree entries
           events [--follow] [--pane id] [--type agent_state|command|diff]
                               stream events as JSONL; replays current pane state on connect
+          extension validate <folder>                      check an extension folder (need not be installed);
+                              runs its panel command once and prints errors and warnings
+                              as JSON. Exits 1 when invalid.
+          extension install <url>                          clone an extension's git repository into
+                              ~/.config/cortland/extensions/<id>, disabled; never runs it.
+                              Prints id, name, version, and enabled as JSON.
+          extension update <id>                            git pull an extension installed from a URL;
+                              prints id, updated, version_before, version_after, and
+                              invalid (only when the manifest no longer validates).
         """)
         exit(1)
     }

@@ -1,0 +1,212 @@
+#!/usr/bin/python3
+"""Cortland extension: widgets in a sidebar panel.
+
+`run panel` prints the panel JSON on stdout and exits 0, also when the tool
+is missing, logged out, or slow: the problem goes in "message".
+
+`run action <action-id> [<row-id>]` prints the action result JSON and exits
+0, or prints one line on stderr and exits 1.
+
+Anything else prints a usage line on stderr and exits 2.
+
+Standard library only; runs on Python 3.9.
+"""
+
+import json
+import subprocess
+import sys
+
+TIMEOUT_SECONDS = 20
+
+# TODO: the CLI this extension drives, as the user runs it.
+TOOL = "widgets"
+
+# TODO: replace each sample command with the CLI's real read-only command.
+# The samples run /bin/echo so the template works before it is edited.
+#
+# A command that cannot prompt and proves a live session. Never one that can
+# open a login flow.
+SESSION_COMMAND = ["/bin/echo", '{"logged_in": true}']
+# The listing. Its field names (name, status) were observed in its real
+# output; write down here any that could not be observed.
+LIST_COMMAND = [
+    "/bin/echo",
+    '[{"name": "alpha", "status": "running"}, {"name": "beta", "status": "stopped"}]',
+]
+
+ROW_PREFIX = "widget/"
+USAGE = "usage: run panel | run action <action-id> [<row-id>]"
+
+
+class CommandError(Exception):
+    """A command failed. The message is one line for the user."""
+
+
+class ToolNotFound(CommandError):
+    """The command is not on PATH."""
+
+
+class ActionError(Exception):
+    """An action that cannot run. The message is the stderr line."""
+
+
+def run_command(argv):
+    """Runs argv with a timeout and stdin from /dev/null and returns its
+    stdout. Raises CommandError (ToolNotFound when it is not installed)."""
+    try:
+        completed = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            timeout=TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError:
+        raise ToolNotFound("%s not found on PATH" % argv[0])
+    except subprocess.TimeoutExpired:
+        raise CommandError("%s timed out after %ds" % (argv[0], TIMEOUT_SECONDS))
+    except OSError as error:
+        raise CommandError("could not run %s: %s" % (argv[0], error))
+    if completed.returncode != 0:
+        line = first_line(completed.stderr)
+        raise CommandError(line or "%s exited with status %d" % (argv[0], completed.returncode))
+    return completed.stdout
+
+
+def first_line(text):
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def run_json(run, argv, expect):
+    """stdout of argv parsed as JSON of type `expect` (list or dict)."""
+    try:
+        data = json.loads(run(argv))
+    except ValueError:
+        raise CommandError("%s did not print JSON" % argv[0])
+    if not isinstance(data, expect):
+        raise CommandError("%s printed unexpected JSON" % argv[0])
+    return data
+
+
+def session_problem(run):
+    """None only on positive proof of a live session; otherwise the line to
+    show. Fails closed: anything unexpected counts as logged out."""
+    try:
+        status = run_json(run, SESSION_COMMAND, dict)
+    except ToolNotFound as error:
+        return str(error)
+    except CommandError:
+        # TODO: name the CLI's real login command.
+        return "Not logged in (run %s login)" % TOOL
+    # TODO: the field that proves a live session in the real output.
+    if status.get("logged_in") is not True:
+        return "Not logged in (run %s login)" % TOOL
+    return None
+
+
+def text_field(record, key):
+    value = record.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def widget_rows(records):
+    """Rows for the listing. Skips records without a name, and repeats
+    (Cortland rejects a panel with duplicate row ids)."""
+    rows = []
+    seen = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        name = text_field(record, "name")  # TODO: the real field names
+        if name is None or name in seen:
+            continue
+        seen.add(name)
+        row = {
+            "id": ROW_PREFIX + name,
+            "title": name,
+            "icon": "cube",
+            "actions": [{"id": "open", "title": "Open"}],
+        }
+        status = text_field(record, "status")
+        if status:
+            row["detail"] = status
+        rows.append(row)
+    return rows
+
+
+def build_panel(run):
+    """The panel for one refresh. Lists, and offers actions, only after the
+    session check passes."""
+    section = {"title": "Widgets", "empty": "No widgets", "rows": []}
+    problem = session_problem(run)
+    if problem:
+        return {"message": problem, "sections": [section]}
+    try:
+        records = run_json(run, LIST_COMMAND, list)
+    except CommandError as error:
+        return {"message": str(error), "sections": [section]}
+    section["rows"] = widget_rows(records)
+    return {
+        "sections": [section],
+        "actions": [{"id": "new", "title": "New Widget", "icon": "plus"}],
+    }
+
+
+def row_value(row_id, prefix):
+    """The part of row_id after prefix. Rejects a missing id, a wrong prefix,
+    an empty remainder, and one starting with '-' (it would read as a flag)."""
+    if row_id is None:
+        raise ActionError("this action needs a row id")
+    if not row_id.startswith(prefix):
+        raise ActionError("row id must start with %s: %s" % (prefix, row_id))
+    value = row_id[len(prefix):]
+    if not value:
+        raise ActionError("row id has nothing after %s" % prefix)
+    if value.startswith("-"):
+        raise ActionError("refusing a name that starts with '-': %s" % value)
+    return value
+
+
+def run_action(action_id, row_id, run):
+    """The result object for one action, or ActionError / CommandError.
+    `run` is for headless actions that call the CLI here."""
+    # TODO: replace the samples with the real actions.
+    if action_id == "new":
+        # Interactive: runs in a new terminal tab the user can see.
+        if row_id is not None:
+            raise ActionError("new takes no row id")
+        return {"open_tab": {"command": [TOOL, "new"]}}
+    if action_id == "open":
+        name = row_value(row_id, ROW_PREFIX)
+        return {"open_tab": {"command": [TOOL, "open", name]}}
+    raise ActionError("unknown action: %s" % action_id)
+
+
+def main(argv, run=run_command, out=None, err=None):
+    out = out or sys.stdout
+    err = err or sys.stderr
+    args = argv[1:]
+    if args == ["panel"]:
+        result = build_panel(run)
+    elif args[:1] == ["action"] and len(args) in (2, 3):
+        try:
+            result = run_action(args[1], args[2] if len(args) == 3 else None, run)
+        except (ActionError, CommandError) as error:
+            err.write("%s\n" % error)
+            return 1
+    else:
+        err.write(USAGE + "\n")
+        return 2
+    json.dump(result, out, ensure_ascii=False)
+    out.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

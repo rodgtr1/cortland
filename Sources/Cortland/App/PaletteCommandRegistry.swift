@@ -63,6 +63,13 @@ protocol PaletteCommandHost: AnyObject {
     /// Types `text` into the focused terminal pane; when `submit`, follows
     /// with Enter so argument-less skills fire in one palette action.
     func sendToActiveTerminal(text: String, submit: Bool)
+
+    // Extensions
+    /// `[[palette]]` entries of the enabled extensions, kept in step with
+    /// `.extensionsDidChange`.
+    var extensionPaletteCommands: [ExtensionPaletteCommand] { get }
+    /// Carries out a chosen extension palette entry.
+    func runExtensionPaletteCommand(_ command: ExtensionPaletteCommand)
 }
 
 /// Owns the ⇧⌘P command palette and the `KeyboardCommand` dispatch table —
@@ -189,6 +196,13 @@ final class PaletteCommandRegistry {
                     text: skill.submit ? "/\(skill.name)" : "/\(skill.name) ",
                     submit: skill.submit
                 )
+            }
+        })
+
+        // Extension `[[palette]]` entries, titled "<panel title>: <entry>".
+        actions.append(contentsOf: (host?.extensionPaletteCommands ?? []).map { command in
+            PaletteAction(title: command.title, symbolName: command.symbolName) { [weak self] in
+                self?.host?.runExtensionPaletteCommand(command)
             }
         })
         return actions

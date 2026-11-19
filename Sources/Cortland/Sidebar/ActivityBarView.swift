@@ -3,6 +3,8 @@ import Cocoa
 protocol ActivityBarDelegate: AnyObject {
     func activityBar(_ activityBar: ActivityBarView, didSelectPanel panel: SidebarPanel)
     func activityBarDidToggleSidebar(_ activityBar: ActivityBarView)
+    /// An extension panel's icon was clicked while it was not selected.
+    func activityBar(_ activityBar: ActivityBarView, didSelectExtensionPanel extensionID: String)
 }
 
 enum SidebarPanel: String, CaseIterable {
@@ -62,7 +64,14 @@ class ActivityBarView: NSView {
     weak var delegate: ActivityBarDelegate?
 
     private var selectedPanel: SidebarPanel = .files
+    /// Set while an extension panel's icon is the selected one; `selectedPanel`
+    /// then holds the last built-in panel but is not highlighted.
+    private(set) var selectedExtensionID: String?
     private var buttons: [NSButton] = []
+    /// Extension panel icons, drawn after the built-in ones.
+    private var extensionButtons: [NSButton] = []
+    /// The extension ids behind `extensionButtons`, in the same order.
+    private(set) var extensionPanelIDs: [String] = []
     private var agentsBadge: NSTextField?
     private var themeObserver: ThemeObserver?
     private let buttonSize: CGFloat = 40
@@ -175,11 +184,12 @@ class ActivityBarView: NSView {
     @objc private func activityButtonClicked(_ sender: NSButton) {
         let panel = SidebarPanel.allCases[sender.tag]
 
-        if selectedPanel == panel {
+        if selectedExtensionID == nil && selectedPanel == panel {
             // Toggle sidebar if same panel clicked
             delegate?.activityBarDidToggleSidebar(self)
         } else {
             // Switch to new panel
+            selectedExtensionID = nil
             selectedPanel = panel
             updateSelectedButton(panel: panel)
             delegate?.activityBar(self, didSelectPanel: panel)
@@ -190,14 +200,91 @@ class ActivityBarView: NSView {
         selectedPanel = panel
 
         for (index, button) in buttons.enumerated() {
-            let isSelected = (index == SidebarPanel.allCases.firstIndex(of: panel))
+            let isSelected = selectedExtensionID == nil && (index == SidebarPanel.allCases.firstIndex(of: panel))
             styleButton(button, isSelected: isSelected)
+        }
+        for (index, button) in extensionButtons.enumerated() {
+            styleButton(button, isSelected: extensionPanelIDs[safe: index] == selectedExtensionID)
         }
     }
 
     func selectPanel(_ panel: SidebarPanel) {
+        selectedExtensionID = nil
         updateSelectedButton(panel: panel)
     }
+
+    // MARK: - Extension panels
+
+    /// Highlights an extension panel's icon. Ignored for an id with no icon.
+    func selectExtensionPanel(_ extensionID: String) {
+        guard extensionPanelIDs.contains(extensionID) else { return }
+        selectedExtensionID = extensionID
+        updateSelectedButton(panel: selectedPanel)
+    }
+
+    /// Replaces the extension icons with one per entry, in order. Pass the
+    /// result of `InstalledExtension.panelExtensions`. When the selected
+    /// extension's icon goes away, Files becomes the selected icon.
+    func setExtensionPanels(_ extensions: [InstalledExtension]) {
+        let entries = extensions.compactMap { ext in ext.manifest.panel.map { (id: ext.id, panel: $0) } }
+
+        extensionButtons.forEach { $0.removeFromSuperview() }
+        extensionButtons = []
+        extensionPanelIDs = entries.map(\.id)
+
+        for (offset, entry) in entries.enumerated() {
+            let button = NSButton(frame: .zero)
+            button.bezelStyle = .circular
+            button.isBordered = false
+            button.wantsLayer = true
+            if let fileImage = Self.extensionIconImage(at: entry.panel.iconURL) {
+                button.image = fileImage
+            } else {
+                let image = NSImage(systemSymbolName: entry.panel.icon, accessibilityDescription: entry.panel.title)
+                    ?? NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: entry.panel.title)
+                let config = NSImage.SymbolConfiguration(pointSize: 22, weight: .medium)
+                button.image = image?.withSymbolConfiguration(config)
+            }
+            button.target = self
+            button.action = #selector(extensionButtonClicked(_:))
+            button.tag = offset
+            button.toolTip = entry.panel.title
+            extensionButtons.append(button)
+            addSubview(button)
+        }
+
+        if let selected = selectedExtensionID, !extensionPanelIDs.contains(selected) {
+            selectedExtensionID = nil
+            selectedPanel = .files
+        }
+        updateSelectedButton(panel: selectedPanel)
+        needsLayout = true
+    }
+
+    /// An extension's own icon file as a template image (tinted like the
+    /// built-in icons), scaled to fit the icon box. Nil for no file or one
+    /// that does not load, so the caller falls back to a symbol.
+    static func extensionIconImage(at url: URL?, box: CGFloat = 24) -> NSImage? {
+        guard let url, let image = NSImage(contentsOf: url),
+              image.size.width > 0, image.size.height > 0 else { return nil }
+        let scale = box / max(image.size.width, image.size.height)
+        image.size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
+        image.isTemplate = true
+        return image
+    }
+
+    @objc private func extensionButtonClicked(_ sender: NSButton) {
+        guard let id = extensionPanelIDs[safe: sender.tag] else { return }
+        if selectedExtensionID == id {
+            delegate?.activityBarDidToggleSidebar(self)
+        } else {
+            selectExtensionPanel(id)
+            delegate?.activityBar(self, didSelectExtensionPanel: id)
+        }
+    }
+
+    /// Test hook: the extension icons' tooltips, in order.
+    var _extensionButtonToolTips: [String] { extensionButtons.map { $0.toolTip ?? "" } }
 
     /// Shows a count badge on the Agents icon for agents waiting for input.
     func updateAgentsBadge(count: Int) {
@@ -244,7 +331,7 @@ class ActivityBarView: NSView {
         super.layout()
 
         // Reposition buttons if view size changed
-        for (index, button) in buttons.enumerated() {
+        for (index, button) in (buttons + extensionButtons).enumerated() {
             // Position from top so icons line up with the terminal content below the tabs.
             let offsetFromTop = topInset + CGFloat(index) * (buttonSize + buttonSpacing) + buttonSpacing
             let y = bounds.height - offsetFromTop - buttonSize

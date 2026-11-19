@@ -1,0 +1,22 @@
+# Cortland extension manifest. Every key is listed in CONTRACT.md.
+
+api_version = 1                       # the extension API this targets; Cortland supports 1
+id = "example.widgets"                # TODO: author.tool; must equal this folder's name
+name = "Widgets"                      # TODO: shown in Preferences > Extensions
+version = "0.1.0"                     # free-form text, not parsed
+description = "Lists widgets in the sidebar."  # TODO: optional, shown under the name
+command = "bin/run"                   # executable, relative to this folder, inside it
+
+[panel]                               # optional: a sidebar panel filled by `bin/run panel`
+title = "Widgets"                     # TODO: the sidebar title and the palette prefix
+icon = "shippingbox"                  # TODO: an SF Symbol name, or an .svg/.pdf/.png in this folder
+refresh_seconds = 10                  # optional: default 10, minimum 2
+
+[[palette]]                           # optional, repeatable, needs [panel]
+title = "New Widget"                  # shown as "Widgets: New Widget"
+action = "new"                        # a panel action id from `bin/run panel`
+
+[[palette]]
+title = "Open Widget"
+action = "open"                       # a row action id from `bin/run panel`
+pick = true                           # pick a row first; default false

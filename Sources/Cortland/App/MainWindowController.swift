@@ -150,6 +150,25 @@ class MainWindowController: NSWindowController {
     /// Retained so ⌃⇧S reuses one Session Recall panel instead of stacking
     /// duplicates, mirroring `quickOpenPanel`.
     private var sessionsPanel: SessionsPanel?
+    /// Enabled extensions' `[[palette]]` entries, rebuilt on
+    /// `.extensionsDidChange`.
+    private(set) var extensionPaletteCommands: [ExtensionPaletteCommand] = []
+    /// Carries out extension palette entries through the sidebar's shared
+    /// action runners.
+    private lazy var extensionPaletteCommandRunner = ExtensionPaletteCommandRunner(
+        pickRow: { [weak self] title, rows, completion in
+            guard let self, let window = self.window else { return }
+            if self.extensionRowPicker == nil {
+                self.extensionRowPicker = ExtensionRowPickerPanel()
+            }
+            self.extensionRowPicker?.show(relativeTo: window, title: title, rows: rows, onPick: completion)
+        },
+        performAction: { [weak self] installed, action, rowID in
+            self?.sidebarContainerView.performExtensionAction(action, rowID: rowID, extensionID: installed.id)
+        }
+    )
+    /// Retained so a pick-a-row palette command reuses one picker panel.
+    private var extensionRowPicker: ExtensionRowPickerPanel?
     private var preferencesWindowController: PreferencesWindowController?
     // Set on the main actor; removed in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var keyEventMonitor: Any?
@@ -509,6 +528,15 @@ class MainWindowController: NSWindowController {
         sidebarContainerView.setVisible(false)
         sidebarContainerView.translatesAutoresizingMaskIntoConstraints = false
         window?.contentView?.addSubview(sidebarContainerView)
+
+        // Extension panels: take the current set now, then follow changes.
+        extensionsDidChange()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(extensionsDidChange),
+            name: .extensionsDidChange,
+            object: ExtensionRegistry.shared
+        )
 
         sidebarResizeHandle = SidebarResizeHandle()
         sidebarResizeHandle.isHidden = true
@@ -995,6 +1023,10 @@ extension MainWindowController: ActivityBarDelegate {
     func activityBarDidToggleSidebar(_ activityBar: ActivityBarView) {
         toggleSidebar()
     }
+
+    func activityBar(_ activityBar: ActivityBarView, didSelectExtensionPanel extensionID: String) {
+        showExtensionPanel(extensionID)
+    }
 }
 
 extension MainWindowController: SidebarContainerDelegate {
@@ -1461,7 +1493,8 @@ extension MainWindowController {
     }
 
     func togglePanel(_ panel: SidebarPanel) {
-        if sidebarContainerView.visible && sidebarContainerView.currentPanel == panel {
+        if sidebarContainerView.visible && sidebarContainerView.currentExtensionPanelID == nil
+            && sidebarContainerView.currentPanel == panel {
             sidebarContainerView.setVisible(false)
             updateSidebarLayout()
         } else {
@@ -1481,6 +1514,24 @@ extension MainWindowController {
         // Re-push the active pane's directory so a freshly opened panel
         // reflects the current terminal, not whatever it last saw.
         syncSidebarToActiveTab()
+    }
+
+    func showExtensionPanel(_ extensionID: String) {
+        sidebarContainerView.showExtensionPanel(extensionID)
+        activityBarView.selectExtensionPanel(extensionID)
+
+        if sidebarContainerView.isHidden {
+            sidebarContainerView.setVisible(true)
+            updateSidebarLayout()
+        }
+    }
+
+    /// Mirrors the enabled extensions' panels into the activity bar and sidebar.
+    @objc private func extensionsDidChange() {
+        let panels = InstalledExtension.panelExtensions(ExtensionRegistry.shared.extensions)
+        activityBarView.setExtensionPanels(panels)
+        sidebarContainerView.setExtensionPanels(panels)
+        extensionPaletteCommands = ExtensionPaletteCommand.commands(for: ExtensionRegistry.shared.extensions)
     }
 
     func showKeyboardShortcuts() {
@@ -1741,6 +1792,10 @@ extension MainWindowController: PaletteCommandHost {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
             _ = terminal.send(key: "enter")
         }
+    }
+
+    func runExtensionPaletteCommand(_ command: ExtensionPaletteCommand) {
+        extensionPaletteCommandRunner.run(command)
     }
 
     func continueActiveTabInFreshSession() {

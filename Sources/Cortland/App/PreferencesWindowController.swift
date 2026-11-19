@@ -166,6 +166,7 @@ class PreferencesWindowController: NSWindowController {
         setupApprovalsTab()
         setupNotificationsTab()
         setupAppearanceTab()
+        setupExtensionsTab()
         setupExtrasTab()
 
         window.contentViewController = tabViewController
@@ -224,8 +225,8 @@ class PreferencesWindowController: NSWindowController {
     /// Wrap a built pane view in a tab and append it. Call order here (in
     /// setupUI) is the visible tab order. Every pane reports the same
     /// preferredContentSize so tab switches never resize the window.
-    private func addTab(_ view: NSView, identifier: String, label: String, symbol: String) {
-        let paneController = NSViewController()
+    private func addTab(_ view: NSView, identifier: String, label: String, symbol: String, controller: NSViewController = NSViewController()) {
+        let paneController = controller
         paneController.view = view
         paneController.preferredContentSize = Self.paneSize
         let item = NSTabViewItem(viewController: paneController)
@@ -656,6 +657,14 @@ class PreferencesWindowController: NSWindowController {
         form.finish()
 
         addTab(editorView, identifier: "editor", label: "Editor", symbol: "square.and.pencil")
+    }
+
+    /// The pane's rows live in `ExtensionsPreferencesPane`, which rescans the
+    /// extensions folder each time the tab is shown.
+    private func setupExtensionsTab() {
+        let (extensionsView, extensionsContent) = makeScrollingPane()
+        let pane = ExtensionsPreferencesPane(content: extensionsContent)
+        addTab(extensionsView, identifier: "extensions", label: "Extensions", symbol: "puzzlepiece.extension", controller: pane)
     }
 
     private func setupExtrasTab() {

@@ -33,6 +33,22 @@ class SidebarContainerView: NSView {
     /// panel is actually shown. See `controller(for:)`.
     private var panelControllers: [SidebarPanel: NSViewController] = [:]
 
+    /// The extension panel showing, or nil when a built-in panel is.
+    /// `currentPanel` keeps the last built-in panel either way.
+    private(set) var currentExtensionPanelID: String?
+    /// Extensions that contribute a panel, by id. Set by `setExtensionPanels`.
+    private var extensionPanels: [String: InstalledExtension] = [:]
+    /// Extension panel controllers, created on first show like the built-ins.
+    private var extensionControllers: [String: ExtensionPanelViewController] = [:]
+    /// One action runner per extension, shared by its panel and the command
+    /// palette so both run one action at a time between them. Kept with the
+    /// extension it was made for; created on first use.
+    private var extensionRunners: [String: (installed: InstalledExtension, runner: ExtensionPanelActionRunner)] = [:]
+    /// Builds a new runner for an extension. Injected so tests can hold runs.
+    var makeExtensionActionRunner: (InstalledExtension) -> ExtensionPanelActionRunner = { installed in
+        ExtensionPanelActionRunner(command: ExtensionPanelCommand(extension: installed))
+    }
+
     /// State pushed at us before a panel exists is remembered here and applied
     /// when the panel is first created, so a lazily-instantiated file tree /
     /// git / search panel still opens on the right directory and hidden-files
@@ -180,6 +196,7 @@ class SidebarContainerView: NSView {
     func showPanel(_ panel: SidebarPanel) {
         // Hide the current panel's view (only if it was ever created).
         panelControllers[currentPanel]?.view.removeFromSuperview()
+        unmountExtensionPanel()
 
         // Show new panel, creating its controller lazily on first show.
         currentPanel = panel
@@ -207,6 +224,113 @@ class SidebarContainerView: NSView {
         if panel == .worktrees {
             (panelControllers[.worktrees] as? WorktreesPanelViewController)?.reload()
         }
+        updateExtensionPanelActivity()
+    }
+
+    // MARK: - Extension panels
+
+    /// Shows an extension's panel, creating its controller on first show.
+    /// Ignored for an id not passed to `setExtensionPanels`.
+    func showExtensionPanel(_ extensionID: String) {
+        guard let installed = extensionPanels[extensionID], let spec = installed.manifest.panel else { return }
+        panelControllers[currentPanel]?.view.removeFromSuperview()
+        unmountExtensionPanel()
+
+        currentExtensionPanelID = extensionID
+        titleLabel.stringValue = spec.title.uppercased()
+
+        let controller: ExtensionPanelViewController
+        if let existing = extensionControllers[extensionID] {
+            controller = existing
+        } else {
+            controller = ExtensionPanelViewController(installed: installed, actionRunner: extensionActionRunner(extensionID))
+            extensionControllers[extensionID] = controller
+        }
+        let newView = controller.view
+        contentView.addSubview(newView)
+        newView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            newView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            newView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            newView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            newView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        ])
+        updateExtensionPanelActivity()
+    }
+
+    /// Replaces the set of extension panels. Pass the result of
+    /// `InstalledExtension.panelExtensions`. A panel whose extension went away
+    /// or changed loses its controller; if it was showing, the sidebar falls
+    /// back to Files (gone) or rebuilds it (changed).
+    func setExtensionPanels(_ extensions: [InstalledExtension]) {
+        let updated = Dictionary(extensions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        extensionPanels = updated
+
+        for (id, controller) in extensionControllers where updated[id] != controller.installed {
+            controller.setActive(false)
+            controller.view.removeFromSuperview()
+            extensionControllers[id] = nil
+        }
+        for (id, entry) in extensionRunners where updated[id] != entry.installed {
+            extensionRunners[id] = nil
+        }
+
+        if let current = currentExtensionPanelID {
+            if updated[current] == nil {
+                showPanel(.files)
+            } else if extensionControllers[current] == nil {
+                showExtensionPanel(current)
+            }
+        }
+        updateExtensionPanelActivity()
+    }
+
+    /// The shared action runner for an extension passed to
+    /// `setExtensionPanels`, created and wired on first use: tabs open through
+    /// the delegate's connect-command path, URLs in the browser, copies on the
+    /// pasteboard. Nil for an unknown id.
+    func extensionActionRunner(_ extensionID: String) -> ExtensionPanelActionRunner? {
+        guard let installed = extensionPanels[extensionID] else { return nil }
+        if let existing = extensionRunners[extensionID], existing.installed == installed {
+            return existing.runner
+        }
+        let runner = makeExtensionActionRunner(installed)
+        runner.onOpenTab = { [weak self] commandLine in
+            guard let self else { return }
+            self.delegate?.sidebarContainer(self, didRequestConnectCommand: commandLine)
+        }
+        runner.onOpenURL = ExtensionPanelActionRunner.openInBrowser
+        runner.onCopy = ExtensionPanelActionRunner.copyToPasteboard
+        extensionRunners[extensionID] = (installed, runner)
+        return runner
+    }
+
+    /// Runs an extension action as a click in its panel would: same runner,
+    /// confirm prompt, effects, failure alert, and refresh of the panel if
+    /// its controller exists. Used by the command palette.
+    func performExtensionAction(_ action: ExtensionPanelAction, rowID: String?, extensionID: String) {
+        extensionActionRunner(extensionID)?.perform(action, rowID: rowID)
+    }
+
+    private func unmountExtensionPanel() {
+        guard let id = currentExtensionPanelID else { return }
+        extensionControllers[id]?.view.removeFromSuperview()
+        currentExtensionPanelID = nil
+    }
+
+    /// Only the showing extension panel, in a visible sidebar, refreshes.
+    private func updateExtensionPanelActivity() {
+        for (id, controller) in extensionControllers {
+            controller.setActive(visible && id == currentExtensionPanelID)
+        }
+    }
+
+    /// Test hook: extension panels whose controllers exist so far.
+    var _instantiatedExtensionPanels: Set<String> { Set(extensionControllers.keys) }
+
+    /// Test hook: the controller for an extension panel, if created.
+    func _extensionController(_ extensionID: String) -> ExtensionPanelViewController? {
+        extensionControllers[extensionID]
     }
 
     /// Refreshes the agents panel (if instantiated) so its highlighted row
@@ -225,9 +349,14 @@ class SidebarContainerView: NSView {
         // Unhiding the sidebar without an explicit showPanel (e.g. toggleSidebar)
         // must still mount a panel — materialize the current one on demand so it
         // isn't blank the first time it's revealed.
-        if visible, panelControllers[currentPanel]?.view.superview == nil {
+        if visible, let extensionID = currentExtensionPanelID {
+            if extensionControllers[extensionID]?.view.superview == nil {
+                showExtensionPanel(extensionID)
+            }
+        } else if visible, panelControllers[currentPanel]?.view.superview == nil {
             showPanel(currentPanel)
         }
+        updateExtensionPanelActivity()
     }
 
     var visible: Bool {
