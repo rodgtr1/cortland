@@ -15,7 +15,8 @@ import AppKit
 ///     }
 ///
 /// Top-level `actions` and row `actions` are optional lists of
-/// `{ "id", "title", "confirm"?, "icon"? }`; see `ExtensionPanelAction`.
+/// `{ "id", "title", "confirm"?, "icon"?, "menu"? }`; see
+/// `ExtensionPanelAction` and `ExtensionPanelMenuItem`.
 ///
 /// Unknown keys are ignored at every level, so output written for a later
 /// API still decodes.
@@ -134,6 +135,7 @@ nonisolated struct ExtensionPanelContent: Equatable, Sendable, Decodable {
 
 /// Something the user can do to a row or to the whole panel. Running it runs
 /// `<command> action <id> [<row id>]`. With `confirm`, the user is asked first.
+/// With `menu`, choosing it in the panel opens that menu instead of running.
 nonisolated struct ExtensionPanelAction: Equatable, Sendable, Decodable {
     let id: String
     let title: String
@@ -142,14 +144,19 @@ nonisolated struct ExtensionPanelAction: Equatable, Sendable, Decodable {
     /// button in the panel's top bar; without one it goes in the Actions menu.
     /// Ignored on row actions.
     let icon: String?
+    /// Items shown when the action is chosen in the panel, in place of
+    /// running it. Non-empty when present. The command palette ignores it
+    /// and runs the action itself.
+    let menu: [ExtensionPanelMenuItem]?
 
-    private enum CodingKeys: String, CodingKey { case id, title, confirm, icon }
+    private enum CodingKeys: String, CodingKey { case id, title, confirm, icon, menu }
 
-    init(id: String, title: String, confirm: String? = nil, icon: String? = nil) {
+    init(id: String, title: String, confirm: String? = nil, icon: String? = nil, menu: [ExtensionPanelMenuItem]? = nil) {
         self.id = id
         self.title = title
         self.confirm = confirm
         self.icon = icon
+        self.menu = menu
     }
 
     init(from decoder: Decoder) throws {
@@ -158,15 +165,83 @@ nonisolated struct ExtensionPanelAction: Equatable, Sendable, Decodable {
         title = try container.decode(String.self, forKey: .title)
         confirm = try container.decodeIfPresent(String.self, forKey: .confirm)
         icon = try container.decodeIfPresent(String.self, forKey: .icon)
+        menu = try container.decodeIfPresent([ExtensionPanelMenuItem].self, forKey: .menu)
     }
 
-    /// Non-empty ids and titles, ids unique within one list.
+    /// Non-empty ids and titles, ids unique within one list, and a valid
+    /// `menu` when present.
     fileprivate static func validate(_ actions: [ExtensionPanelAction], in owner: String) throws(ExtensionPanelError) {
         var seen = Set<String>()
         for action in actions {
             guard !action.id.isEmpty else { throw .invalidOutput("an action in \(owner) has an empty \"id\"") }
             guard !action.title.isEmpty else { throw .invalidOutput("action \"\(action.id)\" in \(owner) has an empty \"title\"") }
             guard seen.insert(action.id).inserted else { throw .invalidOutput("duplicate action id \"\(action.id)\" in \(owner)") }
+            if let menu = action.menu {
+                try ExtensionPanelMenuItem.validate(menu, depth: 1, in: "action \"\(action.id)\" in \(owner)")
+            }
+        }
+    }
+}
+
+/// One entry in an action's `menu`. A leaf runs `<command> action <id>`,
+/// with `row` appended when it is non-empty, through the same runner as any
+/// other action. An item with its own `menu` opens a submenu and never runs.
+/// Ids need not be unique: items may share an id and differ by `row`.
+nonisolated struct ExtensionPanelMenuItem: Equatable, Sendable, Decodable {
+    let id: String
+    let title: String
+    let confirm: String?
+    /// The row id to run the action with. Need not be a row in the panel.
+    let row: String?
+    let menu: [ExtensionPanelMenuItem]?
+
+    /// Menus in total, the top one included.
+    static let maxDepth = 3
+
+    private enum CodingKeys: String, CodingKey { case id, title, confirm, row, menu }
+
+    init(id: String, title: String, confirm: String? = nil, row: String? = nil, menu: [ExtensionPanelMenuItem]? = nil) {
+        self.id = id
+        self.title = title
+        self.confirm = confirm
+        self.row = row
+        self.menu = menu
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        confirm = try container.decodeIfPresent(String.self, forKey: .confirm)
+        row = try container.decodeIfPresent(String.self, forKey: .row)
+        menu = try container.decodeIfPresent([ExtensionPanelMenuItem].self, forKey: .menu)
+    }
+
+    /// The row id a leaf runs with: `row` when non-empty, else nil (a panel
+    /// action).
+    var rowID: String? {
+        guard let row, !row.isEmpty else { return nil }
+        return row
+    }
+
+    /// The action the shared runner runs for this leaf.
+    var runnableAction: ExtensionPanelAction {
+        ExtensionPanelAction(id: id, title: title, confirm: confirm)
+    }
+
+    /// `items` is the menu at `depth` (1 for an action's own menu): not
+    /// empty, no deeper than `maxDepth`, each item with a non-empty id and
+    /// title, and no `row` or `confirm` on an item that has a `menu`.
+    fileprivate static func validate(_ items: [ExtensionPanelMenuItem], depth: Int, in owner: String) throws(ExtensionPanelError) {
+        guard !items.isEmpty else { throw .invalidOutput("\(owner) has an empty \"menu\"") }
+        guard depth <= maxDepth else { throw .invalidOutput("\(owner) nests menus more than \(maxDepth) deep") }
+        for item in items {
+            guard !item.id.isEmpty else { throw .invalidOutput("a menu item in \(owner) has an empty \"id\"") }
+            guard !item.title.isEmpty else { throw .invalidOutput("menu item \"\(item.id)\" in \(owner) has an empty \"title\"") }
+            guard let submenu = item.menu else { continue }
+            guard item.row == nil else { throw .invalidOutput("menu item \"\(item.title)\" in \(owner) has both \"menu\" and \"row\"") }
+            guard item.confirm == nil else { throw .invalidOutput("menu item \"\(item.title)\" in \(owner) has both \"menu\" and \"confirm\"") }
+            try validate(submenu, depth: depth + 1, in: owner)
         }
     }
 }

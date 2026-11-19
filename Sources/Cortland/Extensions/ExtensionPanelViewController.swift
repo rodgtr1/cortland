@@ -4,7 +4,8 @@ import Cocoa
 /// optional message, then section headers and rows. Rows and the panel may
 /// carry actions: a row's in its context menu (the first also on double-click),
 /// the panel's as icon buttons in the top bar, or behind the Actions button
-/// when they have no icon.
+/// when they have no icon. An action with a `menu` opens that menu (a
+/// submenu, inside a menu) instead of running.
 final class ExtensionPanelViewController: NSViewController {
     let installed: InstalledExtension
     let refresher: ExtensionPanelRefresher
@@ -47,7 +48,13 @@ final class ExtensionPanelViewController: NSViewController {
     private var actionsButton: NSButton!
     /// Holds one button per panel action with an icon, then `actionsButton`.
     private var actionStack: NSStackView!
-    private var iconActionButtons: [NSButton] = []
+    /// One per `iconPanelActions` entry, in order.
+    private(set) var iconActionButtons: [NSButton] = []
+    /// Pops `menu` up below `button`. Injected so tests do not start menu
+    /// tracking.
+    var showMenu: (_ menu: NSMenu, _ button: NSView) -> Void = { menu, button in
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
     private var themeObserver: ThemeObserver?
 
     /// `actionRunner` nil uses the standard one for `installed`. Pass the
@@ -218,9 +225,23 @@ final class ExtensionPanelViewController: NSViewController {
         }
     }
 
+    /// Runs the button's action, or shows its menu when it has one.
     @objc private func iconActionClicked(_ sender: NSButton) {
         guard let action = iconPanelActions[safe: sender.tag] else { return }
-        perform(action, rowID: nil)
+        if let menu = buttonMenu(for: action) {
+            showMenu(menu, sender)
+        } else {
+            perform(action, rowID: nil)
+        }
+    }
+
+    /// The menu a top-bar button shows for `action`, or nil when it has no
+    /// `menu` and runs instead.
+    func buttonMenu(for action: ExtensionPanelAction) -> NSMenu? {
+        guard let items = action.menu else { return nil }
+        let menu = NSMenu()
+        menuItems(for: items).forEach(menu.addItem)
+        return menu
     }
 
     // MARK: - Actions
@@ -280,9 +301,10 @@ final class ExtensionPanelViewController: NSViewController {
         actionRunner.perform(action, rowID: rowID)
     }
 
-    /// Double-click runs the row's first action.
+    /// Double-click runs the row's first action. One with a `menu` does
+    /// nothing, since a menu cannot open sensibly from a double-click.
     func performDefaultAction(rowAt index: Int) {
-        guard let entry = row(at: index), let first = entry.actions.first else { return }
+        guard let entry = row(at: index), let first = entry.actions.first, first.menu == nil else { return }
         perform(first, rowID: entry.id)
     }
 
@@ -292,11 +314,14 @@ final class ExtensionPanelViewController: NSViewController {
 
     @objc private func actionsClicked() {
         let menu = NSMenu()
-        for action in menuPanelActions {
-            menu.addItem(menuItem(for: action, rowID: nil))
-        }
+        actionsMenuItems().forEach(menu.addItem)
         guard menu.numberOfItems > 0 else { return }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: actionsButton.bounds.height + 4), in: actionsButton)
+    }
+
+    /// The Actions menu's items, in order.
+    func actionsMenuItems() -> [NSMenuItem] {
+        menuPanelActions.map { menuItem(for: $0, rowID: nil) }
     }
 
     private struct MenuTarget {
@@ -304,10 +329,38 @@ final class ExtensionPanelViewController: NSViewController {
         let rowID: String?
     }
 
+    /// An item that runs `action`, or, when the action has a `menu`, an
+    /// item with that menu as its submenu.
     private func menuItem(for action: ExtensionPanelAction, rowID: String?) -> NSMenuItem {
+        if let items = action.menu {
+            return submenuItem(title: action.title, items: items)
+        }
         let item = NSMenuItem(title: action.title, action: #selector(menuActionChosen(_:)), keyEquivalent: "")
         item.target = self
         item.representedObject = MenuTarget(action: action, rowID: rowID)
+        return item
+    }
+
+    /// Items for an action's `menu`: a leaf runs its own id with its own
+    /// `row` (nil for none) through the shared runner; an item with a `menu`
+    /// gets a submenu.
+    private func menuItems(for items: [ExtensionPanelMenuItem]) -> [NSMenuItem] {
+        items.map { entry in
+            if let nested = entry.menu {
+                return submenuItem(title: entry.title, items: nested)
+            }
+            let item = NSMenuItem(title: entry.title, action: #selector(menuActionChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = MenuTarget(action: entry.runnableAction, rowID: entry.rowID)
+            return item
+        }
+    }
+
+    private func submenuItem(title: String, items: [ExtensionPanelMenuItem]) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: title)
+        menuItems(for: items).forEach(submenu.addItem)
+        item.submenu = submenu
         return item
     }
 

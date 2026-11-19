@@ -121,14 +121,63 @@ What `<command> panel` prints:
 | `title` | action | yes | Non-empty string. The menu item, button tooltip, and confirm button text. |
 | `confirm` | action | no | String. When present, Cortland asks first in an alert with this text, a button titled with the action's title, and Cancel. |
 | `icon` | action | no | SF Symbol name. Used only on panel actions; ignored on row actions. |
+| `menu` | action | no | Non-empty array of menu items. Choosing the action in the panel opens this menu instead of running the action. See "Action menus". |
 
-Unknown keys are ignored at every level. A wrong type, a missing required key, an empty id or action title, a duplicate row id, or a duplicate action id within one list makes the whole output invalid, and the panel shows the error instead.
+Unknown keys are ignored at every level. A wrong type, a missing required key, an empty id or action title, a duplicate row id, a duplicate action id within one list, or a broken `menu` rule (see "Action menus") makes the whole output invalid, and the panel shows the error instead.
+
+## Action menus
+
+A panel action or a row action may carry a `menu`. Choosing that action in the panel opens the menu; the user then picks an item, and the item runs.
+
+```json
+{
+  "actions": [
+    {
+      "id": "new",
+      "title": "New Widget",
+      "icon": "plus",
+      "menu": [
+        { "id": "new", "title": "New Widget" },
+        {
+          "id": "new-from",
+          "title": "New Widget from Template",
+          "menu": [
+            { "id": "launch", "title": "alpha", "row": "template/alpha" },
+            { "id": "launch", "title": "beta", "row": "template/beta" }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `title` | yes | Non-empty string. The menu item's text, the confirm button text, and the failure alert's title. |
+| `id` | yes | Non-empty string. For an item that runs, the `<action-id>` passed to `<command> action`. |
+| `confirm` | no | String. As on actions: Cortland asks first, and Cancel runs nothing. |
+| `row` | no | String. When non-empty, the item runs as a row action with this row id: `<command> action <id> <row>`. When absent or empty, it runs as a panel action: `<command> action <id>`. The row id need not be a row the panel shows. |
+| `menu` | no | Non-empty array of menu items, shown as a submenu. An item with a `menu` does not run. |
+
+Rules (any violation makes the whole output invalid):
+
+- A `menu`, on an action or an item, is never an empty array.
+- An item with a `menu` has no `row` and no `confirm`.
+- Menus nest at most 3 deep in total: the action's own menu plus two levels of submenu.
+- Menu item ids need not be unique. Several items may share an `id` and differ by `row`, as above. The uniqueness rule for action lists is unchanged.
+- Unknown keys on a menu item are ignored.
+
+A leaf item runs exactly as an action does: `confirm`, the failure alert, the result's effects, one action at a time, and the refresh afterwards.
+
+**Older Cortland builds** do not know `menu`. They ignore it as an unknown key and run the parent action itself. Give the parent an `id` that does something sensible when run directly. In the example, clicking "+" in an older build runs `new`, the same as the menu's first item.
 
 ## How rows and actions surface
 
-- **Double-click** a row: runs the row's first action.
-- **Context menu** on a row: lists all of the row's actions in order.
-- **Panel actions** whose `icon` is a real SF Symbol get their own button in the panel's top bar, in listed order, left of the Refresh button. The rest are listed in the **Actions** menu (an ellipsis button), which is hidden when there are none.
+- **Double-click** a row: runs the row's first action. When that action has a `menu`, double-click does nothing, since a menu cannot open from a double-click.
+- **Context menu** on a row: lists all of the row's actions in order. An action with a `menu` is an item with a submenu.
+- **Panel actions** whose `icon` is a real SF Symbol get their own button in the panel's top bar, in listed order, left of the Refresh button. Clicking a button whose action has a `menu` shows that menu below the button and runs nothing. The rest are listed in the **Actions** menu (an ellipsis button), which is hidden when there are none; there an action with a `menu` is an item with a submenu.
+- Nested menus are submenus.
 - **Refresh** button in the top bar runs `panel` now.
 - An action with `confirm` asks first; Cancel runs nothing.
 - One action runs at a time per extension, shared between the panel and the palette. A request while one is running is ignored.
@@ -157,7 +206,7 @@ The command palette lists the entries of every enabled extension, in sidebar ord
 
 Choosing an entry runs `<command> panel` fresh. If that fails, an alert shows the reason. Otherwise:
 
-- `pick = false`: Cortland looks for a top-level panel action with the entry's `action` id and runs it, exactly as a click in the panel would (including `confirm`).
+- `pick = false`: Cortland looks for a top-level panel action with the entry's `action` id and runs it, exactly as a click in the panel would (including `confirm`). An action with a `menu` is run directly here: the palette ignores `menu`.
 - `pick = true`: Cortland collects the rows, across all sections, that have a row action with that id, and shows them in a picker (title, detail as the second line, type to filter, Escape to cancel). Picking one runs that row's action with its row id.
 
 When the action is not in the output (or no row has it), an alert shows the output's `message`, or `This command is not available right now.` when there is none.

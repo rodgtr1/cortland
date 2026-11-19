@@ -165,6 +165,21 @@ An action is something the user can do. List row actions in a row's `actions`, a
 - Right-clicking a row lists all of its actions.
 - A panel action with an `icon` gets its own button at the top of the panel. Panel actions without one go in a "…" menu.
 - An action with `confirm` makes Cortland ask before running it. Use it for anything destructive.
+- An action with a `menu` opens a menu instead of running (a dropdown under its top-bar button, or a submenu in a menu). Each item runs its own action id, as a row action when it has a `row`.
+
+```json
+{
+  "id": "new", "title": "New Widget", "icon": "plus",
+  "menu": [
+    { "id": "new", "title": "New Widget" },
+    { "id": "new-from", "title": "New Widget from Template", "menu": [
+      { "id": "launch", "title": "alpha", "row": "template/alpha" }
+    ] }
+  ]
+}
+```
+
+An item with its own `menu` is a submenu, up to 3 menus deep. Older Cortland builds ignore `menu` and run the action itself, so give it an id that works on its own. Double-clicking a row whose first action has a menu does nothing. The full rules are in the [contract reference](../.claude/skills/cortland-extension-builder/CONTRACT.md#action-menus).
 
 When the user picks an action, Cortland runs `bin/run action <action-id> <row-id>` (no row id for a panel action). Your executable does whatever work is needed, then prints what Cortland should do next:
 
