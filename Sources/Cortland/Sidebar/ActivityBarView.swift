@@ -122,7 +122,7 @@ class ActivityBarView: NSView {
         let bgColor = Theme.shared.current.windowBackground
         layer?.backgroundColor = bgColor.cgColor
         layer?.isOpaque = true
-        trailingRule.layer?.backgroundColor = Theme.shared.current.separator.cgColor
+        trailingRule.layer?.backgroundColor = Theme.shared.palette.surface0.cgColor
     }
 
     private func createActivityButtons() {
