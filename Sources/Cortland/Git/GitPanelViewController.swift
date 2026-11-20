@@ -868,8 +868,7 @@ extension GitPanelViewController: NSTableViewDelegate {
                 ])
             }
 
-            cellView?.textField?.stringValue = file.filename
-            cellView?.textField?.textColor = AppTheme.primaryText
+            cellView?.textField?.attributedStringValue = fileRowTitle(filename: file.filename, path: file.path)
             cellView?.textField?.toolTip = file.path
 
         } else if identifier?.rawValue == "Actions" {
@@ -915,6 +914,28 @@ extension GitPanelViewController: NSTableViewDelegate {
         return 24
     }
 
+    /// Filename in primary text followed by its directory in muted text, so
+    /// same-named files in different directories are distinguishable. The
+    /// directory truncates first.
+    private func fileRowTitle(filename: String, path: String) -> NSAttributedString {
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        let title = NSMutableAttributedString(string: filename, attributes: [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: AppTheme.primaryText,
+            .paragraphStyle: style
+        ])
+        let directory = (path as NSString).deletingLastPathComponent
+        if !directory.isEmpty {
+            title.append(NSAttributedString(string: "  " + directory, attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: AppTheme.mutedText,
+                .paragraphStyle: style
+            ]))
+        }
+        return title
+    }
+
     /// Read-only status + filename cell for a "Changes vs <default>" row. No
     /// action column: these rows are reviewed, never staged from the panel.
     private func branchDiffCell(tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -956,8 +977,7 @@ extension GitPanelViewController: NSTableViewDelegate {
             cellView.textField?.stringValue = file.status.rawValue
             cellView.textField?.textColor = file.status.color
         } else {
-            cellView.textField?.stringValue = file.filename
-            cellView.textField?.textColor = AppTheme.primaryText
+            cellView.textField?.attributedStringValue = fileRowTitle(filename: file.filename, path: file.path)
             cellView.textField?.toolTip = file.path
         }
         return cellView

@@ -80,4 +80,21 @@ final class GitFileItemTests: XCTestCase {
         XCTAssertEqual(GitFileStatus.untracked.displayName, "Untracked")
         XCTAssertEqual(GitFileStatus.unmodified.displayName, "")
     }
+
+    func testStatusModelOrdersFilesByFullPath() {
+        let items = [
+            GitFileItem(path: "Sources/b/index.swift", stagedChar: " ", unstagedChar: "M"),
+            GitFileItem(path: "README.md", stagedChar: " ", unstagedChar: "M"),
+            GitFileItem(path: "Sources/a/index.swift", stagedChar: " ", unstagedChar: "M"),
+            GitFileItem(path: "Sources/a/Zed.swift", stagedChar: " ", unstagedChar: "M")
+        ]
+
+        // Same-named files sort by directory, not by basename.
+        XCTAssertEqual(GitStatusModel.sortedByPath(items, path: \.path).map(\.path), [
+            "README.md",
+            "Sources/a/Zed.swift",
+            "Sources/a/index.swift",
+            "Sources/b/index.swift"
+        ])
+    }
 }

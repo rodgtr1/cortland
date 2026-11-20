@@ -24,7 +24,7 @@ final class UncommittedChangesViewController: NSViewController {
     private enum Metrics {
         static let horizontalPadding: CGFloat = 12
         static let sectionSpacing: CGFloat = 10
-        static let headerHeight: CGFloat = 44
+        static let headerHeight: CGFloat = 28
         static let diffLineHeight: CGFloat = 19
     }
 
@@ -60,8 +60,8 @@ final class UncommittedChangesViewController: NSViewController {
         scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
         scrollView.drawsBackground = true
         scrollView.backgroundColor = DiffViewController.DiffColors.background
         view.addSubview(scrollView)
@@ -106,19 +106,22 @@ final class UncommittedChangesViewController: NSViewController {
 
         DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService] in
             do {
-                // Keep a stable alphabetical order; the focused file is
+                // Keep a stable order by relative path; the focused file is
                 // scrolled into view rather than reordered to the top.
                 let entries = try gitService.status(repositoryRoot: repositoryPath)
-                    .sorted { lhs, rhs in
-                        URL(fileURLWithPath: lhs.path).lastPathComponent < URL(fileURLWithPath: rhs.path).lastPathComponent
-                    }
+                    .sorted { $0.path < $1.path }
 
                 let diffs = try gitService.diffsByPath(for: entries, repositoryRoot: repositoryPath)
                 let sections = entries.map { entry in
                     ChangeSection(
                         relativePath: entry.path,
                         diff: diffs[entry.path] ?? "No changes",
-                        isConflicted: entry.isConflicted
+                        isConflicted: entry.isConflicted,
+                        status: GitFileItem(
+                            path: entry.path,
+                            stagedChar: entry.stagedStatus,
+                            unstagedChar: entry.unstagedStatus
+                        ).displayStatus
                     )
                 }
 
@@ -202,19 +205,20 @@ final class UncommittedChangesViewController: NSViewController {
         let container = NSView()
         container.wantsLayer = true
         container.layer?.backgroundColor = AppTheme.windowBackground.cgColor
-        container.layer?.borderColor = Theme.shared.palette.surface0.cgColor
-        container.layer?.borderWidth = 1
-        container.layer?.cornerRadius = 4
         container.translatesAutoresizingMaskIntoConstraints = false
         container.identifier = NSUserInterfaceItemIdentifier(section.absolutePath(repositoryPath: repositoryPath))
-
-        let header = makeHeaderView(section)
-        container.addSubview(header)
 
         // An image can't be shown as a text diff — git reports it as binary and
         // the section body would just read "(binary)". When the working-tree
         // file decodes as an image, show the picture itself instead.
-        if let preview = makeImagePreview(for: section) {
+        let imagePreview = makeImagePreview(for: section)
+        let header = makeHeaderView(
+            section,
+            counts: imagePreview == nil ? InlineDiffRenderer.changeCounts(section.diff) : nil
+        )
+        container.addSubview(header)
+
+        if let preview = imagePreview {
             container.addSubview(preview.view)
             NSLayoutConstraint.activate([
                 header.topAnchor.constraint(equalTo: container.topAnchor),
@@ -263,44 +267,81 @@ final class UncommittedChangesViewController: NSViewController {
         return container
     }
 
-    private func makeHeaderView(_ section: ChangeSection) -> NSView {
+    /// `counts` (added, removed) shows on the right; nil omits it (image
+    /// previews and conflicted files).
+    private func makeHeaderView(_ section: ChangeSection, counts: (added: Int, removed: Int)?) -> NSView {
         let header = NSView()
         header.wantsLayer = true
         header.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
         header.translatesAutoresizingMaskIntoConstraints = false
 
-        let fileName = NSTextField(labelWithString: URL(fileURLWithPath: section.relativePath).lastPathComponent)
-        fileName.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        fileName.textColor = DiffViewController.DiffColors.fileHeader
-        fileName.translatesAutoresizingMaskIntoConstraints = false
+        let status = NSTextField(labelWithString: section.status.rawValue)
+        status.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        status.textColor = section.status.color
+        status.translatesAutoresizingMaskIntoConstraints = false
 
-        let path = NSTextField(labelWithString: URL(fileURLWithPath: section.relativePath).deletingLastPathComponent().path)
+        let directory = (section.relativePath as NSString).deletingLastPathComponent
+        let path = NSTextField(labelWithString: directory.isEmpty ? "" : directory + "/")
         path.font = NSFont.systemFont(ofSize: 12)
         path.textColor = DiffViewController.DiffColors.context
         path.lineBreakMode = .byTruncatingMiddle
+        path.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        path.setContentHuggingPriority(.required, for: .horizontal)
         path.translatesAutoresizingMaskIntoConstraints = false
 
-        let openButton = NSButton(title: "Open File", target: self, action: #selector(openFileClicked(_:)))
-        openButton.bezelStyle = .rounded
-        openButton.controlSize = .small
+        let fileName = NSTextField(labelWithString: (section.relativePath as NSString).lastPathComponent)
+        fileName.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        fileName.textColor = AppTheme.primaryText
+        fileName.lineBreakMode = .byTruncatingMiddle
+        fileName.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        fileName.setContentHuggingPriority(.required, for: .horizontal)
+        fileName.translatesAutoresizingMaskIntoConstraints = false
+
+        let countsLabel = NSTextField(labelWithString: "")
+        if let counts {
+            let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            let text = NSMutableAttributedString(string: "+\(counts.added)", attributes: [
+                .font: font, .foregroundColor: AppTheme.success
+            ])
+            text.append(NSAttributedString(string: "  -\(counts.removed)", attributes: [
+                .font: font, .foregroundColor: AppTheme.error
+            ]))
+            countsLabel.attributedStringValue = text
+        }
+        countsLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        countsLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let openImage = NSImage(systemSymbolName: "arrow.up.forward.square", accessibilityDescription: "Open File") ?? NSImage()
+        let openButton = NSButton(image: openImage, target: self, action: #selector(openFileClicked(_:)))
+        openButton.isBordered = false
+        openButton.contentTintColor = AppTheme.mutedText
+        openButton.toolTip = "Open File"
+        openButton.setAccessibilityLabel("Open File")
         openButton.identifier = NSUserInterfaceItemIdentifier(section.absolutePath(repositoryPath: repositoryPath))
         openButton.translatesAutoresizingMaskIntoConstraints = false
 
-        header.addSubview(fileName)
+        header.addSubview(status)
         header.addSubview(path)
+        header.addSubview(fileName)
+        header.addSubview(countsLabel)
         header.addSubview(openButton)
 
         NSLayoutConstraint.activate([
-            fileName.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 12),
+            status.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 12),
+            status.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+
+            path.leadingAnchor.constraint(equalTo: status.trailingAnchor, constant: 8),
+            path.firstBaselineAnchor.constraint(equalTo: fileName.firstBaselineAnchor),
+
+            fileName.leadingAnchor.constraint(equalTo: path.trailingAnchor),
             fileName.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            fileName.trailingAnchor.constraint(lessThanOrEqualTo: countsLabel.leadingAnchor, constant: -12),
 
-            path.leadingAnchor.constraint(equalTo: fileName.trailingAnchor, constant: 8),
-            path.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            path.trailingAnchor.constraint(lessThanOrEqualTo: openButton.leadingAnchor, constant: -12),
+            countsLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            countsLabel.trailingAnchor.constraint(equalTo: openButton.leadingAnchor, constant: -10),
 
-            openButton.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -12),
-            openButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            openButton.widthAnchor.constraint(equalToConstant: 78)
+            openButton.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -10),
+            openButton.centerYAnchor.constraint(equalTo: header.centerYAnchor)
         ])
 
         return header
@@ -442,13 +483,10 @@ final class UncommittedChangesViewController: NSViewController {
         let container = NSView()
         container.wantsLayer = true
         container.layer?.backgroundColor = AppTheme.windowBackground.cgColor
-        container.layer?.borderColor = AppTheme.warning.withAlphaComponent(0.6).cgColor
-        container.layer?.borderWidth = 1
-        container.layer?.cornerRadius = 4
         container.translatesAutoresizingMaskIntoConstraints = false
         container.identifier = NSUserInterfaceItemIdentifier(absolutePath)
 
-        let header = makeHeaderView(section)
+        let header = makeHeaderView(section, counts: nil)
         container.addSubview(header)
 
         let stack = NSStackView()
@@ -721,6 +759,7 @@ private struct ChangeSection {
     let relativePath: String
     let diff: String
     let isConflicted: Bool
+    let status: GitFileStatus
 
     func absolutePath(repositoryPath: String) -> String {
         URL(fileURLWithPath: repositoryPath).appendingPathComponent(relativePath).path

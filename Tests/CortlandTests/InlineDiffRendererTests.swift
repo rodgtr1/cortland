@@ -15,6 +15,14 @@ final class InlineDiffRendererTests: XCTestCase {
      actor: octocat
     """
 
+    /// The gutter metadata on the line starting at `lineIndex` of the
+    /// rendered string.
+    private func gutterLine(_ rendered: NSAttributedString, line lineIndex: Int) -> DiffGutterLine? {
+        let lines = rendered.string.components(separatedBy: "\n")
+        let location = lines.prefix(lineIndex).reduce(0) { $0 + ($1 as NSString).length + 1 }
+        return rendered.attribute(InlineDiffRenderer.gutterLine, at: location, effectiveRange: nil) as? DiffGutterLine
+    }
+
     func testRenderHidesGitMetadata() {
         let rendered = InlineDiffRenderer.render(sampleDiff).string
 
@@ -24,25 +32,105 @@ final class InlineDiffRendererTests: XCTestCase {
         XCTAssertFalse(rendered.contains("+++"))
     }
 
-    func testRenderNumbersContextAndAddedLinesButNotRemoved() {
+    func testRenderedStringHoldsOnlyCode() {
         let rendered = InlineDiffRenderer.render(sampleDiff).string
         let lines = rendered.components(separatedBy: "\n")
 
-        // Context line carries the hunk's starting line number.
-        XCTAssertTrue(lines[0].hasSuffix("environment: production"))
-        XCTAssertTrue(lines[0].contains("71"))
+        // Hunk header text first, then each line exactly as in the file: no
+        // line numbers, gutter padding, or +/- prefixes to copy along.
+        XCTAssertEqual(lines, [
+            "spec:",
+            "environment: production",
+            "# whether by directly despatching the workflow.",
+            "# whether by directly dispatching the workflow.",
+            "actor: octocat",
+            ""
+        ])
+    }
 
-        // Removed line: blank gutter, no number anywhere in the gutter.
-        XCTAssertTrue(lines[1].hasSuffix("despatching the workflow."))
-        XCTAssertTrue(lines[1].hasPrefix("       "))
+    func testEachLineCarriesNumberAndKind() {
+        let rendered = InlineDiffRenderer.render(sampleDiff)
+
+        // The hunk header row is unnumbered and has no gutter.
+        XCTAssertNil(gutterLine(rendered, line: 0))
+
+        // Context line carries the hunk's starting line number.
+        XCTAssertEqual(gutterLine(rendered, line: 1)?.kind, .context)
+        XCTAssertEqual(gutterLine(rendered, line: 1)?.number, 71)
+
+        // Removed line: no number.
+        XCTAssertEqual(gutterLine(rendered, line: 2)?.kind, .removed)
+        XCTAssertNil(gutterLine(rendered, line: 2)?.number)
 
         // Added line gets the new file's number (72).
-        XCTAssertTrue(lines[2].hasSuffix("dispatching the workflow."))
-        XCTAssertTrue(lines[2].contains("72"))
+        XCTAssertEqual(gutterLine(rendered, line: 3)?.kind, .added)
+        XCTAssertEqual(gutterLine(rendered, line: 3)?.number, 72)
 
         // Following context resumes numbering (73).
-        XCTAssertTrue(lines[3].hasSuffix("actor: octocat"))
-        XCTAssertTrue(lines[3].contains("73"))
+        XCTAssertEqual(gutterLine(rendered, line: 4)?.kind, .context)
+        XCTAssertEqual(gutterLine(rendered, line: 4)?.number, 73)
+    }
+
+    func testCodeLinesHangInTheGutterIndent() {
+        let rendered = InlineDiffRenderer.render(sampleDiff)
+        let location = (rendered.string as NSString).range(of: "environment").location
+        let style = rendered.attribute(.paragraphStyle, at: location, effectiveRange: nil) as? NSParagraphStyle
+
+        XCTAssertNotNil(style)
+        XCTAssertGreaterThan(style?.firstLineHeadIndent ?? 0, 0)
+        XCTAssertEqual(style?.headIndent, style?.firstLineHeadIndent)
+    }
+
+    func testHunkWithoutTrailingTextSeparatesOnlyBetweenHunks() {
+        let diff = """
+        diff --git a/a.txt b/a.txt
+        --- a/a.txt
+        +++ b/a.txt
+        @@ -1,1 +1,1 @@
+        -one
+        +uno
+        @@ -10,1 +10,1 @@
+        -ten
+        +diez
+        @@ -20,1 +20,1 @@ func twenty()
+        -twenty
+        +veinte
+        """
+
+        let lines = InlineDiffRenderer.render(diff).string.components(separatedBy: "\n")
+
+        XCTAssertEqual(lines, [
+            "one", "uno",
+            "⋯",
+            "ten", "diez",
+            "func twenty()",
+            "twenty", "veinte",
+            ""
+        ])
+    }
+
+    func testChangeCountsSkipFileHeaders() {
+        let diff = """
+        diff --git a/a.txt b/a.txt
+        index 111..222 100644
+        --- a/a.txt
+        +++ b/a.txt
+        @@ -1,4 +1,4 @@
+         keep
+        -old
+        +new
+        +extra
+        ---- removed line that starts with dashes
+        diff --git a/b.txt b/b.txt
+        --- a/b.txt
+        +++ b/b.txt
+        @@ -1 +1 @@
+        +another
+        """
+
+        let counts = InlineDiffRenderer.changeCounts(diff)
+        XCTAssertEqual(counts.added, 3)
+        XCTAssertEqual(counts.removed, 2)
     }
 
     func testRemovedLineRendersDirectlyAboveAddedLine() {
@@ -108,14 +196,14 @@ final class InlineDiffRendererTests: XCTestCase {
         let lines = rendered.string.components(separatedBy: "\n")
 
         // The "conflict" metadata line is hidden, the markers are not.
-        XCTAssertFalse(lines[0].contains("conflict"))
-        XCTAssertTrue(lines[0].hasSuffix("one"))
-        XCTAssertTrue(lines[0].contains("1"))
-        XCTAssertTrue(lines[1].hasSuffix("<<<<<<< HEAD"))
-        XCTAssertTrue(lines[3].hasSuffix("======="))
-        XCTAssertTrue(lines[5].hasSuffix(">>>>>>> b81eefa (feat)"))
-        XCTAssertTrue(lines[6].hasSuffix("three"))
-        XCTAssertTrue(lines[6].contains("7"))
+        XCTAssertEqual(lines[0], "one")
+        XCTAssertEqual(gutterLine(rendered, line: 0)?.number, 1)
+        XCTAssertEqual(lines[1], "<<<<<<< HEAD")
+        XCTAssertEqual(lines[3], "=======")
+        XCTAssertEqual(lines[5], ">>>>>>> b81eefa (feat)")
+        XCTAssertEqual(lines[6], "three")
+        XCTAssertEqual(gutterLine(rendered, line: 6)?.number, 7)
+        XCTAssertEqual(gutterLine(rendered, line: 6)?.kind, .context)
 
         // Ours/theirs sections carry distinct full-width tints (the custom
         // lineFillColor attribute, painted by DiffLineBackgroundLayoutManager);
@@ -166,12 +254,13 @@ final class InlineDiffRendererTests: XCTestCase {
         +second line
         """
 
-        let rendered = InlineDiffRenderer.render(newFileDiff).string
-        let lines = rendered.components(separatedBy: "\n")
+        let rendered = InlineDiffRenderer.render(newFileDiff)
+        let lines = rendered.string.components(separatedBy: "\n")
 
-        XCTAssertTrue(lines[0].contains("1"))
-        XCTAssertTrue(lines[0].hasSuffix("first line"))
-        XCTAssertTrue(lines[1].contains("2"))
-        XCTAssertTrue(lines[1].hasSuffix("second line"))
+        XCTAssertEqual(lines[0], "first line")
+        XCTAssertEqual(gutterLine(rendered, line: 0)?.number, 1)
+        XCTAssertEqual(gutterLine(rendered, line: 0)?.kind, .added)
+        XCTAssertEqual(lines[1], "second line")
+        XCTAssertEqual(gutterLine(rendered, line: 1)?.number, 2)
     }
 }

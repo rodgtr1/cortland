@@ -35,8 +35,8 @@ class DiffViewController: NSViewController {
         scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
 
         // Create text container and layout manager
@@ -71,8 +71,8 @@ class DiffViewController: NSViewController {
 
         scrollView.documentView = textView
 
-        // No line-number ruler: the inline diff rendering carries its own
-        // gutter with the new file's line numbers.
+        // No line-number ruler: DiffLineBackgroundLayoutManager draws the
+        // inline diff's gutter with the new file's line numbers.
 
         view.addSubview(scrollView)
 

@@ -333,10 +333,17 @@ class GitStatusModel {
         let entries = (try? gitService.changedFilesAgainstDefaultBranch(
             repositoryRoot: repositoryRoot, defaultBranch: baseBranch
         )) ?? []
-        let items = entries
-            .map { GitBranchDiffItem(path: $0.path, status: $0.status) }
-            .sorted { $0.filename < $1.filename }
+        let items = Self.sortedByPath(
+            entries.map { GitBranchDiffItem(path: $0.path, status: $0.status) },
+            path: \.path
+        )
         return (items.isEmpty ? "" : baseBranch, items)
+    }
+
+    /// Orders the panel's file lists by full relative path, so files group by
+    /// directory and same-named files in different directories stay apart.
+    nonisolated static func sortedByPath<Item>(_ items: [Item], path: KeyPath<Item, String>) -> [Item] {
+        items.sorted { $0[keyPath: path] < $1[keyPath: path] }
     }
 
     /// Returns nil on a git failure (distinct from an empty array, which means a
@@ -344,9 +351,11 @@ class GitStatusModel {
     /// instead of flashing the panel to "Working tree clean" on a transient error.
     private nonisolated func getGitStatus(repositoryRoot: String) -> [GitFileItem]? {
         do {
-            return try gitService.status(repositoryRoot: repositoryRoot)
-                .map { GitFileItem(path: $0.path, stagedChar: $0.stagedStatus, unstagedChar: $0.unstagedStatus) }
-                .sorted { $0.filename < $1.filename }
+            return Self.sortedByPath(
+                try gitService.status(repositoryRoot: repositoryRoot)
+                    .map { GitFileItem(path: $0.path, stagedChar: $0.stagedStatus, unstagedChar: $0.unstagedStatus) },
+                path: \.path
+            )
         } catch {
             let message = error.localizedDescription
             DispatchQueue.main.async { [weak self] in

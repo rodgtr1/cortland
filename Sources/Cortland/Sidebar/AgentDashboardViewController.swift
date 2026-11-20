@@ -801,7 +801,15 @@ private final class ApprovalCardView: NSView {
         scroll.layer?.cornerRadius = 4
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        let textView = NSTextView()
+        // A TextKit 1 stack with the diff layout manager, which draws the
+        // renderer's gutter (line numbers, +/- markers) and full-width fills.
+        let textContainer = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        let layoutManager = DiffLineBackgroundLayoutManager()
+        layoutManager.addTextContainer(textContainer)
+        let textStorage = NSTextStorage()
+        textStorage.addLayoutManager(layoutManager)
+
+        let textView = NSTextView(frame: .zero, textContainer: textContainer)
         textView.isEditable = false
         textView.isRichText = true
         textView.drawsBackground = true
