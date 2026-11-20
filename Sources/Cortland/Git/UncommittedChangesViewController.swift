@@ -24,7 +24,9 @@ final class UncommittedChangesViewController: NSViewController {
     /// What the stack currently shows, keyed by relative path for the
     /// reconcile. nil until a load has displayed something.
     private var displayedSections: [ChangeSection]?
-    private var sectionViews: [String: NSView] = [:]
+    private var sectionViews: [String: ChangeSectionView] = [:]
+    /// Collapse and Viewed marks, keyed by relative path, for this pane only.
+    private var sectionStates = ChangesSectionStates()
     private var requests = LatestRequestGate()
     private let watcher = RepositoryWatcher()
     /// The repository changed while the pane was hidden.
@@ -239,6 +241,7 @@ final class UncommittedChangesViewController: NSViewController {
             if sections.isEmpty {
                 showMessage("No changes")
             } else {
+                updateSectionStates(sections, contentChanged: [])
                 for section in sections {
                     let sectionView = makeSectionView(section)
                     stackView.addArrangedSubview(sectionView)
@@ -246,6 +249,16 @@ final class UncommittedChangesViewController: NSViewController {
                 }
             }
             displayedSections = sections
+        }
+
+        // A sidebar click opens the file's section if it is collapsed; its
+        // Viewed mark stays as it is.
+        if let focus,
+           let path = sectionViews.first(where: { $0.value.identifier?.rawValue == focus })?.key,
+           let sectionView = sectionViews[path],
+           sectionStates.state(for: path).isCollapsed {
+            sectionStates.expand(path)
+            applyState(to: sectionView, path: path)
         }
 
         if let focus {
@@ -262,10 +275,11 @@ final class UncommittedChangesViewController: NSViewController {
     /// place, new ones are inserted in path order, and vanished ones removed.
     private func reconcile(_ plan: ChangesReconcilePlan, sections: [ChangeSection]) {
         // Drop the "No changes" message and every view that is going away.
-        let replaced = Set(plan.removed + plan.steps.compactMap { step -> String? in
+        let rebuilt = Set(plan.steps.compactMap { step -> String? in
             if case .rebuild(let path) = step { return path }
             return nil
         })
+        let replaced = rebuilt.union(plan.removed)
         let keptViews = Set(sectionViews.filter { !replaced.contains($0.key) }.values.map(ObjectIdentifier.init))
         for arranged in stackView.arrangedSubviews where !keptViews.contains(ObjectIdentifier(arranged)) {
             stackView.removeArrangedSubview(arranged)
@@ -275,6 +289,11 @@ final class UncommittedChangesViewController: NSViewController {
             sectionViews.removeValue(forKey: path)
         }
         diffColumns.removeAll { !$0.textView.isDescendant(of: stackView) }
+
+        updateSectionStates(
+            sections,
+            contentChanged: ChangesSectionStates.contentChangedPaths(displayed: displayedSections ?? [], incoming: sections)
+        )
 
         // Kept views are already in path order, so everything before index i
         // is exactly sections[0..<i] and a new view slots in at i.
@@ -366,48 +385,47 @@ final class UncommittedChangesViewController: NSViewController {
         }
     }
 
-    private func makeSectionView(_ section: ChangeSection) -> NSView {
+    private func makeSectionView(_ section: ChangeSection) -> ChangeSectionView {
+        let path = section.relativePath
+        let header: ChangeSectionHeaderView
+        let makeBody: () -> NSView
+
         if section.isConflicted {
-            return makeConflictSectionView(section)
+            header = makeHeaderView(section, counts: nil)
+            makeBody = { [weak self] in self?.makeConflictBody(section) ?? NSView() }
+        } else if let preview = makeImagePreview(for: section) {
+            // An image can't be shown as a text diff: git reports it as binary
+            // and the section body would just read "(binary)". When the
+            // working-tree file decodes as an image, show the picture itself.
+            header = makeHeaderView(section, counts: nil)
+            makeBody = {
+                preview.view.heightAnchor.constraint(equalToConstant: preview.height).isActive = true
+                return preview.view
+            }
+        } else {
+            header = makeHeaderView(section, counts: InlineDiffRenderer.changeCounts(section.diff))
+            makeBody = { [weak self] in self?.makeDiffBody(section) ?? NSView() }
         }
 
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.backgroundColor = AppTheme.windowBackground.cgColor
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.identifier = NSUserInterfaceItemIdentifier(section.absolutePath(repositoryPath: repositoryPath))
-
-        // An image can't be shown as a text diff — git reports it as binary and
-        // the section body would just read "(binary)". When the working-tree
-        // file decodes as an image, show the picture itself instead.
-        let imagePreview = makeImagePreview(for: section)
-        let header = makeHeaderView(
-            section,
-            counts: imagePreview == nil ? InlineDiffRenderer.changeCounts(section.diff) : nil
-        )
-        container.addSubview(header)
-
-        if let preview = imagePreview {
-            container.addSubview(preview.view)
-            NSLayoutConstraint.activate([
-                header.topAnchor.constraint(equalTo: container.topAnchor),
-                header.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                header.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                header.heightAnchor.constraint(equalToConstant: Metrics.headerHeight),
-
-                preview.view.topAnchor.constraint(equalTo: header.bottomAnchor),
-                preview.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                preview.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                preview.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                preview.view.heightAnchor.constraint(equalToConstant: preview.height)
-            ])
-            return container
+        let sectionView = ChangeSectionView(header: header, headerHeight: Metrics.headerHeight, makeBody: makeBody)
+        sectionView.wantsLayer = true
+        sectionView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
+        sectionView.identifier = NSUserInterfaceItemIdentifier(section.absolutePath(repositoryPath: repositoryPath))
+        header.onToggle = { [weak self] in
+            self?.changeState(of: path) { $0.toggleCollapsed(path) }
         }
+        header.onViewedChange = { [weak self] viewed in
+            self?.changeState(of: path) { $0.setViewed(viewed, for: path) }
+        }
+        applyState(to: sectionView, path: path)
+        return sectionView
+    }
 
+    /// The text diff under a header. Built only when the section is first
+    /// expanded, so a collapsed lockfile never renders.
+    private func makeDiffBody(_ section: ChangeSection) -> NSView {
         let renderedDiff = InlineDiffRenderer.render(section.diff, fileExtension: (section.relativePath as NSString).pathExtension.lowercased())
         let diffView = makeDiffColumn(text: renderedDiff)
-
-        container.addSubview(diffView)
 
         // Size the diff to its full content height and let the outer scroll
         // view handle scrolling. Capping the height here would clip long diffs,
@@ -417,32 +435,48 @@ final class UncommittedChangesViewController: NSViewController {
         let lineCount = max(1, renderedDiff.string.filter { $0 == "\n" }.count + 1)
         let diffHeight = CGFloat(lineCount) * Metrics.diffLineHeight + 14
         let diffHeightConstraint = diffView.heightAnchor.constraint(equalToConstant: diffHeight)
-
-        NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: container.topAnchor),
-            header.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            header.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            header.heightAnchor.constraint(equalToConstant: Metrics.headerHeight),
-
-            diffView.topAnchor.constraint(equalTo: header.bottomAnchor),
-            diffView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            diffView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            diffView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            diffHeightConstraint
-        ])
+        diffHeightConstraint.isActive = true
 
         diffColumns.append(DiffColumn(textView: diffView, heightConstraint: diffHeightConstraint))
+        return diffView
+    }
 
-        return container
+    private func updateSectionStates(_ sections: [ChangeSection], contentChanged: Set<String>) {
+        sectionStates.update(sections: sections, contentChanged: contentChanged) { section in
+            let counts = InlineDiffRenderer.changeCounts(section.diff)
+            return counts.added + counts.removed
+        }
+    }
+
+    private func applyState(to sectionView: ChangeSectionView, path: String) {
+        let state = sectionStates.state(for: path)
+        sectionView.header.apply(state)
+        sectionView.setCollapsed(state.isCollapsed)
+    }
+
+    /// Applies a user's collapse or Viewed change, keeping the clicked header
+    /// where it sits on screen while the content below it moves.
+    private func changeState(of path: String, _ change: (inout ChangesSectionStates) -> Void) {
+        guard let sectionView = sectionViews[path] else { return }
+        let headerOffset = sectionGeometry().first { $0.path == path }.map { $0.top - visibleTop }
+        change(&sectionStates)
+        applyState(to: sectionView, path: path)
+        guard let headerOffset else { return }
+        settleLayout()
+        if let top = sectionGeometry().first(where: { $0.path == path })?.top {
+            scroll(toVisibleTop: top - headerOffset)
+        }
     }
 
     /// `counts` (added, removed) shows on the right; nil omits it (image
     /// previews and conflicted files).
-    private func makeHeaderView(_ section: ChangeSection, counts: (added: Int, removed: Int)?) -> NSView {
-        let header = NSView()
-        header.wantsLayer = true
-        header.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
-        header.translatesAutoresizingMaskIntoConstraints = false
+    private func makeHeaderView(_ section: ChangeSection, counts: (added: Int, removed: Int)?) -> ChangeSectionHeaderView {
+        let chevron = NSButton(image: NSImage(), target: nil, action: nil)
+        chevron.isBordered = false
+        chevron.imagePosition = .imageOnly
+        chevron.contentTintColor = AppTheme.mutedText
+        chevron.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+        chevron.translatesAutoresizingMaskIntoConstraints = false
 
         let status = NSTextField(labelWithString: section.status.rawValue)
         status.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
@@ -465,6 +499,25 @@ final class UncommittedChangesViewController: NSViewController {
         fileName.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         fileName.setContentHuggingPriority(.required, for: .horizontal)
         fileName.translatesAutoresizingMaskIntoConstraints = false
+
+        // Conflicted files are resolved, not reviewed, so they get no checkbox.
+        var viewedBox: NSButton?
+        if !section.isConflicted {
+            let box = NSButton(checkboxWithTitle: "Viewed", target: nil, action: nil)
+            box.controlSize = .small
+            box.attributedTitle = NSAttributedString(string: "Viewed", attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: AppTheme.mutedText
+            ])
+            box.setContentCompressionResistancePriority(.required, for: .horizontal)
+            box.translatesAutoresizingMaskIntoConstraints = false
+            viewedBox = box
+        }
+
+        let header = ChangeSectionHeaderView(chevron: chevron, fileName: fileName, viewedBox: viewedBox)
+        header.wantsLayer = true
+        header.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        header.translatesAutoresizingMaskIntoConstraints = false
 
         let countsLabel = NSTextField(labelWithString: "")
         if let counts {
@@ -489,14 +542,31 @@ final class UncommittedChangesViewController: NSViewController {
         openButton.identifier = NSUserInterfaceItemIdentifier(section.absolutePath(repositoryPath: repositoryPath))
         openButton.translatesAutoresizingMaskIntoConstraints = false
 
+        header.addSubview(chevron)
         header.addSubview(status)
         header.addSubview(path)
         header.addSubview(fileName)
         header.addSubview(countsLabel)
         header.addSubview(openButton)
 
+        if let viewedBox {
+            header.addSubview(viewedBox)
+            NSLayoutConstraint.activate([
+                viewedBox.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+                viewedBox.trailingAnchor.constraint(equalTo: openButton.leadingAnchor, constant: -10),
+                countsLabel.trailingAnchor.constraint(equalTo: viewedBox.leadingAnchor, constant: -12)
+            ])
+        } else {
+            countsLabel.trailingAnchor.constraint(equalTo: openButton.leadingAnchor, constant: -10).isActive = true
+        }
+
         NSLayoutConstraint.activate([
-            status.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 12),
+            chevron.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 8),
+            chevron.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            chevron.widthAnchor.constraint(equalToConstant: 14),
+            chevron.heightAnchor.constraint(equalToConstant: 14),
+
+            status.leadingAnchor.constraint(equalTo: chevron.trailingAnchor, constant: 6),
             status.centerYAnchor.constraint(equalTo: header.centerYAnchor),
 
             path.leadingAnchor.constraint(equalTo: status.trailingAnchor, constant: 8),
@@ -507,7 +577,6 @@ final class UncommittedChangesViewController: NSViewController {
             fileName.trailingAnchor.constraint(lessThanOrEqualTo: countsLabel.leadingAnchor, constant: -12),
 
             countsLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            countsLabel.trailingAnchor.constraint(equalTo: openButton.leadingAnchor, constant: -10),
 
             openButton.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -10),
             openButton.centerYAnchor.constraint(equalTo: header.centerYAnchor)
@@ -646,17 +715,11 @@ final class UncommittedChangesViewController: NSViewController {
     /// Use current / incoming / both buttons, plus a "stage to continue" prompt
     /// once all markers are gone. Resolution rewrites the file on disk; the file
     /// is never opened in the editor, so a marker-laden file is never surfaced.
-    private func makeConflictSectionView(_ section: ChangeSection) -> NSView {
+    private func makeConflictBody(_ section: ChangeSection) -> NSView {
         let absolutePath = section.absolutePath(repositoryPath: repositoryPath)
 
         let container = NSView()
-        container.wantsLayer = true
-        container.layer?.backgroundColor = AppTheme.windowBackground.cgColor
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.identifier = NSUserInterfaceItemIdentifier(absolutePath)
-
-        let header = makeHeaderView(section, counts: nil)
-        container.addSubview(header)
 
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -672,7 +735,7 @@ final class UncommittedChangesViewController: NSViewController {
             stack.addArrangedSubview(makeInfoRow(
                 "Can’t display conflicts — file is too large or not UTF-8 text. Resolve it in your editor."
             ))
-            layoutSection(container: container, header: header, stack: stack)
+            layoutConflictBody(container: container, stack: stack)
             return container
         }
         let conflicts = MergeConflictParser.conflicts(in: content)
@@ -692,18 +755,13 @@ final class UncommittedChangesViewController: NSViewController {
             }
         }
 
-        layoutSection(container: container, header: header, stack: stack)
+        layoutConflictBody(container: container, stack: stack)
         return container
     }
 
-    private func layoutSection(container: NSView, header: NSView, stack: NSView) {
+    private func layoutConflictBody(container: NSView, stack: NSView) {
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: container.topAnchor),
-            header.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            header.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            header.heightAnchor.constraint(equalToConstant: Metrics.headerHeight),
-
-            stack.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
             stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
             stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
             stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12)
@@ -916,6 +974,117 @@ final class UncommittedChangesViewController: NSViewController {
 
 }
 
+/// One file's section: a header above a body (diff text, image preview, or
+/// conflict blocks). The body is built the first time the section expands
+/// and hidden, not rebuilt, when it collapses again.
+private final class ChangeSectionView: NSView {
+    let header: ChangeSectionHeaderView
+    private let makeBody: () -> NSView
+    private var body: NSView?
+    private var collapsedBottom: NSLayoutConstraint!
+    private var expandedBottom: NSLayoutConstraint?
+
+    init(header: ChangeSectionHeaderView, headerHeight: CGFloat, makeBody: @escaping () -> NSView) {
+        self.header = header
+        self.makeBody = makeBody
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        addSubview(header)
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: topAnchor),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: trailingAnchor),
+            header.heightAnchor.constraint(equalToConstant: headerHeight)
+        ])
+        collapsedBottom = header.bottomAnchor.constraint(equalTo: bottomAnchor)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setCollapsed(_ collapsed: Bool) {
+        if collapsed {
+            expandedBottom?.isActive = false
+            body?.isHidden = true
+            collapsedBottom.isActive = true
+            return
+        }
+        let body = self.body ?? buildBody()
+        collapsedBottom.isActive = false
+        body.isHidden = false
+        expandedBottom?.isActive = true
+    }
+
+    private func buildBody() -> NSView {
+        let body = makeBody()
+        body.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(body)
+        NSLayoutConstraint.activate([
+            body.topAnchor.constraint(equalTo: header.bottomAnchor),
+            body.leadingAnchor.constraint(equalTo: leadingAnchor),
+            body.trailingAnchor.constraint(equalTo: trailingAnchor)
+        ])
+        expandedBottom = body.bottomAnchor.constraint(equalTo: bottomAnchor)
+        self.body = body
+        return body
+    }
+}
+
+/// A section header. A click anywhere on it that is not one of its buttons
+/// toggles the section, the same as the chevron.
+private final class ChangeSectionHeaderView: NSView {
+    var onToggle: (() -> Void)?
+    var onViewedChange: ((Bool) -> Void)?
+
+    private let chevron: NSButton
+    private let fileName: NSTextField
+    private let viewedBox: NSButton?
+
+    init(chevron: NSButton, fileName: NSTextField, viewedBox: NSButton?) {
+        self.chevron = chevron
+        self.fileName = fileName
+        self.viewedBox = viewedBox
+        super.init(frame: .zero)
+        chevron.target = self
+        chevron.action = #selector(chevronClicked)
+        viewedBox?.target = self
+        viewedBox?.action = #selector(viewedClicked(_:))
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func apply(_ state: ChangesSectionStates.State) {
+        let label = state.isCollapsed ? "Expand" : "Collapse"
+        chevron.image = NSImage(
+            systemSymbolName: state.isCollapsed ? "chevron.right" : "chevron.down",
+            accessibilityDescription: label
+        )
+        chevron.toolTip = label
+        viewedBox?.state = state.isViewed ? .on : .off
+        fileName.textColor = state.isViewed ? AppTheme.mutedText : AppTheme.primaryText
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        return hit is NSButton ? hit : self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onToggle?()
+    }
+
+    @objc private func chevronClicked() {
+        onToggle?()
+    }
+
+    @objc private func viewedClicked(_ sender: NSButton) {
+        onViewedChange?(sender.state == .on)
+    }
+}
+
 /// Button carrying the file + conflict it resolves (or the relative path to
 /// stage, for the "mark resolved" prompt).
 private final class ConflictResolveButton: NSButton {
@@ -1044,6 +1213,87 @@ nonisolated struct LatestRequestGate {
 
     func isCurrent(_ request: Int) -> Bool {
         request == latest
+    }
+}
+
+/// Which file sections are collapsed and which are marked Viewed, keyed by
+/// relative path. Held in memory by the pane; nothing is saved.
+nonisolated struct ChangesSectionStates {
+    struct State: Equatable {
+        var isCollapsed: Bool
+        var isViewed: Bool
+    }
+
+    /// Generated dependency lockfiles, which start collapsed.
+    static let lockfileNames: Set<String> = [
+        "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb",
+        "Package.resolved", "Cargo.lock", "Gemfile.lock", "Podfile.lock", "poetry.lock",
+        "uv.lock", "composer.lock", "go.sum"
+    ]
+
+    /// A diff with more changed lines (added plus removed) than this starts collapsed.
+    static let largeDiffLineCount = 500
+
+    static func startsCollapsed(relativePath: String, changedLines: Int) -> Bool {
+        lockfileNames.contains((relativePath as NSString).lastPathComponent)
+            || changedLines > largeDiffLineCount
+    }
+
+    /// Paths whose content differs between the two results. Only new content
+    /// clears a Viewed mark: a stage or unstage changes the status letter and
+    /// rebuilds the header, but the file still reads the same. A stamp that
+    /// appears or vanishes only tracks the conflict flag, so it is not counted.
+    static func contentChangedPaths(displayed: [ChangeSection], incoming: [ChangeSection]) -> Set<String> {
+        let previous = Dictionary(displayed.map { ($0.relativePath, $0) }, uniquingKeysWith: { first, _ in first })
+        return Set(incoming.compactMap { section -> String? in
+            guard let old = previous[section.relativePath] else { return nil }
+            let stampChanged = old.fileStamp != nil && section.fileStamp != nil && old.fileStamp != section.fileStamp
+            return old.diff != section.diff || stampChanged ? section.relativePath : nil
+        })
+    }
+
+    private var states: [String: State] = [:]
+
+    func state(for path: String) -> State {
+        states[path] ?? State(isCollapsed: false, isViewed: false)
+    }
+
+    /// Brings the states in line with a new result. A path seen for the first
+    /// time gets the default (`changedLines` is asked only then); a path that
+    /// left is forgotten; a Viewed file whose content changed needs another
+    /// look, so it loses the mark and opens. Every other state is left alone.
+    mutating func update(sections: [ChangeSection], contentChanged: Set<String>, changedLines: (ChangeSection) -> Int) {
+        let incoming = Set(sections.map(\.relativePath))
+        states = states.filter { incoming.contains($0.key) }
+        for section in sections {
+            let path = section.relativePath
+            if let existing = states[path] {
+                if existing.isViewed && contentChanged.contains(path) {
+                    states[path] = State(isCollapsed: false, isViewed: false)
+                }
+            } else {
+                let collapsed = Self.startsCollapsed(relativePath: path, changedLines: changedLines(section))
+                states[path] = State(isCollapsed: collapsed, isViewed: false)
+            }
+        }
+    }
+
+    mutating func toggleCollapsed(_ path: String) {
+        var state = state(for: path)
+        state.isCollapsed.toggle()
+        states[path] = state
+    }
+
+    /// Marking a file Viewed collapses it; clearing the mark opens it.
+    mutating func setViewed(_ viewed: Bool, for path: String) {
+        states[path] = State(isCollapsed: viewed, isViewed: viewed)
+    }
+
+    /// Opens the section without touching its Viewed mark.
+    mutating func expand(_ path: String) {
+        var state = state(for: path)
+        state.isCollapsed = false
+        states[path] = state
     }
 }
 
