@@ -1366,10 +1366,6 @@ extension MainWindowController {
         if command == .toggleArcade && !isArcadeEnabled {
             return false
         }
-        // Likewise ⇧⌘M when Markdown read mode is switched off in config.
-        if command == .toggleMarkdownReadMode && !isMarkdownReadModeEnabled {
-            return false
-        }
 
         // ⇧⌥F belongs to the file editor; anywhere else it is a keystroke for
         // the terminal.
@@ -1752,10 +1748,6 @@ extension MainWindowController: PaletteCommandHost {
 
     var isArcadeEnabled: Bool {
         config.arcade?.enabled ?? false
-    }
-
-    var isMarkdownReadModeEnabled: Bool {
-        config.editor?.markdownReadMode ?? EditorConfig().markdownReadMode
     }
 
     var paletteSkillRoots: [URL] {

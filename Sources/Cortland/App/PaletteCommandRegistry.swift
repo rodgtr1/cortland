@@ -40,9 +40,6 @@ protocol PaletteCommandHost: AnyObject {
     func toggleMarkdownReadMode()
     /// Runs the project's formatter over the focused editor pane's buffer.
     func formatCurrentDocument()
-    /// Whether Markdown read mode is on in config ([editor]
-    /// markdown_read_mode). Gates the ⇧⌘M chord and the palette entry.
-    var isMarkdownReadModeEnabled: Bool { get }
     func showQuickOpen()
     func showSessions()
     func showPreferences()
@@ -167,13 +164,11 @@ final class PaletteCommandRegistry {
             }
         )
 
-        if host?.isMarkdownReadModeEnabled == true {
-            actions.append(
-                PaletteAction(title: "Toggle Markdown Read Mode", subtitle: KeyboardCommand.toggleMarkdownReadMode.displayShortcut, symbolName: "doc.richtext") { [weak self] in
-                    self?.host?.toggleMarkdownReadMode()
-                }
-            )
-        }
+        actions.append(
+            PaletteAction(title: "Toggle Markdown Read Mode", subtitle: KeyboardCommand.toggleMarkdownReadMode.displayShortcut, symbolName: "doc.richtext") { [weak self] in
+                self?.host?.toggleMarkdownReadMode()
+            }
+        )
 
         // Optional extras only appear while enabled in config.
         if host?.isArcadeEnabled == true {

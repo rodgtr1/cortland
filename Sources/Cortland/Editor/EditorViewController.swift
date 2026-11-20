@@ -37,7 +37,7 @@ class EditorViewController: NSViewController {
     // Markdown read mode: the rendered view sits over the editor and the
     // buffer stays the single source of truth for both.
     private var readerView: MarkdownReaderView!
-    private var markdownReadModeEnabled = true
+    private var opensMarkdownInReadMode = false
     private var editorFontSize: CGFloat = 13
     private(set) var isReadMode = false
 
@@ -87,7 +87,7 @@ class EditorViewController: NSViewController {
         let config = Config.load()
         let editorConfig = config.editor ?? EditorConfig()
         liveReloadEnabled = editorConfig.liveReload
-        markdownReadModeEnabled = editorConfig.markdownReadMode
+        opensMarkdownInReadMode = editorConfig.markdownReadMode
         editorFontSize = CGFloat(editorConfig.fontSize)
 
         changeBar = makeChangeBar()
@@ -255,10 +255,7 @@ class EditorViewController: NSViewController {
             hideChangeBar()
         }
 
-        markdownReadModeEnabled = editorConfig.markdownReadMode
-        if !markdownReadModeEnabled, isReadMode {
-            setReadMode(false)
-        }
+        opensMarkdownInReadMode = editorConfig.markdownReadMode
 
         textView.isHorizontallyResizable = !editorConfig.wordWrap
         textView.textContainer?.widthTracksTextView = editorConfig.wordWrap
@@ -389,9 +386,9 @@ class EditorViewController: NSViewController {
                 applySearchHighlights()
             }
 
-            // Markdown opens for reading when the mode is on; anything else,
-            // and Markdown with it off, lands in the editor as before.
-            setReadMode(canUseReadMode, preserveScroll: false)
+            // Markdown opens for reading only when config asks for it;
+            // otherwise it lands in the editor and ⇧⌘M renders it.
+            setReadMode(opensMarkdownInReadMode, preserveScroll: false)
             startWatching(url)
         } catch {
             Log.error("Failed to open \(url.path): \(error.localizedDescription)", category: "editor")
@@ -668,10 +665,9 @@ class EditorViewController: NSViewController {
 
     // MARK: - Markdown read mode
 
-    /// Whether this file can be shown rendered: a Markdown file, with the mode
-    /// enabled in config.
+    /// Whether this file can be shown rendered: a Markdown file.
     var canUseReadMode: Bool {
-        guard markdownReadModeEnabled, let url = currentURL else { return false }
+        guard let url = currentURL else { return false }
         return MarkdownRenderer.isMarkdown(extension: url.pathExtension)
     }
 

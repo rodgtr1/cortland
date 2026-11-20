@@ -43,18 +43,18 @@ final class EditorLiveReloadTests: XCTestCase {
 
     func testEditorConfigDefaultsAndOverrides() throws {
         XCTAssertTrue(EditorConfig().liveReload)
-        XCTAssertTrue(EditorConfig().markdownReadMode)
+        XCTAssertFalse(EditorConfig().markdownReadMode)
 
         let legacy = try TOMLDecoder().decode(EditorConfig.self, from: try TOMLTable(string: "word_wrap = false"))
         XCTAssertTrue(legacy.liveReload, "a config written before the key existed keeps the default")
-        XCTAssertTrue(legacy.markdownReadMode)
+        XCTAssertFalse(legacy.markdownReadMode)
 
         let off = try TOMLDecoder().decode(
             EditorConfig.self,
-            from: try TOMLTable(string: "live_reload = false\nmarkdown_read_mode = false")
+            from: try TOMLTable(string: "live_reload = false\nmarkdown_read_mode = true")
         )
         XCTAssertFalse(off.liveReload)
-        XCTAssertFalse(off.markdownReadMode)
+        XCTAssertTrue(off.markdownReadMode)
     }
 
     // MARK: - Live reload
@@ -157,7 +157,7 @@ final class EditorLiveReloadTests: XCTestCase {
         XCTAssertTrue(editor.isReadMode)
     }
 
-    func testNonMarkdownAndDisabledModeOpenInTheEditor() throws {
+    func testNonMarkdownAndDefaultMarkdownOpenInTheEditor() throws {
         let swift = tempDir.appendingPathComponent("a.swift")
         try "let a = 1\n".write(to: swift, atomically: true, encoding: .utf8)
         let editor = makeEditor()
@@ -172,22 +172,9 @@ final class EditorLiveReloadTests: XCTestCase {
         let disabled = makeEditor(readMode: false)
         disabled.openFile(md)
         XCTAssertFalse(disabled.isReadMode)
-        XCTAssertFalse(disabled.canUseReadMode)
+        XCTAssertTrue(disabled.canUseReadMode)
         disabled.toggleReadMode()
-        XCTAssertFalse(disabled.isReadMode)
-    }
-
-    func testTurningTheModeOffInConfigLeavesTheReader() throws {
-        let md = tempDir.appendingPathComponent("c.md")
-        try "# C\n".write(to: md, atomically: true, encoding: .utf8)
-        let editor = makeEditor()
-        editor.openFile(md)
-        XCTAssertTrue(editor.isReadMode)
-
-        var config = Config()
-        config.editor?.markdownReadMode = false
-        editor.applyConfig(config)
-        XCTAssertFalse(editor.isReadMode)
+        XCTAssertTrue(disabled.isReadMode, "the toggle works even when Markdown opens in the editor")
     }
 
     func testNavigateToLineLeavesReadMode() throws {

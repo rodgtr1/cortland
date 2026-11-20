@@ -69,7 +69,7 @@ class KeyboardShortcutsPanel: NSPanel {
         (.commandPalette, "Open command palette", "Files"),
         (.saveFile, "Save the current editor tab", "Files"),
         (.formatDocument, "Format the document with the project's formatter (Prettier, rustfmt, gofmt, ...)", "Files"),
-        (.toggleMarkdownReadMode, "Markdown: switch between reader and editor (enable in Preferences ▸ Editor)", "Files"),
+        (.toggleMarkdownReadMode, "Markdown: switch between reader and editor", "Files"),
 
         // Terminal
         (.findInTerminal, "Find in terminal", "Terminal"),

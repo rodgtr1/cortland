@@ -184,14 +184,13 @@ writing to them:
   shows a bar offering Reload or Keep Mine instead, and the save-time
   overwrite check still applies to whatever you keep. Off, the editor only
   notices the change when you save, as before.
-- **Open Markdown files in read mode** (`markdown_read_mode`, on by default):
-  `.md` files open rendered (headings, lists, quotes, code, links, local
-  images, `[[wikilinks]]`) in a centered reading column, and `⇧⌘M` or the
-  Edit control switches to the editor and back. Links to neighbouring files
-  open in the same pane. The buffer is shared between the two views, so
-  switching to read shows unsaved edits and live reload re-renders as the
-  file grows. Off, Markdown opens in the editor like any other file and the
-  shortcut falls through.
+- **Open Markdown files in read mode** (`markdown_read_mode`, off by default):
+  `.md` files open in the editor like any other file, and `⇧⌘M` switches to
+  the rendered view (headings, lists, quotes, code, links, local images,
+  `[[wikilinks]]`) in a centered reading column and back. Links to
+  neighbouring files open in the same pane. The buffer is shared between the
+  two views, so switching to read shows unsaved edits and live reload
+  re-renders as the file grows. On, Markdown opens rendered instead.
 
 ### Agents
 
@@ -536,7 +535,7 @@ word_wrap = true
 font_size = 13
 show_hidden_files = false
 live_reload = true           # follow files an agent rewrites; ask before dropping unsaved edits
-markdown_read_mode = true    # open .md rendered; ⇧⌘M toggles the editor
+markdown_read_mode = false   # true opens .md rendered; ⇧⌘M toggles either way
 ```
 
 Drop custom theme palettes (same JSON schema as the built-ins) into

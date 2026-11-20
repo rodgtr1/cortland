@@ -699,9 +699,9 @@ public struct EditorConfig: Codable {
     /// is ever thrown away silently. Off restores the old behavior: the editor
     /// only notices the change when you save.
     public var liveReload: Bool
-    /// Open Markdown files rendered for reading, with ⇧⌘M switching to the
-    /// editor and back. Off hides the mode entirely: Markdown opens in the
-    /// editor like any other file and the shortcut falls through.
+    /// Open Markdown files rendered for reading. Off (the default), Markdown
+    /// opens in the editor like any other file. Either way ⇧⌘M switches
+    /// between the editor and the rendered view.
     public var markdownReadMode: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -721,7 +721,7 @@ public struct EditorConfig: Codable {
         self.showHiddenFiles = false
         self.fontFamily = ""
         self.liveReload = true
-        self.markdownReadMode = true
+        self.markdownReadMode = false
     }
 
     public init(from decoder: Decoder) throws {
@@ -732,7 +732,7 @@ public struct EditorConfig: Codable {
         self.showHiddenFiles = try container.decodeIfPresent(Bool.self, forKey: .showHiddenFiles) ?? false
         self.fontFamily = try container.decodeIfPresent(String.self, forKey: .fontFamily) ?? ""
         self.liveReload = try container.decodeIfPresent(Bool.self, forKey: .liveReload) ?? true
-        self.markdownReadMode = try container.decodeIfPresent(Bool.self, forKey: .markdownReadMode) ?? true
+        self.markdownReadMode = try container.decodeIfPresent(Bool.self, forKey: .markdownReadMode) ?? false
     }
 }
 
