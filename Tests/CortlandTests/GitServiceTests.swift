@@ -386,4 +386,39 @@ final class GitServiceTests: XCTestCase {
         try git(["checkout", "-q", "main"])
         XCTAssertTrue(try service.changedFilesAgainstDefaultBranch(repositoryRoot: repo.path, defaultBranch: "main").isEmpty)
     }
+
+    func testDiffsByPathRunsWithoutOptionalLocks() throws {
+        let runner = RecordingRunner()
+        _ = try GitService(runner: runner).diffsByPath(for: [], repositoryRoot: "/repo")
+
+        let calls = runner.calls
+        XCTAssertEqual(calls.map(\.arguments), [
+            ["-C", "/repo", "diff", "--cached"],
+            ["-C", "/repo", "diff"],
+        ])
+        for call in calls {
+            XCTAssertEqual(call.environment?["GIT_OPTIONAL_LOCKS"], "0")
+        }
+    }
+
+    /// Records each git invocation instead of running it.
+    private nonisolated final class RecordingRunner: ProcessRunning, @unchecked Sendable {
+        struct Call {
+            let arguments: [String]
+            let environment: [String: String]?
+        }
+
+        private let lock = NSLock()
+        private var _calls: [Call] = []
+        var calls: [Call] {
+            lock.lock(); defer { lock.unlock() }
+            return _calls
+        }
+
+        func run(executableURL: URL, arguments: [String], currentDirectoryURL: URL?, environment: [String: String]?) throws -> ProcessResult {
+            lock.lock(); defer { lock.unlock() }
+            _calls.append(Call(arguments: arguments, environment: environment))
+            return ProcessResult(terminationStatus: 0, stdout: "", stderr: "")
+        }
+    }
 }

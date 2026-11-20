@@ -21,6 +21,15 @@ final class UncommittedChangesViewController: NSViewController {
     }
     private var diffColumns: [DiffColumn] = []
 
+    /// What the stack currently shows, keyed by relative path for the
+    /// reconcile. nil until a load has displayed something.
+    private var displayedSections: [ChangeSection]?
+    private var sectionViews: [String: NSView] = [:]
+    private var requests = LatestRequestGate()
+    private let watcher = RepositoryWatcher()
+    /// The repository changed while the pane was hidden.
+    private var isStale = false
+
     private enum Metrics {
         static let horizontalPadding: CGFloat = 12
         static let sectionSpacing: CGFloat = 10
@@ -40,7 +49,9 @@ final class UncommittedChangesViewController: NSViewController {
     }
 
     override func loadView() {
-        view = NSView()
+        let rootView = WindowObservingView()
+        rootView.onWindowChange = { [weak self] in self?.visibilityMayHaveChanged() }
+        view = rootView
         view.wantsLayer = true
         view.layer?.backgroundColor = DiffViewController.DiffColors.background.cgColor
         setupScrollView()
@@ -48,6 +59,7 @@ final class UncommittedChangesViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        startWatching()
         loadChanges()
     }
 
@@ -101,10 +113,52 @@ final class UncommittedChangesViewController: NSViewController {
         ])
     }
 
+    // MARK: - Live refresh
+
+    /// Watches the working tree and the git directory so edits, stages, and
+    /// commits all refresh the pane. The root covers `.git` in a normal repo; a
+    /// linked worktree keeps its index under the main repo's
+    /// `.git/worktrees/<name>`, so that directory is watched too. The watcher's
+    /// own deinit stops the stream when this controller goes away.
+    private func startWatching() {
+        watcher.onChange = { [weak self] in self?.repositoryChanged() }
+        var paths = [repositoryPath]
+        if let gitDir = GitStatusModel.linkedWorktreeGitDir(forRoot: repositoryPath) {
+            paths.append(gitDir)
+        }
+        watcher.start(paths: paths)
+    }
+
+    /// The pane is on screen only while its tab is attached to the window.
+    private var isVisible: Bool {
+        view.window != nil && !view.isHiddenOrHasHiddenAncestor
+    }
+
+    /// A hidden pane skips the diff work and remembers it is behind.
+    private func repositoryChanged() {
+        if isVisible {
+            loadChanges()
+        } else {
+            isStale = true
+        }
+    }
+
+    private func visibilityMayHaveChanged() {
+        guard isStale, isVisible else { return }
+        loadChanges()
+    }
+
     private func loadChanges() {
-        showLoading()
+        isStale = false
+        // "Loading" only fills an empty pane; a refresh leaves the current
+        // content on screen until the new result is ready.
+        if stackView.arrangedSubviews.isEmpty {
+            showMessage("Loading changes...")
+        }
+        let request = requests.begin()
 
         DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService] in
+            let result: Result<[ChangeSection], Error>
             do {
                 // Keep a stable order by relative path; the focused file is
                 // scrolled into view rather than reordered to the top.
@@ -112,7 +166,7 @@ final class UncommittedChangesViewController: NSViewController {
                     .sorted { $0.path < $1.path }
 
                 let diffs = try gitService.diffsByPath(for: entries, repositoryRoot: repositoryPath)
-                let sections = entries.map { entry in
+                result = .success(entries.map { entry in
                     ChangeSection(
                         relativePath: entry.path,
                         diff: diffs[entry.path] ?? "No changes",
@@ -121,24 +175,37 @@ final class UncommittedChangesViewController: NSViewController {
                             path: entry.path,
                             stagedChar: entry.stagedStatus,
                             unstagedChar: entry.unstagedStatus
-                        ).displayStatus
+                        ).displayStatus,
+                        repositoryPath: repositoryPath
                     )
-                }
-
-                DispatchQueue.main.async { [weak self] in
-                    self?.display(sections)
-                }
+                })
             } catch {
-                DispatchQueue.main.async { [weak self] in
-                    self?.showMessage("Failed to load uncommitted changes: \(error.localizedDescription)")
-                }
+                result = .failure(error)
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                self?.finishLoad(request: request, result: result)
             }
         }
     }
 
-    private func showLoading() {
-        clearStack()
-        showMessage("Loading changes...")
+    private func finishLoad(request: Int, result: Result<[ChangeSection], Error>) {
+        // Watcher bursts and sidebar clicks overlap; only the newest wins.
+        guard requests.isCurrent(request) else { return }
+
+        switch result {
+        case .failure(let error):
+            // A failed refresh keeps what is on screen; only a first load reports.
+            guard displayedSections == nil else { return }
+            showMessage("Failed to load uncommitted changes: \(error.localizedDescription)")
+        case .success(let sections):
+            // The tab was hidden while this ran: catch up when it is shown.
+            if displayedSections != nil && !isVisible {
+                isStale = true
+                return
+            }
+            display(sections)
+        }
     }
 
     private func showMessage(_ message: String) {
@@ -151,32 +218,134 @@ final class UncommittedChangesViewController: NSViewController {
     }
 
     private func display(_ sections: [ChangeSection]) {
-        clearStack()
+        let focus = focusedFilePath
+        focusedFilePath = nil
 
-        guard !sections.isEmpty else {
-            showMessage("No changes")
-            return
+        if let displayed = displayedSections {
+            let plan = ChangesReconcilePlan(displayed: displayed, incoming: sections)
+            if !plan.isNoOp {
+                // A focus request scrolls on its own; otherwise hold the
+                // reader's place across the change.
+                let anchor = focus == nil ? captureScrollAnchor() : nil
+                let previousTop = visibleTop
+                reconcile(plan, sections: sections)
+                if let anchor {
+                    settleLayout()
+                    scroll(toVisibleTop: anchor.restoredTop(in: sectionGeometry(), fallback: previousTop))
+                }
+            }
+        } else {
+            clearStack()
+            if sections.isEmpty {
+                showMessage("No changes")
+            } else {
+                for section in sections {
+                    let sectionView = makeSectionView(section)
+                    stackView.addArrangedSubview(sectionView)
+                    sectionViews[section.relativePath] = sectionView
+                }
+            }
+            displayedSections = sections
         }
 
-        for section in sections {
-            stackView.addArrangedSubview(makeSectionView(section))
-        }
-
-        if let focusedFilePath {
+        if let focus {
             // Frames are only valid after layout, so scroll on the next
             // runloop pass once the stack view has sized its sections.
             DispatchQueue.main.async { [weak self] in
-                self?.scrollToFocusedFile(focusedFilePath)
+                self?.scrollToFocusedFile(focus)
             }
         }
     }
 
+    /// Applies `plan` to the stack: kept section views stay untouched (so a
+    /// text selection inside them survives), changed ones are rebuilt in
+    /// place, new ones are inserted in path order, and vanished ones removed.
+    private func reconcile(_ plan: ChangesReconcilePlan, sections: [ChangeSection]) {
+        // Drop the "No changes" message and every view that is going away.
+        let replaced = Set(plan.removed + plan.steps.compactMap { step -> String? in
+            if case .rebuild(let path) = step { return path }
+            return nil
+        })
+        let keptViews = Set(sectionViews.filter { !replaced.contains($0.key) }.values.map(ObjectIdentifier.init))
+        for arranged in stackView.arrangedSubviews where !keptViews.contains(ObjectIdentifier(arranged)) {
+            stackView.removeArrangedSubview(arranged)
+            arranged.removeFromSuperview()
+        }
+        for path in replaced {
+            sectionViews.removeValue(forKey: path)
+        }
+        diffColumns.removeAll { !$0.textView.isDescendant(of: stackView) }
+
+        // Kept views are already in path order, so everything before index i
+        // is exactly sections[0..<i] and a new view slots in at i.
+        for (index, section) in sections.enumerated() {
+            guard sectionViews[section.relativePath] == nil else { continue }
+            let sectionView = makeSectionView(section)
+            stackView.insertArrangedSubview(sectionView, at: index)
+            sectionViews[section.relativePath] = sectionView
+        }
+
+        if sections.isEmpty {
+            showMessage("No changes")
+        }
+        displayedSections = sections
+    }
+
     private func clearStack() {
         diffColumns.removeAll()
+        sectionViews.removeAll()
+        displayedSections = nil
         stackView.arrangedSubviews.forEach { view in
             stackView.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
+    }
+
+    // MARK: - Scroll anchoring
+
+    // Positions below are distances from the top of the document, whichever
+    // way the document view is flipped.
+
+    private var visibleTop: CGFloat {
+        guard let documentView = scrollView.documentView else { return 0 }
+        let clip = scrollView.contentView.bounds
+        return documentView.isFlipped ? clip.minY : documentView.bounds.height - clip.maxY
+    }
+
+    private func sectionGeometry() -> [ChangesScrollAnchor.Section] {
+        guard let documentView = scrollView.documentView, let displayedSections else { return [] }
+        let height = documentView.bounds.height
+        return displayedSections.compactMap { section in
+            guard let sectionView = sectionViews[section.relativePath] else { return nil }
+            let frame = sectionView.convert(sectionView.bounds, to: documentView)
+            return ChangesScrollAnchor.Section(
+                path: section.relativePath,
+                top: documentView.isFlipped ? frame.minY : height - frame.maxY
+            )
+        }
+    }
+
+    private func captureScrollAnchor() -> ChangesScrollAnchor? {
+        ChangesScrollAnchor.capture(visibleTop: visibleTop, sections: sectionGeometry())
+    }
+
+    /// Diff heights are seeded from line counts and corrected in viewDidLayout,
+    /// which itself changes constraints. Two passes let the corrected heights
+    /// land before the anchor is measured against them.
+    private func settleLayout() {
+        view.layoutSubtreeIfNeeded()
+        view.layoutSubtreeIfNeeded()
+    }
+
+    private func scroll(toVisibleTop top: CGFloat) {
+        guard let documentView = scrollView.documentView else { return }
+        let documentHeight = documentView.bounds.height
+        let clipHeight = scrollView.contentView.bounds.height
+        guard documentHeight > clipHeight else { return }
+        let clamped = min(max(0, top), documentHeight - clipHeight)
+        let y = documentView.isFlipped ? clamped : documentHeight - clamped - clipHeight
+        scrollView.contentView.scroll(to: NSPoint(x: scrollView.contentView.bounds.minX, y: y))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
     override func viewDidLayout() {
@@ -350,7 +519,7 @@ final class UncommittedChangesViewController: NSViewController {
     /// Extensions AppKit's image loaders (ImageIO) decode from disk. SVG is
     /// included, but NSImage rasterizes it inconsistently, so the decode guard
     /// below falls back to the readable XML text diff whenever the draw fails.
-    private static let previewableImageExtensions: Set<String> = [
+    nonisolated static let previewableImageExtensions: Set<String> = [
         "png", "jpg", "jpeg", "gif", "heic", "heif", "webp",
         "tiff", "tif", "bmp", "ico", "icns", "svg"
     ]
@@ -755,13 +924,136 @@ private final class ConflictResolveButton: NSButton {
     var resolution: MergeConflictResolution?
 }
 
-private struct ChangeSection {
+/// One file's row in the changes pane. Equality decides whether a refresh
+/// can keep the section view already on screen.
+nonisolated struct ChangeSection: Equatable, Sendable {
     let relativePath: String
     let diff: String
     let isConflicted: Bool
     let status: GitFileStatus
+    /// Modification date and size, recorded for sections built from the file
+    /// on disk (image previews, conflict blocks), where the diff text stays the
+    /// same while the bytes change. nil for plain text diffs.
+    let fileStamp: FileStamp?
+
+    nonisolated struct FileStamp: Equatable, Sendable {
+        let modificationDate: Date?
+        let size: Int?
+    }
+
+    init(relativePath: String, diff: String, isConflicted: Bool, status: GitFileStatus, fileStamp: FileStamp? = nil) {
+        self.relativePath = relativePath
+        self.diff = diff
+        self.isConflicted = isConflicted
+        self.status = status
+        self.fileStamp = fileStamp
+    }
+
+    /// Builds a section, reading the file's stamp when the view would be built
+    /// from the file itself.
+    init(relativePath: String, diff: String, isConflicted: Bool, status: GitFileStatus, repositoryPath: String) {
+        let ext = (relativePath as NSString).pathExtension.lowercased()
+        var stamp: FileStamp?
+        if isConflicted || UncommittedChangesViewController.previewableImageExtensions.contains(ext) {
+            let path = URL(fileURLWithPath: repositoryPath).appendingPathComponent(relativePath).path
+            let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+            stamp = FileStamp(
+                modificationDate: attributes?[.modificationDate] as? Date,
+                size: attributes?[.size] as? Int
+            )
+        }
+        self.init(relativePath: relativePath, diff: diff, isConflicted: isConflicted, status: status, fileStamp: stamp)
+    }
 
     func absolutePath(repositoryPath: String) -> String {
         URL(fileURLWithPath: repositoryPath).appendingPathComponent(relativePath).path
+    }
+}
+
+/// How a refresh turns the displayed sections into the new ones. Both lists
+/// are sorted by path, so kept sections never change relative order.
+nonisolated struct ChangesReconcilePlan: Equatable {
+    enum Step: Equatable {
+        case keep(String)
+        case rebuild(String)
+        case insert(String)
+    }
+
+    /// One step per incoming section, in display order.
+    let steps: [Step]
+    /// Displayed paths absent from the new result.
+    let removed: [String]
+
+    init(displayed: [ChangeSection], incoming: [ChangeSection]) {
+        let current = Dictionary(displayed.map { ($0.relativePath, $0) }, uniquingKeysWith: { first, _ in first })
+        steps = incoming.map { section in
+            guard let existing = current[section.relativePath] else { return .insert(section.relativePath) }
+            return existing == section ? .keep(section.relativePath) : .rebuild(section.relativePath)
+        }
+        let incomingPaths = Set(incoming.map(\.relativePath))
+        removed = displayed.map(\.relativePath).filter { !incomingPaths.contains($0) }
+    }
+
+    /// The new result matches what is on screen: touch nothing.
+    var isNoOp: Bool {
+        removed.isEmpty && steps.allSatisfy { if case .keep = $0 { true } else { false } }
+    }
+}
+
+/// The reader's place: the section at the top of the viewport and how far into
+/// it the viewport starts. Positions are distances from the document top.
+nonisolated struct ChangesScrollAnchor: Equatable {
+    struct Section: Equatable {
+        let path: String
+        let top: CGFloat
+    }
+
+    let path: String
+    let offset: CGFloat
+
+    /// The last section starting at or above `visibleTop`, or the first section
+    /// when the viewport sits above every section (the top padding).
+    static func capture(visibleTop: CGFloat, sections: [Section]) -> ChangesScrollAnchor? {
+        guard let section = sections.last(where: { $0.top <= visibleTop }) ?? sections.first else { return nil }
+        return ChangesScrollAnchor(path: section.path, offset: visibleTop - section.top)
+    }
+
+    /// Where the viewport top belongs in the new layout. If the anchor file is
+    /// gone, the next section in path order takes its place; past the last
+    /// section, `fallback` (the old position, clamped by the caller) is used.
+    func restoredTop(in sections: [Section], fallback: CGFloat) -> CGFloat {
+        if let section = sections.first(where: { $0.path == path }) {
+            return section.top + offset
+        }
+        if let next = sections.first(where: { $0.path > path }) {
+            return next.top
+        }
+        return fallback
+    }
+}
+
+/// Hands out request numbers and says whether a finishing request is still
+/// the newest, so a slow older load cannot overwrite a newer one.
+nonisolated struct LatestRequestGate {
+    private(set) var latest = 0
+
+    mutating func begin() -> Int {
+        latest += 1
+        return latest
+    }
+
+    func isCurrent(_ request: Int) -> Bool {
+        request == latest
+    }
+}
+
+/// The pane's root view, reporting when it joins or leaves a window (its tab
+/// being selected or deselected).
+private final class WindowObservingView: NSView {
+    var onWindowChange: (() -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChange?()
     }
 }

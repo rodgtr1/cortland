@@ -271,8 +271,15 @@ nonisolated final class GitService: Sendable {
     /// Returns combined (staged + unstaged) diffs keyed by relative path,
     /// using two repo-wide git invocations instead of several per file.
     func diffsByPath(for entries: [GitStatusEntry], repositoryRoot: String) throws -> [String: String] {
-        let stagedByPath = Self.splitDiffByFile(try gitOutput(["diff", "--cached"], repositoryRoot: repositoryRoot))
-        let unstagedByPath = Self.splitDiffByFile(try gitOutput(["diff"], repositoryRoot: repositoryRoot))
+        // The changes pane runs this on every watcher event while agents work,
+        // so never take index.lock: it could fail an agent's concurrent
+        // `git add`/`git commit`, and the index write re-fires the watcher.
+        let stagedByPath = Self.splitDiffByFile(
+            try runGit(["diff", "--cached"], repositoryRoot: repositoryRoot, allowOptionalLocks: false).stdout
+        )
+        let unstagedByPath = Self.splitDiffByFile(
+            try runGit(["diff"], repositoryRoot: repositoryRoot, allowOptionalLocks: false).stdout
+        )
 
         var combined: [String: String] = [:]
         for entry in entries {

@@ -217,7 +217,7 @@ class GitStatusModel {
     /// directory it points at (`<mainrepo>/.git/worktrees/<name>`); nil for a
     /// normal repo whose `.git` is a directory. A relative pointer is resolved
     /// against the worktree root.
-    private nonisolated static func linkedWorktreeGitDir(forRoot root: String) -> String? {
+    nonisolated static func linkedWorktreeGitDir(forRoot root: String) -> String? {
         let dotGit = URL(fileURLWithPath: root).appendingPathComponent(".git")
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: dotGit.path, isDirectory: &isDirectory),
