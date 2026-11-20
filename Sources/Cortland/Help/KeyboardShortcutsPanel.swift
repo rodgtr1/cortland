@@ -99,6 +99,14 @@ class KeyboardShortcutsPanel: NSPanel {
         shortcuts.append(KeyboardShortcut(keys: "⌘1-9", description: "Switch to specific tab by number", category: "Tabs"))
         shortcuts.append(KeyboardShortcut(keys: "⌘K", description: "Show Keyboard Shortcuts", category: "General"))
         shortcuts.append(KeyboardShortcut(keys: "Esc", description: "Close Panel/Dialog", category: "General"))
+
+        // Plain keys the changes pane takes while it has focus.
+        shortcuts.append(KeyboardShortcut(keys: "j / k", description: "Next / previous change block", category: "Changes Pane"))
+        shortcuts.append(KeyboardShortcut(keys: "⇧J / ⇧K", description: "Next / previous file", category: "Changes Pane"))
+        shortcuts.append(KeyboardShortcut(keys: "v", description: "Toggle Viewed on the current file", category: "Changes Pane"))
+        shortcuts.append(KeyboardShortcut(keys: "x", description: "Collapse or expand the current file", category: "Changes Pane"))
+        shortcuts.append(KeyboardShortcut(keys: "s", description: "Stage the current file (unstage if fully staged)", category: "Changes Pane"))
+        shortcuts.append(KeyboardShortcut(keys: "o", description: "Open the current file", category: "Changes Pane"))
     }
 
     private func setupUI() {

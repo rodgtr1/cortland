@@ -21,6 +21,24 @@ final class UncommittedChangesViewController: NSViewController {
     }
     private var diffColumns: [DiffColumn] = []
 
+    /// A text diff's view and its change blocks, keyed by relative path. Only
+    /// sections whose diff body has been built have one.
+    private struct DiffBody {
+        let textView: NSTextView
+        let blocks: [NSRange]
+    }
+    private var diffBodies: [String: DiffBody] = [:]
+
+    /// Keyboard review: the file the keys act on, the marked change block,
+    /// and the accent bar drawn beside that block.
+    private var currentFile: String?
+    private var currentBlock: ChangesReview.BlockID?
+    private let blockMark: NSView = {
+        let mark = NSView()
+        mark.wantsLayer = true
+        return mark
+    }()
+
     /// What the stack currently shows, keyed by relative path for the
     /// reconcile. nil until a load has displayed something.
     private var displayedSections: [ChangeSection]?
@@ -53,6 +71,10 @@ final class UncommittedChangesViewController: NSViewController {
     override func loadView() {
         let rootView = WindowObservingView()
         rootView.onWindowChange = { [weak self] in self?.visibilityMayHaveChanged() }
+        rootView.onKeyDown = { [weak self] event in
+            guard let self else { return false }
+            return self.handleReviewKey(event) || self.handleScrollKey(event)
+        }
         view = rootView
         view.wantsLayer = true
         view.layer?.backgroundColor = DiffViewController.DiffColors.background.cgColor
@@ -178,7 +200,8 @@ final class UncommittedChangesViewController: NSViewController {
                             stagedChar: entry.stagedStatus,
                             unstagedChar: entry.unstagedStatus
                         ).displayStatus,
-                        repositoryPath: repositoryPath
+                        repositoryPath: repositoryPath,
+                        isFullyStaged: ChangesReview.isFullyStaged(entry)
                     )
                 })
             } catch {
@@ -289,6 +312,7 @@ final class UncommittedChangesViewController: NSViewController {
             sectionViews.removeValue(forKey: path)
         }
         diffColumns.removeAll { !$0.textView.isDescendant(of: stackView) }
+        diffBodies = diffBodies.filter { $0.value.textView.isDescendant(of: stackView) }
 
         updateSectionStates(
             sections,
@@ -308,10 +332,24 @@ final class UncommittedChangesViewController: NSViewController {
             showMessage("No changes")
         }
         displayedSections = sections
+
+        // The current file follows its neighbour if it left; a block mark
+        // survives only on a section that was kept as it was.
+        if let currentFile {
+            self.currentFile = ChangesReview.fileAfterRemoval(currentFile, paths: sections.map(\.relativePath))
+        }
+        if let currentBlock, !plan.steps.contains(.keep(currentBlock.path)) {
+            self.currentBlock = nil
+        }
+        applyReviewMarks()
     }
 
     private func clearStack() {
         diffColumns.removeAll()
+        diffBodies.removeAll()
+        currentFile = nil
+        currentBlock = nil
+        blockMark.removeFromSuperview()
         sectionViews.removeAll()
         displayedSections = nil
         stackView.arrangedSubviews.forEach { view in
@@ -383,6 +421,8 @@ final class UncommittedChangesViewController: NSViewController {
                 column.heightConstraint.constant = target
             }
         }
+        // Re-wrapping moves the block's lines, so the mark follows them.
+        positionBlockMark()
     }
 
     private func makeSectionView(_ section: ChangeSection) -> ChangeSectionView {
@@ -412,7 +452,7 @@ final class UncommittedChangesViewController: NSViewController {
         sectionView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
         sectionView.identifier = NSUserInterfaceItemIdentifier(section.absolutePath(repositoryPath: repositoryPath))
         header.onToggle = { [weak self] in
-            self?.changeState(of: path) { $0.toggleCollapsed(path) }
+            self?.headerClicked(path)
         }
         header.onViewedChange = { [weak self] viewed in
             self?.changeState(of: path) { $0.setViewed(viewed, for: path) }
@@ -438,6 +478,7 @@ final class UncommittedChangesViewController: NSViewController {
         diffHeightConstraint.isActive = true
 
         diffColumns.append(DiffColumn(textView: diffView, heightConstraint: diffHeightConstraint))
+        diffBodies[section.relativePath] = DiffBody(textView: diffView, blocks: ChangesReview.blockRanges(in: renderedDiff))
         return diffView
     }
 
@@ -461,6 +502,10 @@ final class UncommittedChangesViewController: NSViewController {
         let headerOffset = sectionGeometry().first { $0.path == path }.map { $0.top - visibleTop }
         change(&sectionStates)
         applyState(to: sectionView, path: path)
+        if sectionStates.state(for: path).isCollapsed, currentBlock?.path == path {
+            currentBlock = nil
+            applyReviewMarks()
+        }
         guard let headerOffset else { return }
         settleLayout()
         if let top = sectionGeometry().first(where: { $0.path == path })?.top {
@@ -476,6 +521,7 @@ final class UncommittedChangesViewController: NSViewController {
         chevron.imagePosition = .imageOnly
         chevron.contentTintColor = AppTheme.mutedText
         chevron.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+        chevron.refusesFirstResponder = true
         chevron.translatesAutoresizingMaskIntoConstraints = false
 
         let status = NSTextField(labelWithString: section.status.rawValue)
@@ -505,6 +551,9 @@ final class UncommittedChangesViewController: NSViewController {
         if !section.isConflicted {
             let box = NSButton(checkboxWithTitle: "Viewed", target: nil, action: nil)
             box.controlSize = .small
+            box.toolTip = "Mark as viewed (v)"
+            // A click must not leave Space or a letter aimed at the checkbox.
+            box.refusesFirstResponder = true
             box.attributedTitle = NSAttributedString(string: "Viewed", attributes: [
                 .font: NSFont.systemFont(ofSize: 11),
                 .foregroundColor: AppTheme.mutedText
@@ -537,7 +586,8 @@ final class UncommittedChangesViewController: NSViewController {
         let openButton = NSButton(image: openImage, target: self, action: #selector(openFileClicked(_:)))
         openButton.isBordered = false
         openButton.contentTintColor = AppTheme.mutedText
-        openButton.toolTip = "Open File"
+        openButton.toolTip = "Open File (o)"
+        openButton.refusesFirstResponder = true
         openButton.setAccessibilityLabel("Open File")
         openButton.identifier = NSUserInterfaceItemIdentifier(section.absolutePath(repositoryPath: repositoryPath))
         openButton.translatesAutoresizingMaskIntoConstraints = false
@@ -677,7 +727,8 @@ final class UncommittedChangesViewController: NSViewController {
         let textStorage = NSTextStorage()
         textStorage.addLayoutManager(layoutManager)
 
-        let textView = NSTextView(frame: .zero, textContainer: textContainer)
+        let textView = ChangesDiffTextView(frame: .zero, textContainer: textContainer)
+        textView.onKeyDown = { [weak self] event in self?.handleReviewKey(event) ?? false }
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.isEditable = false
         textView.isSelectable = true
@@ -951,6 +1002,193 @@ final class UncommittedChangesViewController: NSViewController {
         }
     }
 
+    // MARK: - Keyboard review
+
+    /// Takes the pane's single-key review keys; anything else passes on.
+    private func handleReviewKey(_ event: NSEvent) -> Bool {
+        guard let key = ChangesReview.Key(characters: event.charactersIgnoringModifiers, modifierFlags: event.modifierFlags) else { return false }
+        perform(key)
+        return true
+    }
+
+    /// Scrolling keys while the pane's root view has focus; a focused diff
+    /// text view keeps its own handling of them.
+    private func handleScrollKey(_ event: NSEvent) -> Bool {
+        guard let documentView = scrollView.documentView,
+              let top = ChangesReview.scrollTop(
+                characters: event.charactersIgnoringModifiers,
+                modifierFlags: event.modifierFlags,
+                visibleTop: visibleTop,
+                viewportHeight: scrollView.contentView.bounds.height,
+                documentHeight: documentView.bounds.height,
+                lineHeight: Metrics.diffLineHeight
+              ) else { return false }
+        scroll(toVisibleTop: top)
+        return true
+    }
+
+    private func perform(_ key: ChangesReview.Key) {
+        guard let displayedSections, !displayedSections.isEmpty else { return }
+        view.layoutSubtreeIfNeeded()
+        let viewport = currentViewport()
+
+        switch key {
+        case .nextFile, .previousFile:
+            let files = fileSpans()
+            guard let target = ChangesReview.movedFile(currentFile, forward: key == .nextFile, files: files, viewport: viewport),
+                  let span = files.first(where: { $0.path == target }) else { return }
+            setCurrentFile(target)
+            scroll(toVisibleTop: span.top)
+
+        case .nextBlock, .previousBlock:
+            guard let block = ChangesReview.movedBlock(currentBlock, forward: key == .nextBlock, blocks: blockSpans(), viewport: viewport) else { return }
+            currentBlock = ChangesReview.BlockID(path: block.path, index: block.index)
+            currentFile = block.path
+            applyReviewMarks()
+            scroll(toVisibleTop: block.top - scrollView.contentView.bounds.height / 4)
+
+        case .toggleViewed, .toggleCollapsed, .stage, .open:
+            guard let path = ChangesReview.rebasedFile(currentFile, files: fileSpans(), viewport: viewport),
+                  let section = displayedSections.first(where: { $0.relativePath == path }) else { return }
+            setCurrentFile(path)
+            act(key, on: section)
+        }
+    }
+
+    private func act(_ key: ChangesReview.Key, on section: ChangeSection) {
+        let path = section.relativePath
+        switch key {
+        case .toggleViewed:
+            guard !section.isConflicted else { return }
+            let viewed = !sectionStates.state(for: path).isViewed
+            changeState(of: path) { $0.setViewed(viewed, for: path) }
+            guard viewed else { return }
+            // Pressing v again walks on to the next file still to review.
+            let paths = displayedSections?.map(\.relativePath) ?? []
+            let conflicted = Set(displayedSections?.filter(\.isConflicted).map(\.relativePath) ?? [])
+            guard let next = ChangesReview.nextUnviewed(after: path, paths: paths, isViewed: {
+                conflicted.contains($0) || self.sectionStates.state(for: $0).isViewed
+            }) else { return }
+            setCurrentFile(next)
+            if let span = fileSpans().first(where: { $0.path == next }), !currentViewport().shows(top: span.top, bottom: span.bottom) {
+                scroll(toVisibleTop: span.top)
+            }
+        case .toggleCollapsed:
+            changeState(of: path) { $0.toggleCollapsed(path) }
+        case .stage:
+            guard let action = ChangesReview.stageAction(for: section) else { return }
+            DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService] in
+                let succeeded: Bool
+                switch action {
+                case .stage: succeeded = (try? gitService.stage(path: path, repositoryRoot: repositoryPath)) ?? false
+                case .unstage: succeeded = (try? gitService.unstage(path: path, repositoryRoot: repositoryPath)) ?? false
+                }
+                guard succeeded else { return }
+                DispatchQueue.main.async { [weak self] in
+                    self?.loadChanges()
+                }
+            }
+        case .open:
+            onOpenFile?(section.absolutePath(repositoryPath: repositoryPath))
+        case .nextFile, .previousFile, .nextBlock, .previousBlock:
+            break
+        }
+    }
+
+    /// A header or chevron click toggles the section and makes it current,
+    /// taking keyboard focus into the pane if it is elsewhere.
+    private func headerClicked(_ path: String) {
+        if let window = view.window,
+           !((window.firstResponder as? NSView)?.isDescendant(of: view) ?? false) {
+            window.makeFirstResponder(view)
+        }
+        setCurrentFile(path)
+        changeState(of: path) { $0.toggleCollapsed(path) }
+    }
+
+    private func setCurrentFile(_ path: String) {
+        if currentBlock?.path != path {
+            currentBlock = nil
+        }
+        currentFile = path
+        applyReviewMarks()
+    }
+
+    /// Shows the current file's header bar and the current block's mark.
+    private func applyReviewMarks() {
+        for (path, sectionView) in sectionViews {
+            sectionView.header.setCurrent(path == currentFile)
+        }
+        positionBlockMark()
+    }
+
+    private func positionBlockMark() {
+        guard let currentBlock,
+              !sectionStates.state(for: currentBlock.path).isCollapsed,
+              let body = diffBodies[currentBlock.path],
+              body.blocks.indices.contains(currentBlock.index),
+              let rect = blockRect(body.blocks[currentBlock.index], in: body.textView) else {
+            blockMark.removeFromSuperview()
+            return
+        }
+        if blockMark.superview !== body.textView {
+            body.textView.addSubview(blockMark)
+        }
+        blockMark.layer?.backgroundColor = AppTheme.accent.cgColor
+        blockMark.frame = NSRect(x: rect.minX, y: rect.minY, width: 3, height: rect.height)
+    }
+
+    /// The laid-out rect of a block's lines, in the text view's coordinates.
+    private func blockRect(_ range: NSRange, in textView: NSTextView) -> NSRect? {
+        guard let layoutManager = textView.layoutManager else { return nil }
+        let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        guard glyphs.length > 0 else { return nil }
+        layoutManager.ensureLayout(forGlyphRange: glyphs)
+        var rect = NSRect.null
+        layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { fragment, _, _, _, _ in
+            rect = rect.union(fragment)
+        }
+        guard !rect.isNull else { return nil }
+        let origin = textView.textContainerOrigin
+        return rect.offsetBy(dx: origin.x, dy: origin.y)
+    }
+
+    private func currentViewport() -> ChangesReview.Viewport {
+        ChangesReview.Viewport(top: visibleTop, bottom: visibleTop + scrollView.contentView.bounds.height)
+    }
+
+    /// `rect` in `view`, as distances from the top of the document.
+    private func documentSpan(_ rect: NSRect, in view: NSView) -> (top: CGFloat, bottom: CGFloat)? {
+        guard let documentView = scrollView.documentView else { return nil }
+        let frame = view.convert(rect, to: documentView)
+        if documentView.isFlipped {
+            return (frame.minY, frame.maxY)
+        }
+        let height = documentView.bounds.height
+        return (height - frame.maxY, height - frame.minY)
+    }
+
+    private func fileSpans() -> [ChangesReview.FileSpan] {
+        (displayedSections ?? []).compactMap { section in
+            guard let sectionView = sectionViews[section.relativePath],
+                  let span = documentSpan(sectionView.bounds, in: sectionView) else { return nil }
+            return ChangesReview.FileSpan(path: section.relativePath, top: span.top, bottom: span.bottom)
+        }
+    }
+
+    /// Every block of every expanded, built text diff, in display order.
+    private func blockSpans() -> [ChangesReview.BlockSpan] {
+        (displayedSections ?? []).flatMap { section -> [ChangesReview.BlockSpan] in
+            let path = section.relativePath
+            guard !sectionStates.state(for: path).isCollapsed, let body = diffBodies[path] else { return [] }
+            return body.blocks.enumerated().compactMap { index, range in
+                guard let rect = blockRect(range, in: body.textView),
+                      let span = documentSpan(rect, in: body.textView) else { return nil }
+                return ChangesReview.BlockSpan(path: path, index: index, top: span.top, bottom: span.bottom)
+            }
+        }
+    }
+
     private func scrollToFocusedFile(_ filePath: String) {
         guard let sectionView = stackView.arrangedSubviews.first(where: { $0.identifier?.rawValue == filePath }),
               let documentView = scrollView.documentView else { return }
@@ -1040,6 +1278,8 @@ private final class ChangeSectionHeaderView: NSView {
     private let chevron: NSButton
     private let fileName: NSTextField
     private let viewedBox: NSButton?
+    /// Accent bar at the left edge while this is the keyboard review's file.
+    private let currentBar = NSView()
 
     init(chevron: NSButton, fileName: NSTextField, viewedBox: NSButton?) {
         self.chevron = chevron
@@ -1050,6 +1290,22 @@ private final class ChangeSectionHeaderView: NSView {
         chevron.action = #selector(chevronClicked)
         viewedBox?.target = self
         viewedBox?.action = #selector(viewedClicked(_:))
+
+        currentBar.wantsLayer = true
+        currentBar.isHidden = true
+        currentBar.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(currentBar)
+        NSLayoutConstraint.activate([
+            currentBar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            currentBar.topAnchor.constraint(equalTo: topAnchor),
+            currentBar.bottomAnchor.constraint(equalTo: bottomAnchor),
+            currentBar.widthAnchor.constraint(equalToConstant: 3)
+        ])
+    }
+
+    func setCurrent(_ current: Bool) {
+        currentBar.layer?.backgroundColor = AppTheme.accent.cgColor
+        currentBar.isHidden = !current
     }
 
     required init?(coder: NSCoder) {
@@ -1062,7 +1318,7 @@ private final class ChangeSectionHeaderView: NSView {
             systemSymbolName: state.isCollapsed ? "chevron.right" : "chevron.down",
             accessibilityDescription: label
         )
-        chevron.toolTip = label
+        chevron.toolTip = "\(label) (x)"
         viewedBox?.state = state.isViewed ? .on : .off
         fileName.textColor = state.isViewed ? AppTheme.mutedText : AppTheme.primaryText
     }
@@ -1100,6 +1356,8 @@ nonisolated struct ChangeSection: Equatable, Sendable {
     let diff: String
     let isConflicted: Bool
     let status: GitFileStatus
+    /// Staged with nothing unstaged left, so the review's `s` unstages it.
+    let isFullyStaged: Bool
     /// Modification date and size, recorded for sections built from the file
     /// on disk (image previews, conflict blocks), where the diff text stays the
     /// same while the bytes change. nil for plain text diffs.
@@ -1110,17 +1368,32 @@ nonisolated struct ChangeSection: Equatable, Sendable {
         let size: Int?
     }
 
-    init(relativePath: String, diff: String, isConflicted: Bool, status: GitFileStatus, fileStamp: FileStamp? = nil) {
+    init(
+        relativePath: String,
+        diff: String,
+        isConflicted: Bool,
+        status: GitFileStatus,
+        fileStamp: FileStamp? = nil,
+        isFullyStaged: Bool = false
+    ) {
         self.relativePath = relativePath
         self.diff = diff
         self.isConflicted = isConflicted
         self.status = status
         self.fileStamp = fileStamp
+        self.isFullyStaged = isFullyStaged
     }
 
     /// Builds a section, reading the file's stamp when the view would be built
     /// from the file itself.
-    init(relativePath: String, diff: String, isConflicted: Bool, status: GitFileStatus, repositoryPath: String) {
+    init(
+        relativePath: String,
+        diff: String,
+        isConflicted: Bool,
+        status: GitFileStatus,
+        repositoryPath: String,
+        isFullyStaged: Bool = false
+    ) {
         let ext = (relativePath as NSString).pathExtension.lowercased()
         var stamp: FileStamp?
         if isConflicted || UncommittedChangesViewController.previewableImageExtensions.contains(ext) {
@@ -1131,7 +1404,14 @@ nonisolated struct ChangeSection: Equatable, Sendable {
                 size: attributes?[.size] as? Int
             )
         }
-        self.init(relativePath: relativePath, diff: diff, isConflicted: isConflicted, status: status, fileStamp: stamp)
+        self.init(
+            relativePath: relativePath,
+            diff: diff,
+            isConflicted: isConflicted,
+            status: status,
+            fileStamp: stamp,
+            isFullyStaged: isFullyStaged
+        )
     }
 
     func absolutePath(repositoryPath: String) -> String {
@@ -1301,9 +1581,200 @@ nonisolated struct ChangesSectionStates {
 /// being selected or deselected).
 private final class WindowObservingView: NSView {
     var onWindowChange: (() -> Void)?
+    /// Offered each key press first; true means it was handled.
+    var onKeyDown: ((NSEvent) -> Bool)?
+
+    override var acceptsFirstResponder: Bool { true }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         onWindowChange?()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if onKeyDown?(event) == true { return }
+        super.keyDown(with: event)
+    }
+}
+
+/// A diff text view that offers key presses to the pane's review keys before
+/// its own handling, which would otherwise beep on typed characters.
+private final class ChangesDiffTextView: NSTextView {
+    var onKeyDown: ((NSEvent) -> Bool)?
+
+    override func keyDown(with event: NSEvent) {
+        if onKeyDown?(event) == true { return }
+        super.keyDown(with: event)
+    }
+}
+
+/// The changes pane's keyboard review: which keys it takes, what change
+/// blocks a diff holds, and where each key moves. Positions are distances
+/// from the top of the document.
+nonisolated enum ChangesReview {
+    enum Key: Equatable {
+        case nextBlock, previousBlock, nextFile, previousFile
+        case toggleViewed, toggleCollapsed, stage, open
+
+        /// Plain keys only: Command, Control, or Option held is never ours.
+        /// `characters` is the event's `charactersIgnoringModifiers`; the
+        /// letter is read lowercased and Shift decides the file variants, so
+        /// Caps Lock does not turn j into J.
+        init?(characters: String?, modifierFlags: NSEvent.ModifierFlags) {
+            guard modifierFlags.intersection([.command, .control, .option]).isEmpty else { return nil }
+            let shift = modifierFlags.contains(.shift)
+            switch (characters?.lowercased(), shift) {
+            case ("j", false): self = .nextBlock
+            case ("k", false): self = .previousBlock
+            case ("j", true): self = .nextFile
+            case ("k", true): self = .previousFile
+            case ("v", false): self = .toggleViewed
+            case ("x", false): self = .toggleCollapsed
+            case ("s", false): self = .stage
+            case ("o", false): self = .open
+            default: return nil
+            }
+        }
+    }
+
+    struct Viewport: Equatable {
+        let top: CGFloat
+        let bottom: CGFloat
+
+        /// Any part of `top..<bottom` is on screen.
+        func shows(top: CGFloat, bottom: CGFloat) -> Bool {
+            bottom > self.top && top < self.bottom
+        }
+    }
+
+    struct FileSpan: Equatable {
+        let path: String
+        let top: CGFloat
+        let bottom: CGFloat
+    }
+
+    struct BlockID: Equatable {
+        let path: String
+        let index: Int
+    }
+
+    struct BlockSpan: Equatable {
+        let path: String
+        let index: Int
+        let top: CGFloat
+        let bottom: CGFloat
+    }
+
+    enum StageAction: Equatable {
+        case stage, unstage
+    }
+
+    /// Where a scrolling key moves the viewport top, or nil when the key is
+    /// not one (or Command, Control, or Option is held). Up/Down move three
+    /// lines, Page Down and Space a viewport less one line, Page Up and
+    /// Shift-Space back by the same, Home/End to either end. The caller clamps.
+    static func scrollTop(
+        characters: String?,
+        modifierFlags: NSEvent.ModifierFlags,
+        visibleTop: CGFloat,
+        viewportHeight: CGFloat,
+        documentHeight: CGFloat,
+        lineHeight: CGFloat
+    ) -> CGFloat? {
+        guard modifierFlags.intersection([.command, .control, .option]).isEmpty,
+              let scalar = characters?.unicodeScalars.first,
+              characters?.unicodeScalars.count == 1 else { return nil }
+        let page = viewportHeight - lineHeight
+        switch Int(scalar.value) {
+        case NSUpArrowFunctionKey: return visibleTop - 3 * lineHeight
+        case NSDownArrowFunctionKey: return visibleTop + 3 * lineHeight
+        case NSPageUpFunctionKey: return visibleTop - page
+        case NSPageDownFunctionKey: return visibleTop + page
+        case 0x20: return modifierFlags.contains(.shift) ? visibleTop - page : visibleTop + page
+        case NSHomeFunctionKey: return 0
+        case NSEndFunctionKey: return documentHeight - viewportHeight
+        default: return nil
+        }
+    }
+
+    /// Character ranges of each maximal run of added or removed lines, read
+    /// from the rendered diff's gutter attribute. Context lines and rows
+    /// without one (hunk headers, separators) end a run.
+    static func blockRanges(in text: NSAttributedString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        var open: NSRange?
+        text.enumerateAttribute(InlineDiffRenderer.gutterLine, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+            let isChange = (value as? DiffGutterLine).map { $0.kind != .context } ?? false
+            if isChange, let current = open, NSMaxRange(current) == range.location {
+                open = NSUnionRange(current, range)
+            } else {
+                if let current = open { ranges.append(current) }
+                open = isChange ? range : nil
+            }
+        }
+        if let open { ranges.append(open) }
+        return ranges
+    }
+
+    /// The file a key acts from: the current one while any of it is on
+    /// screen, otherwise the section at the top of the viewport.
+    static func rebasedFile(_ current: String?, files: [FileSpan], viewport: Viewport) -> String? {
+        if let current, let span = files.first(where: { $0.path == current }),
+           viewport.shows(top: span.top, bottom: span.bottom) {
+            return current
+        }
+        let sections = files.map { ChangesScrollAnchor.Section(path: $0.path, top: $0.top) }
+        return ChangesScrollAnchor.capture(visibleTop: viewport.top, sections: sections)?.path
+    }
+
+    /// J / K. With no current file the first press picks the file at the top
+    /// of the viewport. nil when there is nowhere to go.
+    static func movedFile(_ current: String?, forward: Bool, files: [FileSpan], viewport: Viewport) -> String? {
+        guard let start = rebasedFile(current, files: files, viewport: viewport) else { return nil }
+        guard current != nil else { return start }
+        guard let index = files.firstIndex(where: { $0.path == start }) else { return nil }
+        let target = forward ? index + 1 : index - 1
+        return files.indices.contains(target) ? files[target].path : nil
+    }
+
+    /// j / k over `blocks` (every block of every expanded file, in display
+    /// order). Without a current block on screen, j takes the first block
+    /// at or below the viewport top and k the last one above it.
+    static func movedBlock(_ current: BlockID?, forward: Bool, blocks: [BlockSpan], viewport: Viewport) -> BlockSpan? {
+        if let current,
+           let index = blocks.firstIndex(where: { $0.path == current.path && $0.index == current.index }),
+           viewport.shows(top: blocks[index].top, bottom: blocks[index].bottom) {
+            let target = forward ? index + 1 : index - 1
+            return blocks.indices.contains(target) ? blocks[target] : nil
+        }
+        return forward
+            ? blocks.first { $0.top >= viewport.top }
+            : blocks.last { $0.top < viewport.top }
+    }
+
+    /// The file that becomes current after a refresh: the same one if it is
+    /// still listed, else the next in path order, else the previous.
+    static func fileAfterRemoval(_ current: String, paths: [String]) -> String? {
+        if paths.contains(current) { return current }
+        return paths.first { $0 > current } ?? paths.last { $0 < current }
+    }
+
+    /// The first file after `path` that is not viewed, for `v`'s advance.
+    static func nextUnviewed(after path: String, paths: [String], isViewed: (String) -> Bool) -> String? {
+        guard let index = paths.firstIndex(of: path) else { return nil }
+        return paths[(index + 1)...].first { !isViewed($0) }
+    }
+
+    /// Fully staged means something is staged and nothing unstaged or
+    /// untracked remains.
+    static func isFullyStaged(_ entry: GitStatusEntry) -> Bool {
+        !entry.isConflicted && !entry.isUntracked && entry.hasStagedChanges && !entry.hasUnstagedChanges
+    }
+
+    /// `s`: unstage a fully staged file, stage anything else, and leave a
+    /// conflicted file alone.
+    static func stageAction(for section: ChangeSection) -> StageAction? {
+        guard !section.isConflicted else { return nil }
+        return section.isFullyStaged ? .unstage : .stage
     }
 }
