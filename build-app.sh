@@ -11,6 +11,19 @@ if ! xcrun metal --version >/dev/null 2>&1; then
   xcodebuild -downloadComponent MetalToolchain
 fi
 
+# The Metal Toolchain mounts at a path with a random suffix that changes on
+# every remount (reboot, toolchain update). The swiftbuild backend caches the
+# full compiler path in its build description, so a remount leaves it pointing
+# at a path that no longer exists. Drop any description with a stale path.
+METAL_PATH="$(xcrun -f metal)"
+for manifest in .build/out/Intermediates.noindex/XCBuildData/*.xcbuilddata/manifest.json; do
+  [ -f "$manifest" ] || continue
+  if grep -q "MetalToolchain" "$manifest" && ! grep -qF "$METAL_PATH" "$manifest"; then
+    echo "⚙️  Metal Toolchain moved, discarding stale build description..."
+    rm -rf "$(dirname "$manifest")"
+  fi
+done
+
 echo "🔨 Building Cortland..."
 
 # Build the Swift package
