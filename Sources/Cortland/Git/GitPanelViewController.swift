@@ -50,6 +50,7 @@ final class CommitAreaView: NSView {
 protocol GitPanelDelegate: AnyObject {
     func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String, kind: GitDiffKind)
     func gitPanel(_ panel: GitPanelViewController, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
+    func gitPanel(_ panel: GitPanelViewController, didRequestBranchChangesFor repositoryPath: String, defaultBranch: String, focusedFilePath: String?)
 }
 
 class GitPanelViewController: NSViewController {
@@ -988,7 +989,14 @@ extension GitPanelViewController: NSTableViewDelegate {
         guard row >= 0 && row < gitStatusModel.branchDiffFiles.count else { return }
         let file = gitStatusModel.branchDiffFiles[row]
         let fullPath = gitStatusModel.repositoryPath + "/" + file.path
-        delegate?.gitPanel(self, didRequestDiffFor: fullPath, kind: .againstDefaultBranch)
+        // The panel's root, not a lookup from the file: a file deleted on the
+        // branch is not on disk.
+        delegate?.gitPanel(
+            self,
+            didRequestBranchChangesFor: gitStatusModel.repositoryPath,
+            defaultBranch: gitStatusModel.branchDiffBaseBranch,
+            focusedFilePath: fullPath
+        )
     }
 
     @objc private func stageFile(_ sender: NSButton) {

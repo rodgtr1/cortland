@@ -179,9 +179,39 @@ final class ChangesReviewTests: XCTestCase {
         func section(fullyStaged: Bool, conflicted: Bool = false) -> ChangeSection {
             ChangeSection(relativePath: "f", diff: "", isConflicted: conflicted, status: .modified, isFullyStaged: fullyStaged)
         }
-        XCTAssertEqual(Review.stageAction(for: section(fullyStaged: false)), .stage)
-        XCTAssertEqual(Review.stageAction(for: section(fullyStaged: true)), .unstage)
-        XCTAssertNil(Review.stageAction(for: section(fullyStaged: false, conflicted: true)))
+        XCTAssertEqual(Review.stageAction(for: section(fullyStaged: false), source: .uncommitted), .stage)
+        XCTAssertEqual(Review.stageAction(for: section(fullyStaged: true), source: .uncommitted), .unstage)
+        XCTAssertNil(Review.stageAction(for: section(fullyStaged: false, conflicted: true), source: .uncommitted))
+    }
+
+    func testStageActionIsUnavailableForTheBranchSource() {
+        let source = ChangesSource.branch(defaultBranch: "main")
+        XCTAssertFalse(source.allowsStaging)
+        XCTAssertTrue(ChangesSource.uncommitted.allowsStaging)
+        for fullyStaged in [false, true] {
+            let section = ChangeSection(relativePath: "f", diff: "", isConflicted: false, status: .modified, isFullyStaged: fullyStaged)
+            XCTAssertNil(Review.stageAction(for: section, source: source))
+        }
+    }
+
+    // MARK: - Source
+
+    func testTabTitleForEachSource() {
+        XCTAssertEqual(ChangesSource.uncommitted.tabTitle, "Uncommitted Changes")
+        XCTAssertEqual(ChangesSource.branch(defaultBranch: "main").tabTitle, "Changes vs main")
+        XCTAssertEqual(ChangesSource.branch(defaultBranch: "master").tabTitle, "Changes vs master")
+    }
+
+    func testPaneReuseMatchesRepositoryAndSource() {
+        let branch = ChangesSource.branch(defaultBranch: "main")
+        XCTAssertTrue(ChangesSource.paneMatches(paneRepository: "/r", paneSource: .uncommitted, repositoryPath: "/r", source: .uncommitted))
+        XCTAssertTrue(ChangesSource.paneMatches(paneRepository: "/r", paneSource: branch, repositoryPath: "/r", source: branch))
+        // One repository, two sources: separate tabs.
+        XCTAssertFalse(ChangesSource.paneMatches(paneRepository: "/r", paneSource: .uncommitted, repositoryPath: "/r", source: branch))
+        XCTAssertFalse(ChangesSource.paneMatches(paneRepository: "/r", paneSource: branch, repositoryPath: "/r", source: .uncommitted))
+        // Same source, another repository.
+        XCTAssertFalse(ChangesSource.paneMatches(paneRepository: "/other", paneSource: branch, repositoryPath: "/r", source: branch))
+        XCTAssertFalse(ChangesSource.paneMatches(paneRepository: nil, paneSource: nil, repositoryPath: "/r", source: .uncommitted))
     }
 
     // MARK: - Key events

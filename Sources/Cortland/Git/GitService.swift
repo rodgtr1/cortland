@@ -305,6 +305,22 @@ nonisolated final class GitService: Sendable {
         return combined
     }
 
+    /// The branch's committed diff against the merge-base of HEAD and
+    /// `defaultBranch` (`git diff <default>...HEAD`, three-dot), keyed by
+    /// relative path, from one repo-wide invocation. A rename is keyed by its
+    /// new path. Empty when the diff fails.
+    func diffsAgainstDefaultBranchByPath(repositoryRoot: String, defaultBranch: String) throws -> [String: String] {
+        // The changes pane runs this on every watcher event while agents work,
+        // so never take index.lock (see diffsByPath).
+        let result = try runGit(
+            ["diff", "\(defaultBranch)...HEAD"],
+            repositoryRoot: repositoryRoot,
+            allowOptionalLocks: false
+        )
+        guard result.succeeded else { return [:] }
+        return Self.splitDiffByFile(result.stdout)
+    }
+
     static func splitDiffByFile(_ output: String) -> [String: String] {
         var result: [String: String] = [:]
         var currentPath: String?

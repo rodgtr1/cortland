@@ -202,8 +202,9 @@ nonisolated enum ChangesComments {
         count == 1 ? "1 comment" : "\(count) comments"
     }
 
-    /// The prompt sent to the agent, comments ordered by path then line.
-    static func message(for comments: [Comment]) -> String {
+    /// The prompt sent to the agent, comments ordered by path then line,
+    /// under `intro` (the pane source's first line).
+    static func message(for comments: [Comment], intro: String) -> String {
         let ordered = comments.enumerated().sorted { a, b in
             if a.element.path != b.element.path { return a.element.path < b.element.path }
             let lineA = a.element.location?.first ?? Int.max
@@ -229,7 +230,7 @@ nonisolated enum ChangesComments {
             }
             items.append(item.joined(separator: "\n"))
         }
-        return (["Review comments on the uncommitted changes in this repository. Please address each one."] + items)
+        return ([intro] + items)
             .joined(separator: "\n\n")
     }
 

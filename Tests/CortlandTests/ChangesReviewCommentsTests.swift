@@ -44,6 +44,23 @@ final class ChangesReviewCommentsTests: XCTestCase {
 
     // MARK: - Message
 
+    func testMessageIntroForEachSource() {
+        let comments = [comment("a.txt", at(1), lines: [line(.added, "x", 1)], text: "Ok.")]
+        let uncommitted = Comments.message(for: comments, intro: ChangesSource.uncommitted.commentIntro)
+        XCTAssertEqual(uncommitted.components(separatedBy: "\n").first, header)
+
+        let branch = Comments.message(for: comments, intro: ChangesSource.branch(defaultBranch: "main").commentIntro)
+        XCTAssertEqual(
+            branch.components(separatedBy: "\n").first,
+            "Review comments on the changes committed on this branch (compared with main). Please address each one."
+        )
+        // Only the first line differs.
+        XCTAssertEqual(
+            uncommitted.components(separatedBy: "\n").dropFirst(),
+            branch.components(separatedBy: "\n").dropFirst()
+        )
+    }
+
     func testMessageMatchesTheDocumentedFormat() {
         let message = Comments.message(for: [
             comment("Sources/App/Service.swift", at(301, 303), lines: [line(.added, "    let added = 3", 301)], text: "This shadows the outer value."),
@@ -52,7 +69,7 @@ final class ChangesReviewCommentsTests: XCTestCase {
                 lines: [line(.removed, "    let args = [\"diff\"]"), line(.added, "    let args = [\"diff\", \"--no-color\"]", 244)],
                 text: "Use a constant for the flag."
             )
-        ])
+        ], intro: header)
         XCTAssertEqual(message, """
         \(header)
 
@@ -98,13 +115,13 @@ final class ChangesReviewCommentsTests: XCTestCase {
         XCTAssertNil(Comments.location(of: 0..<2, rows: rows))
         let message = Comments.message(for: [
             comment("gone.txt", nil, lines: Comments.lines(in: 0..<2, rows: rows), text: "Why delete this?")
-        ])
+        ], intro: header)
         XCTAssertEqual(message, "\(header)\n\n1. gone.txt\n   > -a\n   > -b\n   Why delete this?")
     }
 
     func testQuoteStopsAtEightLines() {
         let lines = (1...11).map { (n: Int) in line(.added, "line \(n)", n) }
-        let message = Comments.message(for: [comment("a.txt", at(1, 11), lines: lines, text: "Too long.")])
+        let message = Comments.message(for: [comment("a.txt", at(1, 11), lines: lines, text: "Too long.")], intro: header)
         let quoted = message.components(separatedBy: "\n").filter { $0.hasPrefix("   >") }
         XCTAssertEqual(quoted.count, 9)
         XCTAssertEqual(quoted[7], "   > +line 8")
@@ -113,7 +130,7 @@ final class ChangesReviewCommentsTests: XCTestCase {
 
     func testEightLinesAreQuotedWithoutAMoreLine() {
         let lines = (1...8).map { (n: Int) in line(.context, "line \(n)", n) }
-        let message = Comments.message(for: [comment("a.txt", at(1, 8), lines: lines, text: "Fine.")])
+        let message = Comments.message(for: [comment("a.txt", at(1, 8), lines: lines, text: "Fine.")], intro: header)
         XCTAssertFalse(message.contains("more lines"))
         XCTAssertTrue(message.contains("   >  line 8"))
     }
@@ -121,7 +138,7 @@ final class ChangesReviewCommentsTests: XCTestCase {
     func testMultiLineCommentTextIsIndented() {
         let message = Comments.message(for: [
             comment("a.txt", at(4), lines: [line(.added, "x", 4)], text: "First.\nSecond.\n\nFourth.")
-        ])
+        ], intro: header)
         XCTAssertTrue(message.hasSuffix("   > +x\n   First.\n   Second.\n   \n   Fourth."))
     }
 
@@ -130,7 +147,7 @@ final class ChangesReviewCommentsTests: XCTestCase {
             comment("b.swift", at(5), lines: [line(.added, "b5", 5)], text: "third"),
             comment("a.swift", at(20), lines: [line(.added, "a20", 20)], text: "second"),
             comment("a.swift", at(3), lines: [line(.added, "a3", 3)], text: "first")
-        ])
+        ], intro: header)
         let headings = message.components(separatedBy: "\n").filter { $0.first?.isNumber == true }
         XCTAssertEqual(headings, ["1. a.swift:3", "2. a.swift:20", "3. b.swift:5"])
     }
@@ -138,12 +155,12 @@ final class ChangesReviewCommentsTests: XCTestCase {
     func testDetachedCommentCarriesTheNote() {
         let message = Comments.message(for: [
             comment("a.txt", at(7), lines: [line(.added, "old", 7)], text: "Rename it.", anchor: .detached)
-        ])
+        ], intro: header)
         XCTAssertTrue(message.hasSuffix("1. a.txt:7\n   > +old\n   (This code has changed since the comment was written.)\n   Rename it."))
     }
 
     func testAttachedCommentHasNoNote() {
-        let message = Comments.message(for: [comment("a.txt", at(7), lines: [line(.added, "x", 7)], text: "Ok.")])
+        let message = Comments.message(for: [comment("a.txt", at(7), lines: [line(.added, "x", 7)], text: "Ok.")], intro: header)
         XCTAssertFalse(message.contains("has changed"))
     }
 

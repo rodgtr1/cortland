@@ -4,6 +4,7 @@ protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainer(_ container: SidebarContainerView, didOpenFile url: URL)
     func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String, kind: GitDiffKind)
     func sidebarContainer(_ container: SidebarContainerView, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
+    func sidebarContainer(_ container: SidebarContainerView, didRequestBranchChangesFor repositoryPath: String, defaultBranch: String, focusedFilePath: String?)
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String?)
     func sidebarContainerTabs(_ container: SidebarContainerView) -> [TabModel]
     func sidebarContainer(_ container: SidebarContainerView, didRequestSwitchToTab index: Int)
@@ -504,6 +505,15 @@ extension SidebarContainerView: GitPanelDelegate {
         delegate?.sidebarContainer(
             self,
             didRequestUncommittedChangesFor: repositoryPath,
+            focusedFilePath: focusedFilePath
+        )
+    }
+
+    func gitPanel(_ panel: GitPanelViewController, didRequestBranchChangesFor repositoryPath: String, defaultBranch: String, focusedFilePath: String?) {
+        delegate?.sidebarContainer(
+            self,
+            didRequestBranchChangesFor: repositoryPath,
+            defaultBranch: defaultBranch,
             focusedFilePath: focusedFilePath
         )
     }

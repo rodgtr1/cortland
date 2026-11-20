@@ -1098,7 +1098,15 @@ extension MainWindowController: SidebarContainerDelegate {
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?) {
-        openUncommittedChangesInNewTab(repositoryPath: repositoryPath, focusedFilePath: focusedFilePath)
+        openUncommittedChangesInNewTab(repositoryPath: repositoryPath, source: .uncommitted, focusedFilePath: focusedFilePath)
+    }
+
+    func sidebarContainer(_ container: SidebarContainerView, didRequestBranchChangesFor repositoryPath: String, defaultBranch: String, focusedFilePath: String?) {
+        openUncommittedChangesInNewTab(
+            repositoryPath: repositoryPath,
+            source: .branch(defaultBranch: defaultBranch),
+            focusedFilePath: focusedFilePath
+        )
     }
 
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String?) {
@@ -1149,11 +1157,16 @@ extension MainWindowController: SidebarContainerDelegate {
         openSinglePaneTab(pane: PaneFactory.diffPane(for: filePath, kind: kind))
     }
 
-    private func openUncommittedChangesInNewTab(repositoryPath: String, focusedFilePath: String?) {
+    private func openUncommittedChangesInNewTab(repositoryPath: String, source: ChangesSource, focusedFilePath: String?) {
         if let existingIndex = tabs.firstIndex(where: { tab in
             tab.panes.count == 1 &&
             tab.panes.first?.paneType == .uncommittedChanges &&
-            tab.panes.first?.currentDirectory == repositoryPath
+            ChangesSource.paneMatches(
+                paneRepository: tab.panes.first?.currentDirectory,
+                paneSource: tab.panes.first?.uncommittedChangesViewController?.source,
+                repositoryPath: repositoryPath,
+                source: source
+            )
         }) {
             switchToTab(index: existingIndex)
             tabs[existingIndex].panes.first?.uncommittedChangesViewController?.reload(focusedFilePath: focusedFilePath)
@@ -1162,6 +1175,7 @@ extension MainWindowController: SidebarContainerDelegate {
 
         let pane = PaneFactory.uncommittedChangesPane(
             repositoryPath: repositoryPath,
+            source: source,
             focusedFilePath: focusedFilePath,
             onOpenFile: { [weak self] filePath in
                 self?.openFileInEditor(URL(fileURLWithPath: filePath))

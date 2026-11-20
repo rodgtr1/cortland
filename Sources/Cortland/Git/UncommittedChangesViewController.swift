@@ -9,6 +9,8 @@ final class UncommittedChangesViewController: NSViewController {
     var sendToAgent: ((UUID, String) -> Bool)?
 
     private var repositoryPath: String
+    /// The changes shown, fixed at creation.
+    let source: ChangesSource
     private var focusedFilePath: String?
     private let gitService: GitService
     private var scrollView: NSScrollView!
@@ -80,8 +82,14 @@ final class UncommittedChangesViewController: NSViewController {
         static let commentIconSize: CGFloat = 12
     }
 
-    init(repositoryPath: String, focusedFilePath: String? = nil, gitService: GitService = GitService()) {
+    init(
+        repositoryPath: String,
+        source: ChangesSource = .uncommitted,
+        focusedFilePath: String? = nil,
+        gitService: GitService = GitService()
+    ) {
         self.repositoryPath = repositoryPath
+        self.source = source
         self.focusedFilePath = focusedFilePath
         self.gitService = gitService
         super.init(nibName: nil, bundle: nil)
@@ -209,29 +217,33 @@ final class UncommittedChangesViewController: NSViewController {
         }
         let request = requests.begin()
 
-        DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService] in
+        DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService, source] in
             let result: Result<[ChangeSection], Error>
             do {
-                // Keep a stable order by relative path; the focused file is
-                // scrolled into view rather than reordered to the top.
-                let entries = try gitService.status(repositoryRoot: repositoryPath)
-                    .sorted { $0.path < $1.path }
+                if case .branch = source {
+                    result = .success(try Self.branchSections(repositoryPath: repositoryPath, gitService: gitService))
+                } else {
+                    // Keep a stable order by relative path; the focused file is
+                    // scrolled into view rather than reordered to the top.
+                    let entries = try gitService.status(repositoryRoot: repositoryPath)
+                        .sorted { $0.path < $1.path }
 
-                let diffs = try gitService.diffsByPath(for: entries, repositoryRoot: repositoryPath)
-                result = .success(entries.map { entry in
-                    ChangeSection(
-                        relativePath: entry.path,
-                        diff: diffs[entry.path] ?? "No changes",
-                        isConflicted: entry.isConflicted,
-                        status: GitFileItem(
-                            path: entry.path,
-                            stagedChar: entry.stagedStatus,
-                            unstagedChar: entry.unstagedStatus
-                        ).displayStatus,
-                        repositoryPath: repositoryPath,
-                        isFullyStaged: ChangesReview.isFullyStaged(entry)
-                    )
-                })
+                    let diffs = try gitService.diffsByPath(for: entries, repositoryRoot: repositoryPath)
+                    result = .success(entries.map { entry in
+                        ChangeSection(
+                            relativePath: entry.path,
+                            diff: diffs[entry.path] ?? "No changes",
+                            isConflicted: entry.isConflicted,
+                            status: GitFileItem(
+                                path: entry.path,
+                                stagedChar: entry.stagedStatus,
+                                unstagedChar: entry.unstagedStatus
+                            ).displayStatus,
+                            repositoryPath: repositoryPath,
+                            isFullyStaged: ChangesReview.isFullyStaged(entry)
+                        )
+                    })
+                }
             } catch {
                 result = .failure(error)
             }
@@ -239,6 +251,24 @@ final class UncommittedChangesViewController: NSViewController {
             DispatchQueue.main.async { [weak self] in
                 self?.finishLoad(request: request, result: result)
             }
+        }
+    }
+
+    /// The branch's committed files against the default branch, in path
+    /// order. None when the default branch cannot be resolved.
+    private nonisolated static func branchSections(repositoryPath: String, gitService: GitService) throws -> [ChangeSection] {
+        guard let base = try gitService.defaultBranch(repositoryRoot: repositoryPath) else { return [] }
+        let entries = try gitService.changedFilesAgainstDefaultBranch(repositoryRoot: repositoryPath, defaultBranch: base)
+            .sorted { $0.path < $1.path }
+        let diffs = try gitService.diffsAgainstDefaultBranchByPath(repositoryRoot: repositoryPath, defaultBranch: base)
+        return entries.map { entry in
+            ChangeSection(
+                relativePath: entry.path,
+                diff: diffs[entry.path] ?? "No changes",
+                isConflicted: false,
+                status: GitBranchDiffItem(path: entry.path, status: entry.status).status,
+                repositoryPath: repositoryPath
+            )
         }
     }
 
@@ -250,7 +280,8 @@ final class UncommittedChangesViewController: NSViewController {
         case .failure(let error):
             // A failed refresh keeps what is on screen; only a first load reports.
             guard displayedSections == nil else { return }
-            showMessage("Failed to load uncommitted changes: \(error.localizedDescription)")
+            let what = source == .uncommitted ? "uncommitted changes" : "the changes on this branch"
+            showMessage("Failed to load \(what): \(error.localizedDescription)")
         case .success(let sections):
             // The tab was hidden while this ran: catch up when it is shown.
             if displayedSections != nil && !isVisible {
@@ -1145,7 +1176,7 @@ final class UncommittedChangesViewController: NSViewController {
         case .toggleCollapsed:
             changeState(of: path) { $0.toggleCollapsed(path) }
         case .stage:
-            guard let action = ChangesReview.stageAction(for: section) else { return }
+            guard let action = ChangesReview.stageAction(for: section, source: source) else { return }
             DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService] in
                 let succeeded: Bool
                 switch action {
@@ -1632,7 +1663,7 @@ final class UncommittedChangesViewController: NSViewController {
 
     private func deliverComments(to agent: ChangesComments.Agent) {
         let count = comments.count
-        guard sendToAgent?(agent.id, ChangesComments.message(for: commentsForSending())) == true else {
+        guard sendToAgent?(agent.id, ChangesComments.message(for: commentsForSending(), intro: source.commentIntro)) == true else {
             updateReviewBar()
             return
         }
@@ -1643,7 +1674,7 @@ final class UncommittedChangesViewController: NSViewController {
         let count = comments.count
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(ChangesComments.message(for: commentsForSending()), forType: .string)
+        pasteboard.setString(ChangesComments.message(for: commentsForSending(), intro: source.commentIntro), forType: .string)
         finishReview(confirmation: "Copied \(ChangesComments.countText(count))")
     }
 
@@ -1848,6 +1879,49 @@ private final class ConflictResolveButton: NSButton {
     var filePath: String = ""
     var conflictIndex: Int = 0
     var resolution: MergeConflictResolution?
+}
+
+/// Which changes a changes pane shows, fixed when the pane is created.
+nonisolated enum ChangesSource: Equatable, Sendable {
+    /// Staged, unstaged, and untracked changes in the working tree.
+    case uncommitted
+    /// Changes committed on this branch since it left `defaultBranch`
+    /// (`git diff <default>...HEAD`). The name labels the tab and the review
+    /// message; each load resolves the default branch afresh.
+    case branch(defaultBranch: String)
+
+    var tabTitle: String {
+        switch self {
+        case .uncommitted: return "Uncommitted Changes"
+        case .branch(let defaultBranch): return "Changes vs \(defaultBranch)"
+        }
+    }
+
+    /// The first line of the review comments sent to an agent.
+    var commentIntro: String {
+        switch self {
+        case .uncommitted:
+            return "Review comments on the uncommitted changes in this repository. Please address each one."
+        case .branch(let defaultBranch):
+            return "Review comments on the changes committed on this branch (compared with \(defaultBranch)). Please address each one."
+        }
+    }
+
+    var allowsStaging: Bool {
+        self == .uncommitted
+    }
+
+    /// An open changes pane is reused for a request only when it shows the
+    /// same repository and source, so a repository's uncommitted and branch
+    /// views are separate tabs.
+    static func paneMatches(
+        paneRepository: String?,
+        paneSource: ChangesSource?,
+        repositoryPath: String,
+        source: ChangesSource
+    ) -> Bool {
+        paneRepository == repositoryPath && paneSource == source
+    }
 }
 
 /// One file's row in the changes pane. Equality decides whether a refresh
@@ -2282,9 +2356,10 @@ nonisolated enum ChangesReview {
     }
 
     /// `s`: unstage a fully staged file, stage anything else, and leave a
-    /// conflicted file alone.
-    static func stageAction(for section: ChangeSection) -> StageAction? {
-        guard !section.isConflicted else { return nil }
+    /// conflicted file alone. Committed changes (the branch source) cannot
+    /// be staged.
+    static func stageAction(for section: ChangeSection, source: ChangesSource) -> StageAction? {
+        guard source.allowsStaging, !section.isConflicted else { return nil }
         return section.isFullyStaged ? .unstage : .stage
     }
 }

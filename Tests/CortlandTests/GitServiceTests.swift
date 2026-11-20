@@ -401,6 +401,54 @@ final class GitServiceTests: XCTestCase {
         }
     }
 
+    func testDiffsAgainstDefaultBranchByPathKeysCommittedFilesByPath() throws {
+        var cleanup: [URL] = []
+        defer { cleanup.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let (git, repo) = try makeTempRepo(cleanup: &cleanup)
+        let original = (1...20).map { "line \($0)" }.joined(separator: "\n") + "\n"
+        try "base\n".write(to: repo.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        try original.write(to: repo.appendingPathComponent("old.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "init"])
+
+        try git(["checkout", "-q", "-b", "feature"])
+        try "hello\n".write(to: repo.appendingPathComponent("feature.txt"), atomically: true, encoding: .utf8)
+        try "base\nmore\n".write(to: repo.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        try git(["mv", "old.txt", "new.txt"])
+        try git(["add", "."])
+        try git(["commit", "-qm", "work"])
+
+        // Uncommitted edits, staged and not, stay out of the branch diff.
+        try "base\nmore\nuncommitted\n".write(to: repo.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        try "scratch\n".write(to: repo.appendingPathComponent("staged.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "staged.txt"])
+        try "untracked\n".write(to: repo.appendingPathComponent("untracked.txt"), atomically: true, encoding: .utf8)
+
+        let diffs = try GitService().diffsAgainstDefaultBranchByPath(repositoryRoot: repo.path, defaultBranch: "main")
+
+        XCTAssertEqual(Set(diffs.keys), ["README", "feature.txt", "new.txt"])
+        XCTAssertTrue(diffs["feature.txt"]?.contains("+hello") ?? false)
+        XCTAssertTrue(diffs["README"]?.contains("+more") ?? false)
+        XCTAssertFalse(diffs["README"]?.contains("uncommitted") ?? true)
+        XCTAssertTrue(diffs["new.txt"]?.contains("rename to new.txt") ?? false)
+
+        // On the default branch itself the comparison is empty.
+        try git(["stash", "-q", "-u"])
+        try git(["checkout", "-q", "main"])
+        XCTAssertTrue(try GitService().diffsAgainstDefaultBranchByPath(repositoryRoot: repo.path, defaultBranch: "main").isEmpty)
+    }
+
+    func testDiffsAgainstDefaultBranchByPathRunsWithoutOptionalLocks() throws {
+        let runner = RecordingRunner()
+        _ = try GitService(runner: runner).diffsAgainstDefaultBranchByPath(repositoryRoot: "/repo", defaultBranch: "main")
+
+        let calls = runner.calls
+        XCTAssertEqual(calls.map(\.arguments), [["-C", "/repo", "diff", "main...HEAD"]])
+        for call in calls {
+            XCTAssertEqual(call.environment?["GIT_OPTIONAL_LOCKS"], "0")
+        }
+    }
+
     /// Records each git invocation instead of running it.
     private nonisolated final class RecordingRunner: ProcessRunning, @unchecked Sendable {
         struct Call {
