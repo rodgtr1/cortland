@@ -1165,9 +1165,47 @@ extension MainWindowController: SidebarContainerDelegate {
             focusedFilePath: focusedFilePath,
             onOpenFile: { [weak self] filePath in
                 self?.openFileInEditor(URL(fileURLWithPath: filePath))
+            },
+            agentsForRepository: { [weak self] repositoryPath in
+                self?.reviewAgents(repositoryPath: repositoryPath) ?? []
+            },
+            sendToAgent: { [weak self] paneID, text in
+                self?.sendReviewComments(text, toPane: paneID) ?? false
             }
         )
         openSinglePaneTab(pane: pane)
+    }
+
+    /// Terminal panes running an agent (the `agent_list` notion) whose
+    /// working directory is in the repository, for the changes pane's
+    /// review comments. Labelled by model and tab, plus the pane's
+    /// position when the tab is split.
+    private func reviewAgents(repositoryPath: String) -> [ChangesComments.Agent] {
+        let panes = tabs.flatMap { tab in
+            tab.panes.enumerated().map { index, pane in
+                let name = automationCoordinator?.paneTelemetry[pane.id]?.model.map(TelemetryFormat.shortModel) ?? "Agent"
+                let place = tab.panes.count > 1 ? "\(tab.title) · pane \(index + 1)" : tab.title
+                return ChangesComments.AgentPane(
+                    id: pane.id,
+                    label: "\(name) · \(place)",
+                    directory: pane.resolvedWorkingDirectory(),
+                    runsAgent: pane.paneType == .terminal && pane.agentState != .idle && pane.terminalViewController != nil
+                )
+            }
+        }
+        return ChangesComments.candidates(panes, repositoryPath: repositoryPath)
+    }
+
+    /// Delivers review comments to an agent pane without switching to it.
+    private func sendReviewComments(_ text: String, toPane paneID: UUID) -> Bool {
+        guard let terminal = tabs.lazy.flatMap(\.panes).first(where: { $0.id == paneID })?.terminalViewController else { return false }
+        terminal.send(text: text)
+        // Same two-step delivery as the session handoff: agent TUIs treat a
+        // burst of stdin as a paste and swallow an Enter in the same chunk.
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
+            _ = terminal.send(key: "enter")
+        }
+        return true
     }
 
     private func openSinglePaneTab(pane: PaneModel) {

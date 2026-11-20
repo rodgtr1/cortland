@@ -107,6 +107,8 @@ class KeyboardShortcutsPanel: NSPanel {
         shortcuts.append(KeyboardShortcut(keys: "x", description: "Collapse or expand the current file", category: "Changes Pane"))
         shortcuts.append(KeyboardShortcut(keys: "s", description: "Stage the current file (unstage if fully staged)", category: "Changes Pane"))
         shortcuts.append(KeyboardShortcut(keys: "o", description: "Open the current file", category: "Changes Pane"))
+        shortcuts.append(KeyboardShortcut(keys: "c", description: "Comment on the selection or current change block", category: "Changes Pane"))
+        shortcuts.append(KeyboardShortcut(keys: "⌘↩", description: "Send review comments to the agent", category: "Changes Pane"))
     }
 
     private func setupUI() {

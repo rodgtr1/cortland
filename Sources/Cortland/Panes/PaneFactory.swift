@@ -25,13 +25,17 @@ enum PaneFactory {
     static func uncommittedChangesPane(
         repositoryPath: String,
         focusedFilePath: String? = nil,
-        onOpenFile: ((String) -> Void)? = nil
+        onOpenFile: ((String) -> Void)? = nil,
+        agentsForRepository: ((String) -> [ChangesComments.Agent])? = nil,
+        sendToAgent: ((UUID, String) -> Bool)? = nil
     ) -> PaneModel {
         let pane = PaneModel()
         pane.createUncommittedChangesViewController(
             repositoryPath: repositoryPath,
             focusedFilePath: focusedFilePath,
-            onOpenFile: onOpenFile
+            onOpenFile: onOpenFile,
+            agentsForRepository: agentsForRepository,
+            sendToAgent: sendToAgent
         )
         return pane
     }

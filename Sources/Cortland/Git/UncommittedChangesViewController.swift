@@ -2,6 +2,11 @@ import Cocoa
 
 final class UncommittedChangesViewController: NSViewController {
     var onOpenFile: ((String) -> Void)?
+    /// The agent panes working in a repository, asked fresh each time the
+    /// review bar is shown or pressed.
+    var agentsForRepository: ((String) -> [ChangesComments.Agent])?
+    /// Delivers a prompt to an agent pane by id; false when it is gone.
+    var sendToAgent: ((UUID, String) -> Bool)?
 
     private var repositoryPath: String
     private var focusedFilePath: String?
@@ -26,6 +31,7 @@ final class UncommittedChangesViewController: NSViewController {
     private struct DiffBody {
         let textView: NSTextView
         let blocks: [NSRange]
+        let rows: [ChangesComments.Row]
     }
     private var diffBodies: [String: DiffBody] = [:]
 
@@ -38,6 +44,21 @@ final class UncommittedChangesViewController: NSViewController {
         mark.wantsLayer = true
         return mark
     }()
+
+    /// Review comments, held in memory for this pane only. Icons are keyed
+    /// by path and first row.
+    private var comments: [ChangesComments.Comment] = []
+    private var commentIcons: [String: ChangesCommentIcon] = [:]
+    private var commentPopover: NSPopover?
+    private var reviewBar: NSView!
+    private var reviewBarHeight: NSLayoutConstraint!
+    private var reviewCountLabel: NSTextField!
+    private var reviewPrimaryButton: NSButton!
+    private var reviewDiscardButton: NSButton!
+    /// The send mode the bar's primary button currently shows.
+    private var displayedSendMode: ChangesComments.SendMode?
+    /// Running while the bar shows a sent or copied confirmation.
+    private var confirmationTimer: Timer?
 
     /// What the stack currently shows, keyed by relative path for the
     /// reconcile. nil until a load has displayed something.
@@ -55,6 +76,8 @@ final class UncommittedChangesViewController: NSViewController {
         static let sectionSpacing: CGFloat = 10
         static let headerHeight: CGFloat = 28
         static let diffLineHeight: CGFloat = 19
+        static let reviewBarHeight: CGFloat = 34
+        static let commentIconSize: CGFloat = 12
     }
 
     init(repositoryPath: String, focusedFilePath: String? = nil, gitService: GitService = GitService()) {
@@ -70,7 +93,12 @@ final class UncommittedChangesViewController: NSViewController {
 
     override func loadView() {
         let rootView = WindowObservingView()
-        rootView.onWindowChange = { [weak self] in self?.visibilityMayHaveChanged() }
+        rootView.onWindowChange = { [weak self] in
+            self?.visibilityMayHaveChanged()
+            if self?.comments.isEmpty == false {
+                self?.updateReviewBar()
+            }
+        }
         rootView.onKeyDown = { [weak self] event in
             guard let self else { return false }
             return self.handleReviewKey(event) || self.handleScrollKey(event)
@@ -79,6 +107,7 @@ final class UncommittedChangesViewController: NSViewController {
         view.wantsLayer = true
         view.layer?.backgroundColor = DiffViewController.DiffColors.background.cgColor
         setupScrollView()
+        setupReviewBar()
     }
 
     override func viewDidLoad() {
@@ -125,7 +154,6 @@ final class UncommittedChangesViewController: NSViewController {
             scrollView.topAnchor.constraint(equalTo: view.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             documentView.widthAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.widthAnchor),
             documentView.topAnchor.constraint(equalTo: stackView.topAnchor),
@@ -319,6 +347,18 @@ final class UncommittedChangesViewController: NSViewController {
             contentChanged: ChangesSectionStates.contentChangedPaths(displayed: displayedSections ?? [], incoming: sections)
         )
 
+        // A rebuilt section's comments re-anchor once its body is built; a
+        // file that left takes its comments out of the diff.
+        let removed = Set(plan.removed)
+        for index in comments.indices {
+            let path = comments[index].path
+            if removed.contains(path) {
+                comments[index].anchor = .detached
+            } else if rebuilt.contains(path) {
+                comments[index].anchor = .pending
+            }
+        }
+
         // Kept views are already in path order, so everything before index i
         // is exactly sections[0..<i] and a new view slots in at i.
         for (index, section) in sections.enumerated() {
@@ -347,6 +387,14 @@ final class UncommittedChangesViewController: NSViewController {
     private func clearStack() {
         diffColumns.removeAll()
         diffBodies.removeAll()
+        // Every body goes, so attached comments wait for the next one.
+        for index in comments.indices {
+            if case .attached = comments[index].anchor {
+                comments[index].anchor = .pending
+            }
+        }
+        commentIcons.values.forEach { $0.removeFromSuperview() }
+        commentIcons.removeAll()
         currentFile = nil
         currentBlock = nil
         blockMark.removeFromSuperview()
@@ -421,8 +469,10 @@ final class UncommittedChangesViewController: NSViewController {
                 column.heightConstraint.constant = target
             }
         }
-        // Re-wrapping moves the block's lines, so the mark follows them.
+        // Re-wrapping moves the block's lines, so the mark and the comment
+        // icons follow them.
         positionBlockMark()
+        positionCommentIcons()
     }
 
     private func makeSectionView(_ section: ChangeSection) -> ChangeSectionView {
@@ -466,6 +516,10 @@ final class UncommittedChangesViewController: NSViewController {
     private func makeDiffBody(_ section: ChangeSection) -> NSView {
         let renderedDiff = InlineDiffRenderer.render(section.diff, fileExtension: (section.relativePath as NSString).pathExtension.lowercased())
         let diffView = makeDiffColumn(text: renderedDiff)
+        let path = section.relativePath
+        (diffView as? ChangesDiffTextView)?.onMouseDown = { [weak self] event in
+            self?.handleGutterClick(event, path: path) ?? false
+        }
 
         // Size the diff to its full content height and let the outer scroll
         // view handle scrolling. Capping the height here would clip long diffs,
@@ -478,7 +532,11 @@ final class UncommittedChangesViewController: NSViewController {
         diffHeightConstraint.isActive = true
 
         diffColumns.append(DiffColumn(textView: diffView, heightConstraint: diffHeightConstraint))
-        diffBodies[section.relativePath] = DiffBody(textView: diffView, blocks: ChangesReview.blockRanges(in: renderedDiff))
+        let rows = ChangesComments.rows(in: renderedDiff)
+        diffBodies[path] = DiffBody(textView: diffView, blocks: ChangesReview.blockRanges(in: renderedDiff), rows: rows)
+        for index in comments.indices where comments[index].path == path && comments[index].anchor == .pending {
+            reanchor(&comments[index], rows: rows)
+        }
         return diffView
     }
 
@@ -1006,7 +1064,15 @@ final class UncommittedChangesViewController: NSViewController {
 
     /// Takes the pane's single-key review keys; anything else passes on.
     private func handleReviewKey(_ event: NSEvent) -> Bool {
+        if ChangesComments.isSendKey(characters: event.charactersIgnoringModifiers, modifierFlags: event.modifierFlags, hasComments: !comments.isEmpty) {
+            performPrimaryReviewAction()
+            return true
+        }
         guard let key = ChangesReview.Key(characters: event.charactersIgnoringModifiers, modifierFlags: event.modifierFlags) else { return false }
+        if key == .comment {
+            beginKeyboardComment()
+            return true
+        }
         perform(key)
         return true
     }
@@ -1052,6 +1118,9 @@ final class UncommittedChangesViewController: NSViewController {
                   let section = displayedSections.first(where: { $0.relativePath == path }) else { return }
             setCurrentFile(path)
             act(key, on: section)
+
+        case .comment:
+            break
         }
     }
 
@@ -1090,7 +1159,7 @@ final class UncommittedChangesViewController: NSViewController {
             }
         case .open:
             onOpenFile?(section.absolutePath(repositoryPath: repositoryPath))
-        case .nextFile, .previousFile, .nextBlock, .previousBlock:
+        case .nextFile, .previousFile, .nextBlock, .previousBlock, .comment:
             break
         }
     }
@@ -1120,6 +1189,7 @@ final class UncommittedChangesViewController: NSViewController {
             sectionView.header.setCurrent(path == currentFile)
         }
         positionBlockMark()
+        positionCommentIcons()
     }
 
     private func positionBlockMark() {
@@ -1187,6 +1257,437 @@ final class UncommittedChangesViewController: NSViewController {
                 return ChangesReview.BlockSpan(path: path, index: index, top: span.top, bottom: span.bottom)
             }
         }
+    }
+
+    // MARK: - Review comments
+
+    /// `c`: a comment on the selected diff lines, else on the current block.
+    private func beginKeyboardComment() {
+        if let textView = view.window?.firstResponder as? NSTextView,
+           let (path, body) = diffBodies.first(where: { $0.value.textView === textView }).map({ ($0.key, $0.value) }),
+           let rows = ChangesComments.rowRange(touching: textView.selectedRange(), rows: body.rows) {
+            openNewComment(path: path, rows: rows)
+            return
+        }
+        guard let currentBlock,
+              !sectionStates.state(for: currentBlock.path).isCollapsed,
+              let body = diffBodies[currentBlock.path],
+              body.blocks.indices.contains(currentBlock.index),
+              let rows = ChangesComments.rowRange(touching: body.blocks[currentBlock.index], rows: body.rows) else { return }
+        openNewComment(path: currentBlock.path, rows: rows)
+    }
+
+    /// A plain click in a diff line's gutter (line number and marker area)
+    /// starts a comment on that line. A click in the code passes on.
+    private func handleGutterClick(_ event: NSEvent, path: String) -> Bool {
+        guard event.modifierFlags.intersection([.shift, .command, .control, .option]).isEmpty,
+              let body = diffBodies[path],
+              let layoutManager = body.textView.layoutManager,
+              let container = body.textView.textContainer else { return false }
+        let textView = body.textView
+        let point = textView.convert(event.locationInWindow, from: nil)
+        let origin = textView.textContainerOrigin
+        let gutterRight = origin.x + container.lineFragmentPadding
+            + DiffLineBackgroundLayoutManager.gutterMetrics(for: InlineDiffRenderer.font).width
+        guard point.x < gutterRight, layoutManager.numberOfGlyphs > 0 else { return false }
+        let containerPoint = NSPoint(x: max(0, point.x - origin.x), y: point.y - origin.y)
+        let glyph = layoutManager.glyphIndex(for: containerPoint, in: container)
+        let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        guard containerPoint.y >= fragment.minY, containerPoint.y < fragment.maxY,
+              let row = ChangesComments.row(atCharacter: layoutManager.characterIndexForGlyph(at: glyph), rows: body.rows) else { return false }
+        openNewComment(path: path, rows: row..<(row + 1))
+        return true
+    }
+
+    private func openNewComment(path: String, rows: Range<Int>) {
+        guard let body = diffBodies[path] else { return }
+        let lines = ChangesComments.lines(in: rows, rows: body.rows)
+        let location = ChangesComments.location(of: rows, rows: body.rows)
+        let textView = body.textView
+        showCommentEditor(text: "", canDelete: false, path: path, rows: rows, onSave: { [weak self] text in
+            guard let self else { return }
+            var comment = ChangesComments.Comment(
+                id: UUID(), path: path, text: text, lines: lines, location: location, anchor: .attached(rows)
+            )
+            // A refresh may have rebuilt the section while the popover was open.
+            if self.diffBodies[path]?.textView !== textView {
+                if let newBody = self.diffBodies[path] {
+                    self.reanchor(&comment, rows: newBody.rows)
+                } else {
+                    let listed = self.displayedSections?.contains { $0.relativePath == path } ?? false
+                    comment.anchor = listed ? .pending : .detached
+                }
+            }
+            self.comments.append(comment)
+            self.commentsChanged()
+        }, onDelete: nil)
+    }
+
+    private func openExistingComment(_ id: UUID) {
+        guard let comment = comments.first(where: { $0.id == id }),
+              case .attached(let rows) = comment.anchor else { return }
+        showCommentEditor(text: comment.text, canDelete: true, path: comment.path, rows: rows, onSave: { [weak self] text in
+            guard let self, let index = self.comments.firstIndex(where: { $0.id == id }) else { return }
+            self.comments[index].text = text
+            self.commentsChanged()
+        }, onDelete: { [weak self] in
+            self?.comments.removeAll { $0.id == id }
+            self?.commentsChanged()
+        })
+    }
+
+    private func showCommentEditor(
+        text: String,
+        canDelete: Bool,
+        path: String,
+        rows: Range<Int>,
+        onSave: @escaping (String) -> Void,
+        onDelete: (() -> Void)?
+    ) {
+        guard let body = diffBodies[path], body.rows.indices.contains(rows.lowerBound), rows.upperBound <= body.rows.count else { return }
+        commentPopover?.close()
+
+        let first = body.rows[rows.lowerBound].range
+        let characters = NSUnionRange(first, body.rows[rows.upperBound - 1].range)
+        // Anchor below the part of the lines on screen, so the popover sits
+        // next to the code it is about.
+        guard let linesRect = blockRect(characters, in: body.textView) else { return }
+        var anchorRect = linesRect.intersection(body.textView.visibleRect)
+        if anchorRect.isEmpty {
+            anchorRect = blockRect(first, in: body.textView) ?? linesRect
+        }
+
+        let editor = ChangesCommentEditor(text: text, canDelete: canDelete)
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = editor
+        editor.onCancel = { [weak popover] in popover?.close() }
+        editor.onSave = { [weak popover] text in
+            popover?.close()
+            onSave(text)
+        }
+        if let onDelete {
+            editor.onDelete = { [weak popover] in
+                popover?.close()
+                onDelete()
+            }
+        }
+        commentPopover = popover
+        popover.show(relativeTo: anchorRect, of: body.textView, preferredEdge: .maxY)
+    }
+
+    /// Moves a comment to the one place its quoted lines appear in `rows`,
+    /// or detaches it.
+    private func reanchor(_ comment: inout ChangesComments.Comment, rows: [ChangesComments.Row]) {
+        if let range = ChangesComments.reanchor(comment.lines, in: rows) {
+            comment.anchor = .attached(range)
+            comment.location = ChangesComments.location(of: range, rows: rows)
+        } else {
+            comment.anchor = .detached
+        }
+    }
+
+    private func commentsChanged() {
+        positionCommentIcons()
+        updateReviewBar()
+    }
+
+    /// One icon per commented first line, in the gutter's left margin so
+    /// the line number stays readable. Collapsed sections show none.
+    private func positionCommentIcons() {
+        var groups: [String: (path: String, row: Int, ids: [UUID])] = [:]
+        for comment in comments {
+            guard case .attached(let rows) = comment.anchor,
+                  !sectionStates.state(for: comment.path).isCollapsed,
+                  diffBodies[comment.path] != nil else { continue }
+            let key = "\(comment.path)\u{0}\(rows.lowerBound)"
+            groups[key, default: (comment.path, rows.lowerBound, [])].ids.append(comment.id)
+        }
+        for key in commentIcons.keys where groups[key] == nil {
+            commentIcons.removeValue(forKey: key)?.removeFromSuperview()
+        }
+        for (key, group) in groups {
+            guard let body = diffBodies[group.path],
+                  body.rows.indices.contains(group.row),
+                  let line = firstLineRect(of: body.rows[group.row].range, in: body.textView) else {
+                commentIcons.removeValue(forKey: key)?.removeFromSuperview()
+                continue
+            }
+            let icon = commentIcons[key] ?? makeCommentIcon()
+            if icon.superview !== body.textView {
+                body.textView.addSubview(icon)
+            }
+            icon.commentIDs = group.ids
+            icon.contentTintColor = AppTheme.accent
+            icon.toolTip = group.ids.count == 1 ? "Edit comment" : "\(group.ids.count) comments"
+            let size = Metrics.commentIconSize
+            icon.frame = NSRect(x: max(0, line.minX - size), y: line.midY - size / 2, width: size, height: size)
+            commentIcons[key] = icon
+        }
+    }
+
+    private func makeCommentIcon() -> ChangesCommentIcon {
+        let image = NSImage(systemSymbolName: "text.bubble.fill", accessibilityDescription: "Comment") ?? NSImage()
+        let icon = ChangesCommentIcon(image: image, target: self, action: #selector(commentIconClicked(_:)))
+        icon.isBordered = false
+        icon.imagePosition = .imageOnly
+        icon.imageScaling = .scaleProportionallyDown
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .regular)
+        icon.refusesFirstResponder = true
+        icon.setAccessibilityLabel("Comment")
+        return icon
+    }
+
+    /// The first laid-out line of a character range, in the text view's
+    /// coordinates.
+    private func firstLineRect(of range: NSRange, in textView: NSTextView) -> NSRect? {
+        guard let layoutManager = textView.layoutManager, range.length > 0 else { return nil }
+        let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        guard glyphs.length > 0 else { return nil }
+        layoutManager.ensureLayout(forGlyphRange: glyphs)
+        let rect = layoutManager.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+        guard !rect.isEmpty else { return nil }
+        let origin = textView.textContainerOrigin
+        return rect.offsetBy(dx: origin.x, dy: origin.y)
+    }
+
+    @objc private func commentIconClicked(_ sender: ChangesCommentIcon) {
+        if sender.commentIDs.count == 1 {
+            openExistingComment(sender.commentIDs[0])
+            return
+        }
+        let menu = NSMenu()
+        for id in sender.commentIDs {
+            guard let comment = comments.first(where: { $0.id == id }) else { continue }
+            let firstLine = comment.text.components(separatedBy: "\n").first ?? ""
+            let title = firstLine.count > 50 ? String(firstLine.prefix(50)) + "..." : firstLine
+            let item = NSMenuItem(title: title, action: #selector(commentMenuItemChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = id
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+    }
+
+    @objc private func commentMenuItemChosen(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        openExistingComment(id)
+    }
+
+    // MARK: - Review bar
+
+    private func setupReviewBar() {
+        let bar = NSView()
+        bar.wantsLayer = true
+        bar.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        bar.isHidden = true
+        bar.translatesAutoresizingMaskIntoConstraints = false
+
+        let divider = NSView()
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = AppTheme.divider.cgColor
+        divider.translatesAutoresizingMaskIntoConstraints = false
+
+        let count = NSTextField(labelWithString: "")
+        count.font = NSFont.systemFont(ofSize: 12)
+        count.textColor = AppTheme.secondaryText
+        count.lineBreakMode = .byTruncatingTail
+        count.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        count.translatesAutoresizingMaskIntoConstraints = false
+
+        let primary = NSButton(title: "", target: self, action: #selector(reviewPrimaryClicked))
+        primary.bezelStyle = .rounded
+        primary.controlSize = .small
+        primary.toolTip = "⌘↩"
+        primary.refusesFirstResponder = true
+        primary.lineBreakMode = .byTruncatingMiddle
+        primary.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        primary.translatesAutoresizingMaskIntoConstraints = false
+
+        let discard = NSButton(title: "Discard", target: self, action: #selector(reviewDiscardClicked))
+        discard.bezelStyle = .rounded
+        discard.controlSize = .small
+        discard.toolTip = "Remove all comments"
+        discard.refusesFirstResponder = true
+        discard.setContentCompressionResistancePriority(.required, for: .horizontal)
+        discard.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(bar)
+        bar.addSubview(divider)
+        bar.addSubview(count)
+        bar.addSubview(primary)
+        bar.addSubview(discard)
+
+        let height = bar.heightAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            scrollView.bottomAnchor.constraint(equalTo: bar.topAnchor),
+            bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            bar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            height,
+
+            divider.topAnchor.constraint(equalTo: bar.topAnchor),
+            divider.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            divider.heightAnchor.constraint(equalToConstant: 1),
+
+            count.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: Metrics.horizontalPadding),
+            count.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            count.trailingAnchor.constraint(lessThanOrEqualTo: primary.leadingAnchor, constant: -10),
+
+            discard.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -Metrics.horizontalPadding),
+            discard.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+
+            primary.trailingAnchor.constraint(equalTo: discard.leadingAnchor, constant: -8),
+            primary.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
+        ])
+
+        reviewBar = bar
+        reviewBarHeight = height
+        reviewCountLabel = count
+        reviewPrimaryButton = primary
+        reviewDiscardButton = discard
+    }
+
+    private func setReviewBarVisible(_ visible: Bool) {
+        reviewBar.isHidden = !visible
+        reviewBarHeight.constant = visible ? Metrics.reviewBarHeight : 0
+    }
+
+    private func currentSendMode() -> ChangesComments.SendMode {
+        ChangesComments.SendMode(agents: agentsForRepository?(repositoryPath) ?? [])
+    }
+
+    /// Shows the count and the primary button for the agents there are now,
+    /// or hides the bar once the comments are gone (unless a confirmation
+    /// is still showing).
+    private func updateReviewBar() {
+        guard !comments.isEmpty else {
+            displayedSendMode = nil
+            if confirmationTimer == nil {
+                setReviewBarVisible(false)
+            }
+            return
+        }
+        confirmationTimer?.invalidate()
+        confirmationTimer = nil
+
+        let mode = currentSendMode()
+        displayedSendMode = mode
+        reviewCountLabel.stringValue = ChangesComments.countText(comments.count)
+        switch mode {
+        case .copy: reviewPrimaryButton.title = "Copy Comments"
+        case .send(let agent): reviewPrimaryButton.title = "Send to \(agent.label)"
+        case .choose: reviewPrimaryButton.title = "Send to Agent"
+        }
+        reviewPrimaryButton.isHidden = false
+        reviewDiscardButton.isHidden = false
+        setReviewBarVisible(true)
+    }
+
+    @objc private func reviewPrimaryClicked() {
+        performPrimaryReviewAction()
+    }
+
+    /// The bar's primary button (and ⌘↩). Agents are asked again; a single
+    /// agent or the clipboard is used only if it is what the button showed,
+    /// otherwise the bar is brought up to date for the user to press again.
+    private func performPrimaryReviewAction() {
+        guard !comments.isEmpty else { return }
+        let mode = currentSendMode()
+        if mode != displayedSendMode {
+            updateReviewBar()
+        }
+        switch mode {
+        case .choose(let agents):
+            showAgentMenu(agents)
+        case .send(let agent):
+            guard mode == displayedSendMode else { return }
+            deliverComments(to: agent)
+        case .copy:
+            guard mode == displayedSendMode else { return }
+            copyComments()
+        }
+    }
+
+    private func showAgentMenu(_ agents: [ChangesComments.Agent]) {
+        let menu = NSMenu()
+        for agent in agents {
+            let item = NSMenuItem(title: agent.label, action: #selector(agentMenuItemChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = agent.id
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: reviewPrimaryButton.bounds.height + 4), in: reviewPrimaryButton)
+    }
+
+    @objc private func agentMenuItemChosen(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID,
+              let agent = (agentsForRepository?(repositoryPath) ?? []).first(where: { $0.id == id }) else {
+            updateReviewBar()
+            return
+        }
+        deliverComments(to: agent)
+    }
+
+    private func deliverComments(to agent: ChangesComments.Agent) {
+        let count = comments.count
+        guard sendToAgent?(agent.id, ChangesComments.message(for: commentsForSending())) == true else {
+            updateReviewBar()
+            return
+        }
+        finishReview(confirmation: "Sent \(ChangesComments.countText(count)) to \(agent.label)")
+    }
+
+    private func copyComments() {
+        let count = comments.count
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(ChangesComments.message(for: commentsForSending()), forType: .string)
+        finishReview(confirmation: "Copied \(ChangesComments.countText(count))")
+    }
+
+    /// Comments as they go out. One waiting on a section body that was never
+    /// built is matched against the section's diff now.
+    private func commentsForSending() -> [ChangesComments.Comment] {
+        comments.map { comment in
+            guard comment.anchor == .pending else { return comment }
+            var resolved = comment
+            guard let section = displayedSections?.first(where: { $0.relativePath == comment.path }) else {
+                resolved.anchor = .detached
+                return resolved
+            }
+            let rendered = InlineDiffRenderer.render(section.diff, fileExtension: (section.relativePath as NSString).pathExtension.lowercased())
+            reanchor(&resolved, rows: ChangesComments.rows(in: rendered))
+            return resolved
+        }
+    }
+
+    private func finishReview(confirmation: String) {
+        comments.removeAll()
+        commentPopover?.close()
+        positionCommentIcons()
+        displayedSendMode = nil
+        reviewCountLabel.stringValue = confirmation
+        reviewPrimaryButton.isHidden = true
+        reviewDiscardButton.isHidden = true
+        setReviewBarVisible(true)
+        confirmationTimer?.invalidate()
+        confirmationTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.confirmationTimer = nil
+                if self.comments.isEmpty {
+                    self.setReviewBarVisible(false)
+                }
+            }
+        }
+    }
+
+    @objc private func reviewDiscardClicked() {
+        comments.removeAll()
+        commentPopover?.close()
+        commentsChanged()
     }
 
     private func scrollToFocusedFile(_ filePath: String) {
@@ -1601,10 +2102,18 @@ private final class WindowObservingView: NSView {
 /// its own handling, which would otherwise beep on typed characters.
 private final class ChangesDiffTextView: NSTextView {
     var onKeyDown: ((NSEvent) -> Bool)?
+    /// Offered each click first (a gutter click starts a comment); true
+    /// means it was handled.
+    var onMouseDown: ((NSEvent) -> Bool)?
 
     override func keyDown(with event: NSEvent) {
         if onKeyDown?(event) == true { return }
         super.keyDown(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if onMouseDown?(event) == true { return }
+        super.mouseDown(with: event)
     }
 }
 
@@ -1614,7 +2123,7 @@ private final class ChangesDiffTextView: NSTextView {
 nonisolated enum ChangesReview {
     enum Key: Equatable {
         case nextBlock, previousBlock, nextFile, previousFile
-        case toggleViewed, toggleCollapsed, stage, open
+        case toggleViewed, toggleCollapsed, stage, open, comment
 
         /// Plain keys only: Command, Control, or Option held is never ours.
         /// `characters` is the event's `charactersIgnoringModifiers`; the
@@ -1632,6 +2141,7 @@ nonisolated enum ChangesReview {
             case ("x", false): self = .toggleCollapsed
             case ("s", false): self = .stage
             case ("o", false): self = .open
+            case ("c", false): self = .comment
             default: return nil
             }
         }

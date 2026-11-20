@@ -175,13 +175,17 @@ class PaneModel: Identifiable, Hashable {
     func createUncommittedChangesViewController(
         repositoryPath: String,
         focusedFilePath: String? = nil,
-        onOpenFile: ((String) -> Void)? = nil
+        onOpenFile: ((String) -> Void)? = nil,
+        agentsForRepository: ((String) -> [ChangesComments.Agent])? = nil,
+        sendToAgent: ((UUID, String) -> Bool)? = nil
     ) {
         let changesVC = UncommittedChangesViewController(
             repositoryPath: repositoryPath,
             focusedFilePath: focusedFilePath
         )
         changesVC.onOpenFile = onOpenFile
+        changesVC.agentsForRepository = agentsForRepository
+        changesVC.sendToAgent = sendToAgent
         self.uncommittedChangesViewController = changesVC
         self.currentDirectory = repositoryPath
 
