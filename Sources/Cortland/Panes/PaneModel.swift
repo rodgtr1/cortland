@@ -50,7 +50,6 @@ class PaneModel: Identifiable, Hashable {
 
     var terminalViewController: TerminalViewController?
     var editorViewController: EditorViewController?
-    var diffViewController: DiffViewController?
     var uncommittedChangesViewController: UncommittedChangesViewController?
     var view: NSView?
     var paneType: PaneType = .terminal
@@ -61,7 +60,6 @@ class PaneModel: Identifiable, Hashable {
     enum PaneType {
         case terminal
         case editor
-        case diff
         case uncommittedChanges
     }
 
@@ -153,25 +151,6 @@ class PaneModel: Identifiable, Hashable {
         }
     }
 
-    func createDiffViewController(for filePath: String, kind: GitDiffKind = .uncommitted) {
-        let diffVC = DiffViewController()
-        self.diffViewController = diffVC
-        self.currentDirectory = URL(fileURLWithPath: filePath).deletingLastPathComponent().path
-
-        // Ensure view is loaded by accessing it
-        _ = diffVC.view
-
-        self.view = diffVC.view
-        self.paneType = .diff
-
-        // Show the diff
-        diffVC.showDiff(for: filePath, kind: kind)
-
-        // Update title based on filename
-        let fileName = URL(fileURLWithPath: filePath).lastPathComponent
-        updateTitleForDiff(fileName: fileName)
-    }
-
     func createUncommittedChangesViewController(
         repositoryPath: String,
         source: ChangesSource = .uncommitted,
@@ -200,10 +179,6 @@ class PaneModel: Identifiable, Hashable {
 
     func updateTitleForEditor(fileName: String) {
         title = fileName
-    }
-
-    func updateTitleForDiff(fileName: String) {
-        title = "Diff: \(fileName)"
     }
 
     func updateTitle(directory: String, branch: String?) {
@@ -261,10 +236,6 @@ class PaneModel: Identifiable, Hashable {
             terminalViewController?.focusTerminal()
         case .editor:
             editorViewController?.focusEditor()
-        case .diff:
-            if let textView = diffViewController?.view.subviews.first(where: { $0 is NSScrollView })?.subviews.first(where: { $0 is NSTextView }) as? NSTextView {
-                diffViewController?.view.window?.makeFirstResponder(textView)
-            }
         case .uncommittedChanges:
             uncommittedChangesViewController?.view.window?.makeFirstResponder(uncommittedChangesViewController?.view)
         }

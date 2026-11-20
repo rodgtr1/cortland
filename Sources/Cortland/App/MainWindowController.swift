@@ -1093,10 +1093,6 @@ extension MainWindowController: SidebarContainerDelegate {
         runCommandInActiveTerminal(command)
     }
 
-    func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String, kind: GitDiffKind) {
-        openDiffViewer(for: filePath, kind: kind)
-    }
-
     func sidebarContainer(_ container: SidebarContainerView, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?) {
         openUncommittedChangesInNewTab(repositoryPath: repositoryPath, source: .uncommitted, focusedFilePath: focusedFilePath)
     }
@@ -1147,14 +1143,6 @@ extension MainWindowController: SidebarContainerDelegate {
 
         updateTabBar()
         syncSidebarToActiveTab()
-    }
-
-    private func openDiffViewer(for filePath: String, kind: GitDiffKind = .uncommitted) {
-        openDiffInNewTab(for: filePath, kind: kind)
-    }
-
-    private func openDiffInNewTab(for filePath: String, kind: GitDiffKind) {
-        openSinglePaneTab(pane: PaneFactory.diffPane(for: filePath, kind: kind))
     }
 
     private func openUncommittedChangesInNewTab(repositoryPath: String, source: ChangesSource, focusedFilePath: String?) {

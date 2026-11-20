@@ -145,7 +145,6 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
         switch pane.paneType {
         case .terminal: type = "terminal"
         case .editor: type = "editor"
-        case .diff: type = "diff"
         case .uncommittedChanges: type = "uncommitted_changes"
         }
         let pid = pane.terminalViewController?.shellProcessID ?? 0

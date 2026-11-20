@@ -113,7 +113,7 @@ final class UncommittedChangesViewController: NSViewController {
         }
         view = rootView
         view.wantsLayer = true
-        view.layer?.backgroundColor = DiffViewController.DiffColors.background.cgColor
+        view.layer?.backgroundColor = DiffColors.background.cgColor
         setupScrollView()
         setupReviewBar()
     }
@@ -136,7 +136,7 @@ final class UncommittedChangesViewController: NSViewController {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = true
-        scrollView.backgroundColor = DiffViewController.DiffColors.background
+        scrollView.backgroundColor = DiffColors.background
         view.addSubview(scrollView)
 
         stackView = NSStackView()
@@ -154,7 +154,7 @@ final class UncommittedChangesViewController: NSViewController {
         let documentView = NSView()
         documentView.translatesAutoresizingMaskIntoConstraints = false
         documentView.wantsLayer = true
-        documentView.layer?.backgroundColor = DiffViewController.DiffColors.background.cgColor
+        documentView.layer?.backgroundColor = DiffColors.background.cgColor
         documentView.addSubview(stackView)
         scrollView.documentView = documentView
 
@@ -296,7 +296,7 @@ final class UncommittedChangesViewController: NSViewController {
         clearStack()
         let label = NSTextField(labelWithString: message)
         label.font = NSFont.systemFont(ofSize: 13)
-        label.textColor = DiffViewController.DiffColors.context
+        label.textColor = DiffColors.context
         label.translatesAutoresizingMaskIntoConstraints = false
         stackView.addArrangedSubview(label)
     }
@@ -621,7 +621,7 @@ final class UncommittedChangesViewController: NSViewController {
         let directory = (section.relativePath as NSString).deletingLastPathComponent
         let path = NSTextField(labelWithString: directory.isEmpty ? "" : directory + "/")
         path.font = NSFont.systemFont(ofSize: 12)
-        path.textColor = DiffViewController.DiffColors.context
+        path.textColor = DiffColors.context
         path.lineBreakMode = .byTruncatingMiddle
         path.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         path.setContentHuggingPriority(.required, for: .horizontal)
@@ -757,7 +757,7 @@ final class UncommittedChangesViewController: NSViewController {
 
         let caption = NSTextField(labelWithString: imageCaption(path: path, image: image, ext: ext))
         caption.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        caption.textColor = DiffViewController.DiffColors.context
+        caption.textColor = DiffColors.context
         caption.translatesAutoresizingMaskIntoConstraints = false
 
         container.addSubview(imageView)
@@ -823,8 +823,8 @@ final class UncommittedChangesViewController: NSViewController {
         textView.isSelectable = true
         textView.isRichText = true
         textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-        textView.backgroundColor = DiffViewController.DiffColors.background
-        textView.textColor = DiffViewController.DiffColors.text
+        textView.backgroundColor = DiffColors.background
+        textView.textColor = DiffColors.text
         textView.textContainerInset = NSSize(width: 12, height: 7)
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
@@ -1879,6 +1879,14 @@ private final class ConflictResolveButton: NSButton {
     var filePath: String = ""
     var conflictIndex: Int = 0
     var resolution: MergeConflictResolution?
+}
+
+/// Chrome colors for the changes pane. InlineDiffRenderer colors the diff
+/// content itself, so this holds only the surrounding view colors.
+enum DiffColors {
+    static var background: NSColor { AppTheme.windowBackground }
+    static var text: NSColor { AppTheme.primaryText }
+    static var context: NSColor { AppTheme.mutedText }
 }
 
 /// Which changes a changes pane shows, fixed when the pane is created.

@@ -378,10 +378,6 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(byPath["feature.txt"], "A")
         XCTAssertEqual(byPath["README"], "M")
 
-        // A single-file three-dot diff renders that file's committed changes.
-        let diff = try service.diffAgainstDefaultBranch(relativePath: "feature.txt", repositoryRoot: repo.path, defaultBranch: "main")
-        XCTAssertTrue(diff.contains("+hello"))
-
         // On the default branch itself there is nothing to compare.
         try git(["checkout", "-q", "main"])
         XCTAssertTrue(try service.changedFilesAgainstDefaultBranch(repositoryRoot: repo.path, defaultBranch: "main").isEmpty)

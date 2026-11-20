@@ -314,7 +314,7 @@ final class TabController: NSObject {
                         cwd: pane.resolvedWorkingDirectory(),
                         url: nil
                     )
-                case .editor, .diff, .uncommittedChanges:
+                case .editor, .uncommittedChanges:
                     // Transient views; don't recreate them on relaunch.
                     return nil
                 }

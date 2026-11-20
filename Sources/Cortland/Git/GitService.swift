@@ -173,21 +173,6 @@ nonisolated final class GitService: Sendable {
         return Self.parseNameStatusOutput(result.stdout)
     }
 
-    /// The committed diff of a single file against the merge-base of HEAD and
-    /// `defaultBranch` (`git diff <default>...HEAD -- <file>`), for the vs-main
-    /// review rows in the git panel.
-    func diffAgainstDefaultBranch(
-        relativePath: String,
-        repositoryRoot: String,
-        defaultBranch: String
-    ) throws -> String {
-        let output = try gitOutput(
-            ["diff", "\(defaultBranch)...HEAD", "--", relativePath],
-            repositoryRoot: repositoryRoot
-        )
-        return output.isEmpty ? "No changes" : output
-    }
-
     /// Parses `git diff --name-status` output. Each line is `<status>\t<path>`,
     /// or `<status>\t<old>\t<new>` for renames/copies — where the last field is
     /// the destination path. The status letter is taken verbatim (the numeric
@@ -227,45 +212,6 @@ nonisolated final class GitService: Sendable {
     /// straight in.
     func statusSummary(repositoryRoot: String) throws -> WorktreeStatusSummary {
         WorktreeStatusSummary(entries: try status(repositoryRoot: repositoryRoot))
-    }
-
-    func status(forRelativePath relativePath: String, repositoryRoot: String) throws -> GitStatusEntry? {
-        let result = try runGit(
-            ["status", "--porcelain", "--untracked-files=all", "--", relativePath],
-            repositoryRoot: repositoryRoot,
-            allowOptionalLocks: false
-        )
-
-        guard result.succeeded else { return nil }
-        return Self.parseStatusOutput(result.stdout).first
-    }
-
-    func diff(relativePath: String, repositoryRoot: String) throws -> String {
-        guard let entry = try status(forRelativePath: relativePath, repositoryRoot: repositoryRoot) else {
-            return "No changes"
-        }
-
-        if entry.isUntracked {
-            return try untrackedFileDiff(relativePath: relativePath, repositoryRoot: repositoryRoot)
-        }
-
-        if entry.isConflicted {
-            return conflictedFileDiff(relativePath: relativePath, repositoryRoot: repositoryRoot)
-        }
-
-        var output = ""
-        if entry.hasStagedChanges {
-            output += try gitOutput(["diff", "--cached", "--", relativePath], repositoryRoot: repositoryRoot)
-        }
-
-        if entry.hasUnstagedChanges {
-            if !output.isEmpty {
-                output += "\n"
-            }
-            output += try gitOutput(["diff", "--", relativePath], repositoryRoot: repositoryRoot)
-        }
-
-        return output.isEmpty ? "No changes" : output
     }
 
     /// Returns combined (staged + unstaged) diffs keyed by relative path,
@@ -489,10 +435,6 @@ nonisolated final class GitService: Sendable {
             }
         }
         return String(decoding: bytes, as: UTF8.self)
-    }
-
-    private func gitOutput(_ arguments: [String], repositoryRoot: String) throws -> String {
-        try runGit(arguments, repositoryRoot: repositoryRoot).stdout
     }
 
     private func runGit(

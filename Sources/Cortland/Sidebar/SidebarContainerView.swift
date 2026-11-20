@@ -2,7 +2,6 @@ import Cocoa
 
 protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainer(_ container: SidebarContainerView, didOpenFile url: URL)
-    func sidebarContainer(_ container: SidebarContainerView, didRequestDiffFor filePath: String, kind: GitDiffKind)
     func sidebarContainer(_ container: SidebarContainerView, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
     func sidebarContainer(_ container: SidebarContainerView, didRequestBranchChangesFor repositoryPath: String, defaultBranch: String, focusedFilePath: String?)
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String?)
@@ -497,10 +496,6 @@ extension SidebarContainerView: FileTreeDelegate {
 }
 
 extension SidebarContainerView: GitPanelDelegate {
-    func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String, kind: GitDiffKind) {
-        delegate?.sidebarContainer(self, didRequestDiffFor: filePath, kind: kind)
-    }
-
     func gitPanel(_ panel: GitPanelViewController, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?) {
         delegate?.sidebarContainer(
             self,

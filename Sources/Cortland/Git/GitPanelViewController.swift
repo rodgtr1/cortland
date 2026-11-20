@@ -1,12 +1,5 @@
 import Cocoa
 
-/// Which diff a `didRequestDiffFor` targets: the file's working-tree changes,
-/// or its committed changes vs the repo's default branch (three-dot merge-base).
-enum GitDiffKind: Equatable, Sendable {
-    case uncommitted
-    case againstDefaultBranch
-}
-
 /// The commit message box. ⌘↩ commits, but only while this view is the
 /// window's first responder — key equivalents are offered to every view in the
 /// window regardless of focus, so the check is what keeps a ⌘↩ typed into a
@@ -48,7 +41,6 @@ final class CommitAreaView: NSView {
 }
 
 protocol GitPanelDelegate: AnyObject {
-    func gitPanel(_ panel: GitPanelViewController, didRequestDiffFor filePath: String, kind: GitDiffKind)
     func gitPanel(_ panel: GitPanelViewController, didRequestUncommittedChangesFor repositoryPath: String, focusedFilePath: String?)
     func gitPanel(_ panel: GitPanelViewController, didRequestBranchChangesFor repositoryPath: String, defaultBranch: String, focusedFilePath: String?)
 }
