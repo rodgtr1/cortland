@@ -18,6 +18,17 @@ final class UncommittedChangesViewController: NSViewController {
     private var shownSource: ChangesSource {
         ChangesScope.shownSource(createdWith: source, scope: scope)
     }
+    /// The scope bar's Rewind and Undo Rewind buttons; nil when the pane has
+    /// no scope bar.
+    private var rewindButton: NSButton?
+    private var undoRewindButton: NSButton?
+    /// What the last load found to rewind to: the scope's snapshot and the
+    /// files a rewind would restore and delete.
+    private var rewindOffer: (snapshot: TurnSnapshot, counts: ChangesRewind.Counts)?
+    /// Whether this checkout has an undo snapshot, as of the last load.
+    private var hasRewindUndo = false
+    /// A rewind or undo is running, so neither button can start another.
+    private var isRewinding = false
     private var focusedFilePath: String?
     private let gitService: GitService
     private var scrollView: NSScrollView!
@@ -165,9 +176,24 @@ final class UncommittedChangesViewController: NSViewController {
         control.refusesFirstResponder = true
         control.translatesAutoresizingMaskIntoConstraints = false
 
+        let rewind = makeScopeBarButton(title: "Rewind\u{2026}", action: #selector(rewindClicked))
+        rewind.toolTip = "Put the working tree back to how it was at this scope's start"
+        let undo = makeScopeBarButton(title: "Undo Rewind", action: #selector(undoRewindClicked))
+        undo.toolTip = "Restore the working tree as it was before the last rewind"
+        // Hidden buttons drop out of the stack, so whichever shows sits at the
+        // trailing end.
+        let buttons = NSStackView(views: [undo, rewind])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+        rewindButton = rewind
+        undoRewindButton = undo
+        updateRewindButtons()
+
         view.addSubview(bar)
         bar.addSubview(divider)
         bar.addSubview(control)
+        bar.addSubview(buttons)
 
         NSLayoutConstraint.activate([
             bar.topAnchor.constraint(equalTo: view.topAnchor),
@@ -182,9 +208,89 @@ final class UncommittedChangesViewController: NSViewController {
 
             control.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: Metrics.horizontalPadding),
             control.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            control.trailingAnchor.constraint(lessThanOrEqualTo: bar.trailingAnchor, constant: -Metrics.horizontalPadding)
+            control.trailingAnchor.constraint(lessThanOrEqualTo: buttons.leadingAnchor, constant: -8),
+
+            buttons.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -Metrics.horizontalPadding),
+            buttons.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
         ])
         return bar.bottomAnchor
+    }
+
+    private func makeScopeBarButton(title: String, action: Selector) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.font = NSFont.systemFont(ofSize: 11)
+        button.refusesFirstResponder = true
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }
+
+    private func updateRewindButtons() {
+        rewindButton?.isHidden = !ChangesRewind.showsRewind(
+            scope: scope,
+            hasSnapshot: rewindOffer != nil,
+            changedFileCount: rewindOffer.map { $0.counts.restored + $0.counts.deleted } ?? 0
+        )
+        undoRewindButton?.isHidden = !hasRewindUndo
+        rewindButton?.isEnabled = !isRewinding
+        undoRewindButton?.isEnabled = !isRewinding
+    }
+
+    @objc private func rewindClicked() {
+        guard let window = view.window, let offer = rewindOffer, !isRewinding else { return }
+        let alert = NSAlert()
+        alert.messageText = ChangesRewind.confirmationTitle(scope: scope)
+        alert.informativeText = ChangesRewind.confirmationMessage(counts: offer.counts, scope: scope)
+        alert.alertStyle = .warning
+        // The first button is the default, so Return cancels.
+        alert.addButton(withTitle: "Cancel")
+        let rewind = alert.addButton(withTitle: "Rewind")
+        rewind.hasDestructiveAction = true
+
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertSecondButtonReturn else { return }
+            self.runRewind(failureTitle: "Rewind Failed") { service, root in
+                try service.rewind(to: offer.snapshot.commit, repositoryRoot: root)
+            }
+        }
+    }
+
+    @objc private func undoRewindClicked() {
+        guard !isRewinding else { return }
+        runRewind(failureTitle: "Undo Rewind Failed") { service, root in
+            try service.undoRewind(repositoryRoot: root)
+        }
+    }
+
+    /// Runs a rewind or undo on the snapshot queue, so it never interleaves
+    /// with a turn snapshot, then refreshes the pane and reports a failure.
+    private func runRewind(failureTitle: String, _ operation: @escaping @Sendable (TurnSnapshotService, String) throws -> Void) {
+        isRewinding = true
+        updateRewindButtons()
+        TurnSnapshotService.queue.async { [repositoryPath] in
+            let failure: String?
+            do {
+                try operation(TurnSnapshotService.shared, repositoryPath)
+                failure = nil
+            } catch {
+                failure = error.localizedDescription
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.isRewinding = false
+                self.updateRewindButtons()
+                self.loadChanges()
+                guard let failure, let window = self.view.window else { return }
+                let alert = NSAlert()
+                alert.messageText = failureTitle
+                alert.informativeText = failure
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.beginSheetModal(for: window)
+            }
+        }
     }
 
     @objc private func scopeChanged(_ sender: NSSegmentedControl) {
@@ -193,6 +299,9 @@ final class UncommittedChangesViewController: NSViewController {
         let picked = scopes[sender.selectedSegment]
         guard picked != scope else { return }
         scope = picked
+        // The old scope's snapshot is not this one's; the load sets it again.
+        rewindOffer = nil
+        updateRewindButtons()
         loadChanges()
     }
 
@@ -286,14 +395,17 @@ final class UncommittedChangesViewController: NSViewController {
         }
         let request = requests.begin()
 
-        DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService, shownSource, scope] in
+        DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService, shownSource, scope, source] in
             // A nil list means the scope has no snapshot to compare against.
             let result: Result<[ChangeSection]?, Error>
+            var rewindTarget: TurnSnapshot?
             do {
                 if case .branch = shownSource {
                     result = .success(try Self.branchSections(repositoryPath: repositoryPath, gitService: gitService))
                 } else if scope != .uncommitted {
-                    result = .success(try Self.snapshotSections(repositoryPath: repositoryPath, scope: scope))
+                    let loaded = try Self.snapshotSections(repositoryPath: repositoryPath, scope: scope)
+                    rewindTarget = loaded?.snapshot
+                    result = .success(loaded?.sections)
                 } else {
                     // Keep a stable order by relative path; the focused file is
                     // scrolled into view rather than reordered to the top.
@@ -319,9 +431,12 @@ final class UncommittedChangesViewController: NSViewController {
             } catch {
                 result = .failure(error)
             }
+            // Only a pane with a scope bar has an Undo Rewind button to show.
+            let hasRewindUndo = source.offersScopes
+                && ((try? TurnSnapshotService.shared.rewindUndoCommit(repositoryRoot: repositoryPath)) ?? nil) != nil
 
             DispatchQueue.main.async { [weak self] in
-                self?.finishLoad(request: request, result: result)
+                self?.finishLoad(request: request, result: result, rewindTarget: rewindTarget, hasRewindUndo: hasRewindUndo)
             }
         }
     }
@@ -344,12 +459,15 @@ final class UncommittedChangesViewController: NSViewController {
         }
     }
 
-    /// The files changed since the scope's snapshot, in path order. nil when
-    /// the repository has no snapshot.
-    private nonisolated static func snapshotSections(repositoryPath: String, scope: ChangesScope) throws -> [ChangeSection]? {
+    /// The scope's snapshot and the files changed since it, in path order.
+    /// nil when the repository has no snapshot.
+    private nonisolated static func snapshotSections(
+        repositoryPath: String,
+        scope: ChangesScope
+    ) throws -> (snapshot: TurnSnapshot, sections: [ChangeSection])? {
         let service = TurnSnapshotService.shared
         guard let snapshot = scope.snapshot(in: try service.list(repositoryRoot: repositoryPath)) else { return nil }
-        return try service.changesSinceSnapshot(commit: snapshot.commit, repositoryRoot: repositoryPath).map { change in
+        let sections = try service.changesSinceSnapshot(commit: snapshot.commit, repositoryRoot: repositoryPath).map { change in
             ChangeSection(
                 relativePath: change.path,
                 diff: change.diff,
@@ -358,11 +476,25 @@ final class UncommittedChangesViewController: NSViewController {
                 repositoryPath: repositoryPath
             )
         }
+        return (snapshot, sections)
     }
 
-    private func finishLoad(request: Int, result: Result<[ChangeSection]?, Error>) {
+    private func finishLoad(
+        request: Int,
+        result: Result<[ChangeSection]?, Error>,
+        rewindTarget: TurnSnapshot?,
+        hasRewindUndo: Bool
+    ) {
         // Watcher bursts and sidebar clicks overlap; only the newest wins.
         guard requests.isCurrent(request) else { return }
+
+        if case .success(let sections) = result {
+            rewindOffer = rewindTarget.map { snapshot in
+                (snapshot, ChangesRewind.counts(for: (sections ?? []).map(\.status)))
+            }
+            self.hasRewindUndo = hasRewindUndo
+            updateRewindButtons()
+        }
 
         switch result {
         case .failure(let error):
@@ -2084,6 +2216,52 @@ nonisolated enum ChangesScope: CaseIterable, Equatable, Sendable {
     /// offers no scope control always shows its own source.
     static func shownSource(createdWith source: ChangesSource, scope: ChangesScope) -> ChangesSource {
         source.offersScopes ? scope.source : source
+    }
+}
+
+/// The scope bar's Rewind and Undo Rewind decisions and the confirmation text.
+nonisolated enum ChangesRewind {
+    /// What a rewind would do: files put back to the snapshot (modified or
+    /// deleted since) and files deleted (created since).
+    struct Counts: Equatable, Sendable {
+        let restored: Int
+        let deleted: Int
+    }
+
+    static func counts(for statuses: [GitFileStatus]) -> Counts {
+        let deleted = statuses.filter { $0 == .added }.count
+        return Counts(restored: statuses.count - deleted, deleted: deleted)
+    }
+
+    /// Rewind shows only in a snapshot scope that has a snapshot with at least
+    /// one changed file.
+    static func showsRewind(scope: ChangesScope, hasSnapshot: Bool, changedFileCount: Int) -> Bool {
+        scope != .uncommitted && hasSnapshot && changedFileCount > 0
+    }
+
+    static func confirmationTitle(scope: ChangesScope) -> String {
+        switch scope {
+        case .thisSession: return "Rewind This Session?"
+        case .uncommitted, .thisTurn: return "Rewind This Turn?"
+        }
+    }
+
+    static func confirmationMessage(counts: Counts, scope: ChangesScope) -> String {
+        let start = scope == .thisSession ? "this session started" : "this turn started"
+        return """
+        \(fileCount(counts.restored)) will be restored and \(fileCount(counts.deleted)) will be deleted, \
+        putting the working tree back to how it was when \(start).
+
+        Commits made since are not undone: the reverted content shows as uncommitted changes.
+
+        The agent is not told. Its conversation still assumes its edits exist.
+
+        You can undo this once with Undo Rewind.
+        """
+    }
+
+    private static func fileCount(_ count: Int) -> String {
+        count == 1 ? "1 file" : "\(count) files"
     }
 }
 

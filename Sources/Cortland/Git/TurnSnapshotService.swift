@@ -27,8 +27,20 @@ nonisolated struct TurnSnapshotChange: Equatable, Sendable {
     let diff: String
 }
 
-nonisolated enum TurnSnapshotError: Error {
+nonisolated enum TurnSnapshotError: LocalizedError {
     case gitFailed(command: String, stderr: String)
+    /// `undoRewind` found no undo snapshot.
+    case noRewindUndo
+
+    var errorDescription: String? {
+        switch self {
+        case .gitFailed(let command, let stderr):
+            let detail = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return detail.isEmpty ? "git \(command) failed." : "git \(command) failed: \(detail)"
+        case .noRewindUndo:
+            return "There is no rewind to undo."
+        }
+    }
 }
 
 /// Saves and lists per-turn working tree snapshots without touching the
@@ -44,13 +56,20 @@ nonisolated final class TurnSnapshotService: Sendable {
 
     static let refPrefix = "refs/worktree/cortland/turns/"
     static let retainedCount = 50
+    /// The working tree as it was before the last rewind. Outside `refPrefix`,
+    /// so `list` and retention never see it; per worktree like the snapshots.
+    static let rewindUndoRef = "refs/worktree/cortland/rewind-undo"
 
     private let runner: ProcessRunning
     private let gitService: GitService
+    /// Paths per `checkout-index` call in a rewind, so a large rewind stays
+    /// under the argument length limit. Tests pass a small one.
+    private let checkoutBatchSize: Int
 
-    init(runner: ProcessRunning = ProcessRunner.shared) {
+    init(runner: ProcessRunning = ProcessRunner.shared, checkoutBatchSize: Int = 300) {
         self.runner = runner
         self.gitService = GitService(runner: runner)
+        self.checkoutBatchSize = checkoutBatchSize
     }
 
     // MARK: - Turn detection
@@ -95,27 +114,8 @@ nonisolated final class TurnSnapshotService: Sendable {
     /// untracked files that are not ignored) to a new snapshot ref, then prunes
     /// the repository's snapshots to the newest `retainedCount`.
     func takeSnapshot(paneID: UUID, repositoryRoot: String, isSessionStart: Bool = false) throws -> TurnSnapshot {
-        let indexPath = try realIndexPath(repositoryRoot: repositoryRoot)
-        let tempIndex = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cortland-turn-index-\(UUID().uuidString)")
-        defer {
-            try? FileManager.default.removeItem(at: tempIndex)
-            try? FileManager.default.removeItem(atPath: tempIndex.path + ".lock")
-        }
-        // Seeding from the real index keeps `add -A` fast: unchanged files keep
-        // their cached stat data and are not rehashed. A repo that never staged
-        // anything has no index yet, and git builds the temp one from scratch.
-        if FileManager.default.fileExists(atPath: indexPath) {
-            try FileManager.default.copyItem(atPath: indexPath, toPath: tempIndex.path)
-        }
-        let indexEnvironment = ["GIT_INDEX_FILE": tempIndex.path]
-
-        try git(["add", "-A"], repositoryRoot: repositoryRoot, environment: indexEnvironment)
-        let tree = try git(["write-tree"], repositoryRoot: repositoryRoot, environment: indexEnvironment)
-
-        let headResult = try runGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], repositoryRoot: repositoryRoot)
-        let headSHA = headResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        let head = headResult.succeeded && !headSHA.isEmpty ? headSHA : nil
+        let tree = try writeWorkingTree(repositoryRoot: repositoryRoot)
+        let head = try currentHead(repositoryRoot: repositoryRoot)
 
         let sequence = (try list(repositoryRoot: repositoryRoot, paneID: paneID).map(\.sequence).max() ?? 0) + 1
         let createdAt = Date()
@@ -136,6 +136,9 @@ nonisolated final class TurnSnapshotService: Sendable {
         try git(["update-ref", refName, commit, ""], repositoryRoot: repositoryRoot)
 
         try prune(repositoryRoot: repositoryRoot)
+        // The tree has moved on, so a rewind from before this turn no longer
+        // has a state worth undoing to. Deleting a missing ref succeeds.
+        try git(["update-ref", "-d", Self.rewindUndoRef], repositoryRoot: repositoryRoot)
 
         return TurnSnapshot(
             paneID: paneID,
@@ -217,9 +220,168 @@ nonisolated final class TurnSnapshotService: Sendable {
         return changes.sorted { $0.path < $1.path }
     }
 
+    // MARK: - Rewind
+
+    /// Puts the working tree back to `commit`'s tree for exactly the files
+    /// `changesSinceSnapshot` reports: modified and deleted files get the
+    /// snapshot's content and mode back, files created since are deleted (and
+    /// any directory that leaves empty). Ignored and unchanged files are not
+    /// touched, and HEAD, branches, commits, and the real index stay as they
+    /// are, so content reverted past a commit shows as uncommitted changes.
+    ///
+    /// First saves the current working tree at `rewindUndoRef`, replacing any
+    /// earlier one; if that fails nothing changes. A failure after that throws
+    /// and leaves the undo ref in place. Returns the changes it reverted.
+    @discardableResult
+    func rewind(to commit: String, repositoryRoot: String) throws -> [TurnSnapshotChange] {
+        let changes = try changesSinceSnapshot(commit: commit, repositoryRoot: repositoryRoot)
+
+        let tree = try writeWorkingTree(repositoryRoot: repositoryRoot)
+        var commitArguments = ["commit-tree", tree, "-m", "Cortland rewind undo"]
+        if let head = try currentHead(repositoryRoot: repositoryRoot) { commitArguments += ["-p", head] }
+        let undo = try git(commitArguments, repositoryRoot: repositoryRoot, environment: Self.identityEnvironment)
+        try git(["update-ref", Self.rewindUndoRef, undo], repositoryRoot: repositoryRoot)
+
+        try restoreWorkingTree(changes, from: commit, repositoryRoot: repositoryRoot)
+        return changes
+    }
+
+    /// Restores the working tree saved by the last `rewind`, by the same
+    /// mechanism, then deletes the undo ref. Throws `noRewindUndo` when there
+    /// is none; on any other failure the ref stays.
+    func undoRewind(repositoryRoot: String) throws {
+        guard let undo = try rewindUndoCommit(repositoryRoot: repositoryRoot) else {
+            throw TurnSnapshotError.noRewindUndo
+        }
+        let changes = try changesSinceSnapshot(commit: undo, repositoryRoot: repositoryRoot)
+        try restoreWorkingTree(changes, from: undo, repositoryRoot: repositoryRoot)
+        try git(["update-ref", "-d", Self.rewindUndoRef, undo], repositoryRoot: repositoryRoot)
+    }
+
+    /// The commit at `rewindUndoRef` in this checkout, or nil when there is none.
+    func rewindUndoCommit(repositoryRoot: String) throws -> String? {
+        let result = try runGit(
+            ["rev-parse", "--verify", "--quiet", Self.rewindUndoRef + "^{commit}"],
+            repositoryRoot: repositoryRoot
+        )
+        let sha = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.succeeded && !sha.isEmpty ? sha : nil
+    }
+
+    /// Makes each changed path match `commit`'s tree. Restored files come out
+    /// of a throwaway index filled from `commit`, which `checkout-index` writes
+    /// with the snapshot's mode, a batch of paths per call. Created files are
+    /// deleted after that, so a git failure leaves them in place; only a
+    /// created path in a restored file's way (a directory that replaced a
+    /// snapshot file, or a file where a snapshot directory was) goes first.
+    private func restoreWorkingTree(_ changes: [TurnSnapshotChange], from commit: String, repositoryRoot: String) throws {
+        let root = URL(fileURLWithPath: repositoryRoot).standardizedFileURL
+        let restored = changes.filter { $0.status != .added }.map(\.path)
+        // `ls-files --others` names a nested repository as `dir/`. That is a
+        // whole repository, not a file this rewind created, so it stays.
+        let created = changes.filter { $0.status == .added && !$0.path.hasSuffix("/") }.map(\.path)
+        let inTheWay = Self.createdPathsInTheWay(created: created, restored: restored)
+
+        for path in created where inTheWay.contains(path) {
+            try deleteCreatedFile(path, root: root)
+        }
+
+        if !restored.isEmpty {
+            let tempIndex = FileManager.default.temporaryDirectory
+                .appendingPathComponent("cortland-rewind-index-\(UUID().uuidString)")
+            defer {
+                try? FileManager.default.removeItem(at: tempIndex)
+                try? FileManager.default.removeItem(atPath: tempIndex.path + ".lock")
+            }
+            let indexEnvironment = ["GIT_INDEX_FILE": tempIndex.path]
+            try git(["read-tree", commit], repositoryRoot: repositoryRoot, environment: indexEnvironment)
+            for start in stride(from: 0, to: restored.count, by: max(checkoutBatchSize, 1)) {
+                let batch = Array(restored[start..<min(start + max(checkoutBatchSize, 1), restored.count)])
+                try git(["checkout-index", "-f", "--"] + batch, repositoryRoot: repositoryRoot, environment: indexEnvironment)
+            }
+        }
+
+        for path in created where !inTheWay.contains(path) {
+            try deleteCreatedFile(path, root: root)
+        }
+    }
+
+    /// Created paths that block writing a restored one back: inside a restored
+    /// path (a directory now stands where the snapshot had a file), or a
+    /// parent of one (a file now stands where the snapshot had a directory).
+    static func createdPathsInTheWay(created: [String], restored: [String]) -> Set<String> {
+        let restoredSet = Set(restored)
+        var restoredDirectories = Set<String>()
+        for path in restored {
+            var parts = path.split(separator: "/").dropLast()
+            while !parts.isEmpty {
+                restoredDirectories.insert(parts.joined(separator: "/"))
+                parts = parts.dropLast()
+            }
+        }
+        return Set(created.filter { path in
+            if restoredDirectories.contains(path) { return true }
+            var parts = path.split(separator: "/").dropLast()
+            while !parts.isEmpty {
+                if restoredSet.contains(parts.joined(separator: "/")) { return true }
+                parts = parts.dropLast()
+            }
+            return false
+        })
+    }
+
+    /// Deletes one created file, then each directory up to the root that it
+    /// leaves empty.
+    private func deleteCreatedFile(_ path: String, root: URL) throws {
+        let fileManager = FileManager.default
+        let url = root.appendingPathComponent(path)
+        // attributesOfItem does not follow symlinks, so a dangling link counts.
+        if (try? fileManager.attributesOfItem(atPath: url.path)) != nil {
+            try fileManager.removeItem(at: url)
+        }
+        var directory = url.deletingLastPathComponent().standardizedFileURL
+        while directory.path.count > root.path.count,
+              directory.path.hasPrefix(root.path + "/"),
+              let contents = try? fileManager.contentsOfDirectory(atPath: directory.path),
+              contents.isEmpty {
+            try fileManager.removeItem(at: directory)
+            directory = directory.deletingLastPathComponent().standardizedFileURL
+        }
+    }
+
+    /// Writes the working tree (tracked changes, staged and unstaged, plus
+    /// untracked files that are not ignored) to a tree object through a
+    /// temporary index, and returns the tree's id.
+    private func writeWorkingTree(repositoryRoot: String) throws -> String {
+        let indexPath = try realIndexPath(repositoryRoot: repositoryRoot)
+        let tempIndex = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cortland-turn-index-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: tempIndex)
+            try? FileManager.default.removeItem(atPath: tempIndex.path + ".lock")
+        }
+        // Seeding from the real index keeps `add -A` fast: unchanged files keep
+        // their cached stat data and are not rehashed. A repo that never staged
+        // anything has no index yet, and git builds the temp one from scratch.
+        if FileManager.default.fileExists(atPath: indexPath) {
+            try FileManager.default.copyItem(atPath: indexPath, toPath: tempIndex.path)
+        }
+        let indexEnvironment = ["GIT_INDEX_FILE": tempIndex.path]
+
+        try git(["add", "-A"], repositoryRoot: repositoryRoot, environment: indexEnvironment)
+        return try git(["write-tree"], repositoryRoot: repositoryRoot, environment: indexEnvironment)
+    }
+
+    /// HEAD's commit, or nil for a repository with no commits yet.
+    private func currentHead(repositoryRoot: String) throws -> String? {
+        let headResult = try runGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], repositoryRoot: repositoryRoot)
+        let headSHA = headResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return headResult.succeeded && !headSHA.isEmpty ? headSHA : nil
+    }
+
     /// Deletes the oldest snapshot refs beyond the newest `retainedCount`,
-    /// across every pane in the repository.
-    private func prune(repositoryRoot: String) throws {
+    /// across every pane in the repository. Internal for tests.
+    func prune(repositoryRoot: String) throws {
         let snapshots = try list(repositoryRoot: repositoryRoot)
         for snapshot in Self.snapshotsToPrune(snapshots, keeping: Self.retainedCount) {
             try git(["update-ref", "-d", snapshot.refName, snapshot.commit], repositoryRoot: repositoryRoot)
