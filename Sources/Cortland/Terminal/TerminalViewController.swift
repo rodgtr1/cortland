@@ -581,6 +581,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// quiet-period done detection, blocked-state polling), extracted so its
     /// interacting state is testable. Wired to this pane in `viewDidLoad`.
     private let agentStateDetector = AgentStateDetector()
+    /// The last state `agentStateDetector` delivered, so a change can be judged
+    /// as a turn start (see `TurnSnapshotService.startsTurn`).
+    private var lastAgentState: AgentState = .idle
     /// Buffered OSC 133/666 sequence extraction from the output stream.
     private var shellIntegrationParser = ShellIntegrationParser()
     private var pendingDetectionOutput = ""
@@ -660,6 +663,15 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         // and deduped, so the delegate is called directly here.
         agentStateDetector.onStateChange = { [weak self] state in
             guard let self else { return }
+            let previous = self.lastAgentState
+            self.lastAgentState = state
+            if TurnSnapshotService.startsTurn(
+                from: previous,
+                to: state,
+                hookAuthoritative: self.agentStateDetector.hasExplicitStatus
+            ) {
+                self.snapshotTurn()
+            }
             self.delegate?.terminalDidDetectAgentState(self, state: state)
         }
         agentStateDetector.readVisibleScreen = { [weak self] in
@@ -682,6 +694,17 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             name: FontZoom.didChangeNotification,
             object: nil
         )
+    }
+
+    /// Saves this pane's working tree as the new turn's starting point, off
+    /// the main thread. Failures are logged by the service and never reach
+    /// agent state handling.
+    private func snapshotTurn() {
+        let paneID = self.paneID
+        let cwd = currentCWD
+        TurnSnapshotService.queue.async {
+            _ = TurnSnapshotService.shared.snapshotTurn(paneID: paneID, workingDirectory: cwd)
+        }
     }
 
     @objc private func fontZoomChanged() {
