@@ -4,6 +4,15 @@ import CortlandTelemetryCore
 protocol AgentDashboardDelegate: AnyObject {
     func agentDashboardTabs(_ dashboard: AgentDashboardViewController) -> [TabModel]
     func agentDashboard(_ dashboard: AgentDashboardViewController, didSelectTabAt index: Int)
+    /// A changed file (or "and N more") was clicked: show `paneID`'s current
+    /// turn in `repositoryPath`'s changes pane, scrolled to `focusedFilePath`
+    /// when there is one.
+    func agentDashboard(
+        _ dashboard: AgentDashboardViewController,
+        didRequestTurnChangesIn repositoryPath: String,
+        followingPane paneID: UUID,
+        focusedFilePath: String?
+    )
 }
 
 /// Sidebar panel showing every tab's agent state with elapsed time.
@@ -30,7 +39,8 @@ final class AgentDashboardViewController: NSViewController {
     private var approvalsHeader: NSTextField!
     private var approvalCards: [UUID: ApprovalCardView] = [:]
 
-    private struct Row: Equatable {
+    /// Internal (not private) for unit tests.
+    struct Row: Equatable {
         let tabIndex: Int
         let title: String
         let state: AgentState
@@ -46,15 +56,27 @@ final class AgentDashboardViewController: NSViewController {
         /// or more billed panes render one telemetry line each, so a split
         /// running fable beside opus shows both spends instead of one.
         let paneTelemetries: [PaneTelemetry]
+        /// The files the tab's agents changed this turn, from `turnFiles`.
+        let files: AgentRowFiles
     }
 
     private var rows: [Row] = []
+
+    /// Each agent pane's files changed this turn. Recomputed when a pane
+    /// stops (ready or done) and when the panel appears; never while a turn
+    /// runs.
+    private var turnFiles = TurnChangedFilesStore()
 
     /// Tag on each row's "state · elapsed" label, so the per-second tick can
     /// refresh it in place instead of reloading the table. A full reloadData
     /// rebuilds the cells and resets their tooltip tracking rects, which is why
     /// the telemetry tooltip never survived long enough to appear.
     private static let detailLabelTag = 0x5DE7A11   // "sidetail"
+
+    /// Identifiers of a row's changed-file lines, so a click can tell which
+    /// line it hit: the prefix plus the file's index, or `moreFilesIdentifier`.
+    private static let fileLineIdentifierPrefix = "turnFile."
+    private static let moreFilesIdentifier = "turnFile.more"
 
     override func loadView() {
         view = NSView()
@@ -71,8 +93,14 @@ final class AgentDashboardViewController: NSViewController {
 
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(agentStateChanged),
+            selector: #selector(paneAgentStateChanged(_:)),
             name: .paneAgentStateChanged,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(paneDidClose(_:)),
+            name: .paneDidClose,
             object: nil
         )
         NotificationCenter.default.addObserver(
@@ -118,6 +146,7 @@ final class AgentDashboardViewController: NSViewController {
 
     override func viewWillAppear() {
         super.viewWillAppear()
+        recomputeStoppedPanes()
         reload()
         // Tick to keep elapsed times fresh while the panel is visible.
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -230,6 +259,65 @@ final class AgentDashboardViewController: NSViewController {
         reload()
     }
 
+    @objc private func paneAgentStateChanged(_ notification: Notification) {
+        if let pane = notification.object as? PaneModel,
+           let state = notification.userInfo?["agentState"] as? AgentState,
+           let previous = notification.userInfo?["previousAgentState"] as? AgentState {
+            switch TurnChangedFilesStore.update(from: previous, to: state) {
+            case .remove: turnFiles.remove(paneID: pane.id)
+            case .recompute: recomputeTurnFiles(for: pane)
+            case .none: break
+            }
+        }
+        reload()
+    }
+
+    @objc private func paneDidClose(_ notification: Notification) {
+        guard let pane = notification.object as? PaneModel else { return }
+        turnFiles.remove(paneID: pane.id)
+        reload()
+    }
+
+    /// Recomputes every ready or done pane's files, so a commit or rewind made
+    /// while the panel was hidden shows, and drops entries for panes that are
+    /// gone.
+    private func recomputeStoppedPanes() {
+        let panes = (delegate?.agentDashboardTabs(self) ?? []).flatMap(\.panes)
+        turnFiles.keepOnly(paneIDs: Set(panes.map(\.id)))
+        for pane in panes where pane.agentState == .ready || pane.agentState == .done {
+            recomputeTurnFiles(for: pane)
+        }
+    }
+
+    /// Computes `pane`'s files on the snapshot queue, after any snapshot its
+    /// turn queued, then stores them and reloads.
+    private func recomputeTurnFiles(for pane: PaneModel) {
+        guard let cwd = pane.resolvedWorkingDirectory() else { return }
+        let paneID = pane.id
+        let turnStartedAt = pane.terminalViewController?.turnSnapshotRequestedAt
+        let finishedAt = pane.agentStateChangedAt
+        TurnSnapshotService.queue.async {
+            let result = TurnChangedFilesStore.compute(
+                paneID: paneID,
+                workingDirectory: cwd,
+                turnStartedAt: turnStartedAt,
+                finishedAt: finishedAt
+            )
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let pane = (self.delegate?.agentDashboardTabs(self) ?? []).lazy.flatMap(\.panes)
+                          .first(where: { $0.id == paneID }) else { return }
+                self.turnFiles.land(
+                    result,
+                    paneID: paneID,
+                    currentState: pane.agentState,
+                    currentTurnStartedAt: pane.terminalViewController?.turnSnapshotRequestedAt
+                )
+                self.reload()
+            }
+        }
+    }
+
     func reload() {
         guard isViewLoaded else { return }
         reloadApprovals()
@@ -253,7 +341,8 @@ final class AgentDashboardViewController: NSViewController {
                 hasCommandAttention: commandAttention,
                 usage: tab.telemetry,
                 cost: tab.telemetryCostUSD,
-                paneTelemetries: tab.paneTelemetries
+                paneTelemetries: tab.paneTelemetries,
+                files: AgentRowFiles.make(paneIDs: tab.panes.map(\.id), store: turnFiles)
             )
         }
         // Actionable tabs first: needs-input, then a failed background command,
@@ -408,7 +497,36 @@ final class AgentDashboardViewController: NSViewController {
     @objc private func rowClicked() {
         let row = tableView.clickedRow
         guard row >= 0 && row < rows.count else { return }
+        let files = rows[row].files
+        if let identifier = clickedFileLineIdentifier(row: row) {
+            if identifier == Self.moreFilesIdentifier {
+                if let paneID = files.morePaneID, let root = files.moreRepositoryRoot {
+                    delegate?.agentDashboard(self, didRequestTurnChangesIn: root, followingPane: paneID, focusedFilePath: nil)
+                    return
+                }
+            } else if let index = Int(identifier.dropFirst(Self.fileLineIdentifierPrefix.count)),
+                      let entry = files.shown[safe: index] {
+                delegate?.agentDashboard(
+                    self,
+                    didRequestTurnChangesIn: entry.file.repositoryRoot,
+                    followingPane: entry.paneID,
+                    focusedFilePath: entry.file.absolutePath
+                )
+                return
+            }
+        }
         delegate?.agentDashboard(self, didSelectTabAt: rows[row].tabIndex)
+    }
+
+    /// The identifier of the changed-file line under the click in `row`, if
+    /// the click landed on one.
+    private func clickedFileLineIdentifier(row: Int) -> String? {
+        guard let event = NSApp.currentEvent,
+              let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) else { return nil }
+        let point = cell.convert(event.locationInWindow, from: nil)
+        return cell.subviews.first { view in
+            view.identifier?.rawValue.hasPrefix(Self.fileLineIdentifierPrefix) == true && view.frame.contains(point)
+        }?.identifier?.rawValue
     }
 
     private static func sortPriority(_ row: Row) -> Int {
@@ -585,6 +703,39 @@ extension AgentDashboardViewController: NSTableViewDelegate {
                 bar.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10),
                 bar.topAnchor.constraint(equalTo: lastBottom, constant: 5)
             ])
+            lastBottom = bar.bottomAnchor
+        }
+
+        // Files the tab's agents changed this turn, then "and N more". Each
+        // line spans the row so a click anywhere on it opens the turn.
+        var fileLines: [(text: NSAttributedString, tooltip: String?, identifier: String)] = rowData.files.shown
+            .enumerated().map { index, entry in
+                (Self.fileLineText(entry.file), entry.file.path, Self.fileLineIdentifierPrefix + String(index))
+            }
+        if rowData.files.moreCount > 0 {
+            fileLines.append((
+                NSAttributedString(string: "and \(rowData.files.moreCount) more", attributes: [
+                    .font: Self.fileLineFont,
+                    .foregroundColor: AppTheme.mutedText
+                ]),
+                nil,
+                Self.moreFilesIdentifier
+            ))
+        }
+        for line in fileLines {
+            let label = NSTextField(labelWithAttributedString: line.text)
+            label.lineBreakMode = .byTruncatingMiddle
+            label.toolTip = line.tooltip
+            label.identifier = NSUserInterfaceItemIdentifier(line.identifier)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            cell.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+                label.topAnchor.constraint(equalTo: lastBottom, constant: 2),
+                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8)
+            ])
+            lastBottom = label.bottomAnchor
         }
 
         return cell
@@ -593,9 +744,44 @@ extension AgentDashboardViewController: NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard row < rows.count else { return 42 }
         let rowData = rows[row]
-        var height: CGFloat = 42 + CGFloat(Self.telemetryLines(for: rowData).count) * 16
-        if rowData.usage?.contextFraction() != nil { height += 9 }
+        return Self.rowHeight(
+            telemetryLines: Self.telemetryLines(for: rowData).count,
+            hasContextBar: rowData.usage?.contextFraction() != nil,
+            files: rowData.files
+        )
+    }
+
+    /// A row's height: the title and state lines, 16 per telemetry or
+    /// changed-file line, and the context bar. Internal for unit tests.
+    static func rowHeight(telemetryLines: Int, hasContextBar: Bool, files: AgentRowFiles) -> CGFloat {
+        var height: CGFloat = 42 + CGFloat(telemetryLines + files.lineCount) * 16
+        if hasContextBar { height += 9 }
         return height
+    }
+
+    // MARK: - Changed files
+
+    private static let fileLineFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
+
+    /// `M  name.swift  Sources/Dir`: the status letter in the changes pane's
+    /// status color, the file name, then its directory dimmed.
+    private static func fileLineText(_ file: TurnChangedFile) -> NSAttributedString {
+        let text = NSMutableAttributedString(string: file.status.rawValue + "  ", attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold),
+            .foregroundColor: file.status.color
+        ])
+        text.append(NSAttributedString(string: (file.path as NSString).lastPathComponent, attributes: [
+            .font: fileLineFont,
+            .foregroundColor: AppTheme.primaryText
+        ]))
+        let directory = (file.path as NSString).deletingLastPathComponent
+        if !directory.isEmpty {
+            text.append(NSAttributedString(string: "  " + directory, attributes: [
+                .font: fileLineFont,
+                .foregroundColor: AppTheme.mutedText
+            ]))
+        }
+        return text
     }
 
     // MARK: - Context bar

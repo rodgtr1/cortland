@@ -636,10 +636,20 @@ nonisolated final class TurnSnapshotService: Sendable {
         changeCount: (TurnSnapshot) throws -> Int
     ) rethrows -> TurnSnapshot? {
         guard next == .done, previous == .working || previous == .ready,
-              let turnStartedAt,
+              let snapshot = currentTurnSnapshot(turnStartedAt: turnStartedAt, paneSnapshots: paneSnapshots)
+        else { return nil }
+        return try changeCount(snapshot) > 0 ? snapshot : nil
+    }
+
+    /// The snapshot a pane's current turn took: the pane's newest snapshot,
+    /// when the turn asked for one at `turnStartedAt` and that snapshot was
+    /// taken no earlier, so never an earlier turn's. `paneSnapshots` is the
+    /// pane's snapshots oldest first.
+    static func currentTurnSnapshot(turnStartedAt: Date?, paneSnapshots: [TurnSnapshot]) -> TurnSnapshot? {
+        guard let turnStartedAt,
               let snapshot = paneSnapshots.last,
               snapshot.createdAt >= turnStartedAt else { return nil }
-        return try changeCount(snapshot) > 0 ? snapshot : nil
+        return snapshot
     }
 
     /// The oldest snapshots beyond the newest `keeping`.

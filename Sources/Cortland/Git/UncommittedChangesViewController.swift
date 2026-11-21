@@ -161,10 +161,11 @@ final class UncommittedChangesViewController: NSViewController {
         loadChanges()
     }
 
-    /// Switches to This turn, following `paneID`'s snapshots, and refreshes.
-    /// Used when that pane's agent finishes a turn; never takes focus.
-    func showTurn(following paneID: UUID) {
+    /// Switches to This turn, following `paneID`'s snapshots, and refreshes,
+    /// scrolled to `focusedFilePath` when given. Never takes focus.
+    func showTurn(following paneID: UUID, focusedFilePath: String? = nil) {
         followedPaneID = paneID
+        self.focusedFilePath = focusedFilePath
         if scope != .thisTurn {
             scope = .thisTurn
             scopeControl?.selectedSegment = ChangesScope.allCases.firstIndex(of: .thisTurn) ?? 0

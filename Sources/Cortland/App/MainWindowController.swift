@@ -1100,6 +1100,20 @@ extension MainWindowController: SidebarContainerDelegate {
         openUncommittedChangesInNewTab(repositoryPath: repositoryPath, source: .uncommitted, focusedFilePath: focusedFilePath)
     }
 
+    func sidebarContainer(
+        _ container: SidebarContainerView,
+        didRequestTurnChangesIn repositoryPath: String,
+        followingPane paneID: UUID,
+        focusedFilePath: String?
+    ) {
+        openUncommittedChangesInNewTab(
+            repositoryPath: repositoryPath,
+            source: .uncommitted,
+            focusedFilePath: focusedFilePath,
+            showingTurnOf: paneID
+        )
+    }
+
     func sidebarContainer(_ container: SidebarContainerView, didRequestBranchChangesFor repositoryPath: String, defaultBranch: String, focusedFilePath: String?) {
         openUncommittedChangesInNewTab(
             repositoryPath: repositoryPath,
@@ -1148,16 +1162,34 @@ extension MainWindowController: SidebarContainerDelegate {
         syncSidebarToActiveTab()
     }
 
-    private func openUncommittedChangesInNewTab(repositoryPath: String, source: ChangesSource, focusedFilePath: String?) {
+    /// Switches to and focuses the open changes pane for the checkout, or
+    /// opens one in a new tab. With `showingTurnOf`, the pane shows that
+    /// agent pane's current turn (This turn, following it).
+    private func openUncommittedChangesInNewTab(
+        repositoryPath: String,
+        source: ChangesSource,
+        focusedFilePath: String?,
+        showingTurnOf agentPaneID: UUID? = nil
+    ) {
         if let location = changesPaneLocation(repositoryPath: repositoryPath, source: source) {
             let tab = tabs[location.tab]
             let pane = tab.panes[location.pane]
             switchToTab(index: location.tab)
             automationSplitController(forTab: tab.id)?.focusPane(id: pane.id)
-            pane.uncommittedChangesViewController?.reload(focusedFilePath: focusedFilePath)
+            if let agentPaneID {
+                pane.uncommittedChangesViewController?.showTurn(following: agentPaneID, focusedFilePath: focusedFilePath)
+            } else {
+                pane.uncommittedChangesViewController?.reload(focusedFilePath: focusedFilePath)
+            }
             return
         }
-        openSinglePaneTab(pane: makeChangesPane(repositoryPath: repositoryPath, source: source, focusedFilePath: focusedFilePath))
+        guard let agentPaneID else {
+            openSinglePaneTab(pane: makeChangesPane(repositoryPath: repositoryPath, source: source, focusedFilePath: focusedFilePath))
+            return
+        }
+        let pane = makeChangesPane(repositoryPath: repositoryPath, source: source, focusedFilePath: nil)
+        pane.uncommittedChangesViewController?.showTurn(following: agentPaneID, focusedFilePath: focusedFilePath)
+        openSinglePaneTab(pane: pane)
     }
 
     /// The open changes pane for a checkout and source, in any tab, alone or

@@ -7,6 +7,14 @@ protocol SidebarContainerDelegate: AnyObject {
     func sidebarContainer(_ container: SidebarContainerView, didRequestOpenFile filePath: String, atLine line: Int, highlighting searchTerm: String?)
     func sidebarContainerTabs(_ container: SidebarContainerView) -> [TabModel]
     func sidebarContainer(_ container: SidebarContainerView, didRequestSwitchToTab index: Int)
+    /// Show `paneID`'s current turn in `repositoryPath`'s changes pane,
+    /// scrolled to `focusedFilePath` when there is one.
+    func sidebarContainer(
+        _ container: SidebarContainerView,
+        didRequestTurnChangesIn repositoryPath: String,
+        followingPane paneID: UUID,
+        focusedFilePath: String?
+    )
     func sidebarContainer(_ container: SidebarContainerView, didRequestConnectCommand command: String)
     /// Repository root for the active tab's pane, or nil when not in a git repo.
     func sidebarContainerActiveRepoRoot(_ container: SidebarContainerView) -> String?
@@ -440,6 +448,15 @@ extension SidebarContainerView: AgentDashboardDelegate {
 
     func agentDashboard(_ dashboard: AgentDashboardViewController, didSelectTabAt index: Int) {
         delegate?.sidebarContainer(self, didRequestSwitchToTab: index)
+    }
+
+    func agentDashboard(
+        _ dashboard: AgentDashboardViewController,
+        didRequestTurnChangesIn repositoryPath: String,
+        followingPane paneID: UUID,
+        focusedFilePath: String?
+    ) {
+        delegate?.sidebarContainer(self, didRequestTurnChangesIn: repositoryPath, followingPane: paneID, focusedFilePath: focusedFilePath)
     }
 }
 
