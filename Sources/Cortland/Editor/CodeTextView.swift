@@ -19,6 +19,24 @@ class CodeTextView: NSTextView {
     /// Number of spaces that make up one indent level (used when outdenting).
     var indentWidth: Int = 4
 
+    /// Send Selection to Agent, offered in the context menu when set.
+    var onSendSelectionToAgent: (() -> Void)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event)
+        guard let menu, onSendSelectionToAgent != nil else { return menu }
+        let item = NSMenuItem(title: "Send Selection to Agent", action: #selector(sendSelectionToAgentFromMenu(_:)), keyEquivalent: "l")
+        item.keyEquivalentModifierMask = [.command]
+        item.target = self
+        menu.insertItem(item, at: 0)
+        menu.insertItem(.separator(), at: 1)
+        return menu
+    }
+
+    @objc private func sendSelectionToAgentFromMenu(_ sender: Any?) {
+        onSendSelectionToAgent?()
+    }
+
     // MARK: - Key handling
 
     // Hardware key codes (US layout, but these are physical-position codes).

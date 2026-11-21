@@ -1150,7 +1150,17 @@ extension MainWindowController: SidebarContainerDelegate {
 
         guard let currentTab = tabs[safe: activeTabIndex] else { return }
 
-        let editorPane = PaneFactory.editorPane(for: url, line: line, searchTerm: searchTerm)
+        let editorPane = PaneFactory.editorPane(
+            for: url,
+            line: line,
+            searchTerm: searchTerm,
+            agentsForRepository: { [weak self] repositoryPath in
+                self?.reviewAgents(repositoryPath: repositoryPath) ?? []
+            },
+            sendToAgent: { [weak self] paneID, text in
+                self?.sendReviewComments(text, toPane: paneID) ?? false
+            }
+        )
         currentTab.addPane(editorPane)
         // Add into the existing split tree rather than rebuilding it flat, so a
         // nested layout (e.g. a 2×2 grid) survives opening the editor. addPane
@@ -1447,6 +1457,23 @@ extension MainWindowController: SidebarContainerDelegate {
         editorPane?.editorViewController?.formatDocument()
     }
 
+    /// The editor pane Send Selection to Agent acts on, found the way Format
+    /// Document finds its pane.
+    private var selectionEditorPane: PaneModel? {
+        guard let activeTab = tabs[safe: activeTabIndex] else { return nil }
+        return activeTab.panes.first { $0.editorViewController?.isEditorFocused == true } ??
+            activeTab.activePane.flatMap { $0.paneType == .editor ? $0 : nil } ??
+            currentPaneSplitController?.activePane.flatMap { $0.paneType == .editor ? $0 : nil }
+    }
+
+    var canSendEditorSelection: Bool {
+        selectionEditorPane?.editorViewController?.canSendSelectionToAgent == true
+    }
+
+    func sendEditorSelectionToAgent() {
+        selectionEditorPane?.editorViewController?.sendSelectionToAgent()
+    }
+
     /// Sends the command to the active tab's first terminal pane and returns
     /// that pane, so callers can track which pane ran the command.
     @discardableResult
@@ -1526,6 +1553,11 @@ extension MainWindowController {
         // ⇧⌥F belongs to the file editor; anywhere else it is a keystroke for
         // the terminal.
         if command == .formatDocument && !(window?.firstResponder is CodeTextView) {
+            return false
+        }
+
+        // ⌘L likewise: only while the file editor (in edit mode) has focus.
+        if command == .sendSelectionToAgent && !(window?.firstResponder is CodeTextView) {
             return false
         }
 

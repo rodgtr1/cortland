@@ -1,9 +1,17 @@
 import Foundation
 
 enum PaneFactory {
-    static func editorPane(for url: URL, line: Int? = nil, searchTerm: String? = nil) -> PaneModel {
+    static func editorPane(
+        for url: URL,
+        line: Int? = nil,
+        searchTerm: String? = nil,
+        agentsForRepository: ((String) -> [ChangesComments.Agent])? = nil,
+        sendToAgent: ((UUID, String) -> Bool)? = nil
+    ) -> PaneModel {
         let pane = PaneModel()
         pane.createEditorViewController(for: url)
+        pane.editorViewController?.agentsForRepository = agentsForRepository
+        pane.editorViewController?.sendToAgent = sendToAgent
 
         if let searchTerm, !searchTerm.isEmpty {
             pane.editorViewController?.highlightOccurrences(of: searchTerm)

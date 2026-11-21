@@ -65,6 +65,12 @@ class EditorViewController: NSViewController {
         }
     }
 
+    /// Send Selection to Agent: the agents working in a repository, and
+    /// delivery of a prompt to one of them. Set by the window.
+    var agentsForRepository: ((String) -> [ChangesComments.Agent])?
+    var sendToAgent: ((UUID, String) -> Bool)?
+    private var selectionPromptPopover: NSPopover?
+
     var isEditorFocused: Bool {
         return textView.window?.firstResponder === textView || readerView?.isFocused == true
     }
@@ -134,6 +140,7 @@ class EditorViewController: NSViewController {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.onSendSelectionToAgent = { [weak self] in self?.sendSelectionToAgent() }
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.autoresizingMask = [.width]
@@ -816,6 +823,108 @@ class EditorViewController: NSViewController {
     private func styleFormatButton() {
         formatButton?.contentTintColor = AppTheme.mutedText
         formatButton?.layer?.backgroundColor = AppTheme.windowBackground.withAlphaComponent(0.9).cgColor
+    }
+
+    // MARK: - Send Selection to Agent
+
+    /// Whether Send Selection to Agent applies: a file shown in the editor
+    /// rather than the Markdown reader.
+    var canSendSelectionToAgent: Bool {
+        currentURL != nil && EditorSelectionPrompt.applies(isEditorPane: true, isReadMode: isReadMode)
+    }
+
+    /// ⌘L, the context menu, or the palette. Resolves the file's repository
+    /// off the main thread, then asks for an instruction in a popover at the
+    /// selection.
+    func sendSelectionToAgent() {
+        guard canSendSelectionToAgent, let url = currentURL else { return }
+        let text = textView.string
+        let selection = textView.selectedRange()
+        let lines = EditorSelectionPrompt.lineRange(in: text, selection: selection)
+        let quoted = EditorSelectionPrompt.lines(in: text, range: lines)
+        let isDirty = isModified
+        let directory = url.deletingLastPathComponent().path
+        DispatchQueue.global(qos: .userInitiated).async {
+            let root = GitService().repositoryRoot(from: directory)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.currentURL == url, self.canSendSelectionToAgent else { return }
+                self.showSelectionPrompt(
+                    reference: EditorSelectionPrompt.reference(filePath: url.path, repositoryRoot: root, lines: lines),
+                    quoted: quoted,
+                    isDirty: isDirty,
+                    repositoryRoot: root,
+                    selection: selection
+                )
+            }
+        }
+    }
+
+    private func showSelectionPrompt(reference: String, quoted: [String], isDirty: Bool, repositoryRoot: String?, selection: NSRange) {
+        selectionPromptPopover?.close()
+        let length = (textView.string as NSString).length
+        let location = min(selection.location, length)
+        let anchorRange = NSRange(location: location, length: min(selection.length, length - location))
+        guard let anchor = selectionAnchorRect(anchorRange) else { return }
+
+        let agentsForRepository = self.agentsForRepository
+        let editor = EditorSelectionPromptEditor(reference: reference, agents: {
+            guard let repositoryRoot else { return [] }
+            return agentsForRepository?(repositoryRoot) ?? []
+        })
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = editor
+        editor.onCancel = { [weak self, weak popover] in
+            popover?.close()
+            self?.restoreFocus(selection: selection)
+        }
+        editor.onDeliver = { [weak self, weak popover] agent, instruction in
+            let message = EditorSelectionPrompt.message(instruction: instruction, reference: reference, lines: quoted, isDirty: isDirty)
+            if let agent {
+                guard self?.sendToAgent?(agent.id, message) == true else { return false }
+            } else {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(message, forType: .string)
+            }
+            popover?.close()
+            self?.restoreFocus(selection: selection)
+            return true
+        }
+        selectionPromptPopover = popover
+        popover.show(relativeTo: anchor, of: textView, preferredEdge: .maxY)
+    }
+
+    private func restoreFocus(selection: NSRange) {
+        let length = (textView.string as NSString).length
+        let location = min(selection.location, length)
+        textView.setSelectedRange(NSRange(location: location, length: min(selection.length, length - location)))
+        textView.window?.makeFirstResponder(textView)
+    }
+
+    /// The selected lines' rect in the text view, clipped to what is on
+    /// screen so the popover sits next to the code.
+    private func selectionAnchorRect(_ selection: NSRange) -> NSRect? {
+        guard let layoutManager = textView.layoutManager, let container = textView.textContainer else { return nil }
+        let lines = (textView.string as NSString).lineRange(for: selection)
+        let glyphs = layoutManager.glyphRange(forCharacterRange: lines, actualCharacterRange: nil)
+        var rect = glyphs.length > 0
+            ? layoutManager.boundingRect(forGlyphRange: glyphs, in: container)
+            : layoutManager.extraLineFragmentRect
+        if rect.isEmpty, layoutManager.numberOfGlyphs > 0 {
+            let glyph = min(glyphs.location, layoutManager.numberOfGlyphs - 1)
+            rect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        }
+        let origin = textView.textContainerOrigin
+        rect = rect.offsetBy(dx: origin.x, dy: origin.y)
+        rect.size.width = max(rect.width, 1)
+        rect.size.height = max(rect.height, 1)
+        var visible = rect.intersection(textView.visibleRect)
+        if visible.isEmpty {
+            textView.scrollRangeToVisible(selection)
+            visible = rect.intersection(textView.visibleRect)
+        }
+        return visible.isEmpty ? rect : visible
     }
 
     // MARK: - Live reload

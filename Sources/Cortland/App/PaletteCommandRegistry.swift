@@ -40,6 +40,12 @@ protocol PaletteCommandHost: AnyObject {
     func toggleMarkdownReadMode()
     /// Runs the project's formatter over the focused editor pane's buffer.
     func formatCurrentDocument()
+    /// Whether the focused editor pane is in edit mode, so Send Selection
+    /// to Agent applies.
+    var canSendEditorSelection: Bool { get }
+    /// Asks for an instruction and sends the focused editor's selected lines
+    /// to the agent working in its repository.
+    func sendEditorSelectionToAgent()
     func showQuickOpen()
     func showSessions()
     func showPreferences()
@@ -164,6 +170,14 @@ final class PaletteCommandRegistry {
             }
         )
 
+        if host?.canSendEditorSelection == true {
+            actions.append(
+                PaletteAction(title: "Send Selection to Agent", subtitle: KeyboardCommand.sendSelectionToAgent.displayShortcut, symbolName: "paperplane") { [weak self] in
+                    self?.host?.sendEditorSelectionToAgent()
+                }
+            )
+        }
+
         actions.append(
             PaletteAction(title: "Toggle Markdown Read Mode", subtitle: KeyboardCommand.toggleMarkdownReadMode.displayShortcut, symbolName: "doc.richtext") { [weak self] in
                 self?.host?.toggleMarkdownReadMode()
@@ -264,6 +278,8 @@ final class PaletteCommandRegistry {
             host.toggleMarkdownReadMode()
         case .formatDocument:
             host.formatCurrentDocument()
+        case .sendSelectionToAgent:
+            host.sendEditorSelectionToAgent()
         }
     }
 }

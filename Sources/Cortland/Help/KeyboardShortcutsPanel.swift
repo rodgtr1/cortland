@@ -70,6 +70,7 @@ class KeyboardShortcutsPanel: NSPanel {
         (.saveFile, "Save the current editor tab", "Files"),
         (.formatDocument, "Format the document with the project's formatter (Prettier, rustfmt, gofmt, ...)", "Files"),
         (.toggleMarkdownReadMode, "Markdown: switch between reader and editor", "Files"),
+        (.sendSelectionToAgent, "Send the selected lines to the agent working in the file's repository", "Files"),
 
         // Terminal
         (.findInTerminal, "Find in terminal", "Terminal"),

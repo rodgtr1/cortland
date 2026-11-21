@@ -26,6 +26,7 @@ enum KeyboardCommand: Equatable {
     case showSessions
     case toggleMarkdownReadMode
     case formatDocument
+    case sendSelectionToAgent
 }
 
 extension KeyboardCommand {
@@ -63,6 +64,7 @@ extension KeyboardCommand {
         case .showSessions: return "⌃⇧S"
         case .toggleMarkdownReadMode: return "⇧⌘M"
         case .formatDocument: return "⇧⌥F"
+        case .sendSelectionToAgent: return "⌘L"
         default: return nil
         }
     }
@@ -144,6 +146,7 @@ struct KeyboardCommandRouter {
             case 27: return .zoomOut  // Cmd+-
             case 29: return .zoomReset // Cmd+0
             case 9: return .pasteIntoTerminal // Cmd+V (image-aware paste)
+            case 37: return .sendSelectionToAgent // Cmd+L, file editor only
             default:
                 // ANSI digit keycodes are not contiguous (5=23, 6=22, 7=26,
                 // 8=28, 9=25), so map Cmd+1…9 explicitly.
