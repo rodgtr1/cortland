@@ -9,8 +9,15 @@ final class UncommittedChangesViewController: NSViewController {
     var sendToAgent: ((UUID, String) -> Bool)?
 
     private var repositoryPath: String
-    /// The changes shown, fixed at creation.
+    /// The changes the pane was opened on, fixed at creation.
     let source: ChangesSource
+    /// The scope picked in the scope control; per pane, never saved. Only a
+    /// pane opened on uncommitted changes offers the control.
+    private var scope: ChangesScope = .uncommitted
+    /// What the pane shows now: `source`, narrowed by `scope`.
+    private var shownSource: ChangesSource {
+        ChangesScope.shownSource(createdWith: source, scope: scope)
+    }
     private var focusedFilePath: String?
     private let gitService: GitService
     private var scrollView: NSScrollView!
@@ -79,6 +86,7 @@ final class UncommittedChangesViewController: NSViewController {
         static let headerHeight: CGFloat = 28
         static let diffLineHeight: CGFloat = 19
         static let reviewBarHeight: CGFloat = 34
+        static let scopeBarHeight: CGFloat = 30
         static let commentIconSize: CGFloat = 12
     }
 
@@ -114,7 +122,7 @@ final class UncommittedChangesViewController: NSViewController {
         view = rootView
         view.wantsLayer = true
         view.layer?.backgroundColor = DiffColors.background.cgColor
-        setupScrollView()
+        setupScrollView(below: setupScopeBar())
         setupReviewBar()
     }
 
@@ -129,7 +137,66 @@ final class UncommittedChangesViewController: NSViewController {
         loadChanges()
     }
 
-    private func setupScrollView() {
+    /// The Uncommitted / This turn / This session switch along the top of a
+    /// pane opened on uncommitted changes. Returns the anchor the scroll view
+    /// hangs from: the bar's bottom, or the view's top when there is no bar.
+    private func setupScopeBar() -> NSLayoutYAxisAnchor {
+        guard source.offersScopes else { return view.topAnchor }
+
+        let bar = NSView()
+        bar.wantsLayer = true
+        bar.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        bar.translatesAutoresizingMaskIntoConstraints = false
+
+        let divider = NSView()
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = AppTheme.divider.cgColor
+        divider.translatesAutoresizingMaskIntoConstraints = false
+
+        let control = NSSegmentedControl(
+            labels: ChangesScope.allCases.map(\.title),
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(scopeChanged(_:))
+        )
+        control.controlSize = .small
+        control.font = NSFont.systemFont(ofSize: 11)
+        control.selectedSegment = ChangesScope.allCases.firstIndex(of: scope) ?? 0
+        control.refusesFirstResponder = true
+        control.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(bar)
+        bar.addSubview(divider)
+        bar.addSubview(control)
+
+        NSLayoutConstraint.activate([
+            bar.topAnchor.constraint(equalTo: view.topAnchor),
+            bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            bar.heightAnchor.constraint(equalToConstant: Metrics.scopeBarHeight),
+
+            divider.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
+            divider.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
+            divider.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            divider.heightAnchor.constraint(equalToConstant: 1),
+
+            control.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: Metrics.horizontalPadding),
+            control.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            control.trailingAnchor.constraint(lessThanOrEqualTo: bar.trailingAnchor, constant: -Metrics.horizontalPadding)
+        ])
+        return bar.bottomAnchor
+    }
+
+    @objc private func scopeChanged(_ sender: NSSegmentedControl) {
+        let scopes = ChangesScope.allCases
+        guard scopes.indices.contains(sender.selectedSegment) else { return }
+        let picked = scopes[sender.selectedSegment]
+        guard picked != scope else { return }
+        scope = picked
+        loadChanges()
+    }
+
+    private func setupScrollView(below topAnchor: NSLayoutYAxisAnchor) {
         scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
@@ -159,7 +226,7 @@ final class UncommittedChangesViewController: NSViewController {
         scrollView.documentView = documentView
 
         NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
+            scrollView.topAnchor.constraint(equalTo: topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
 
@@ -178,7 +245,9 @@ final class UncommittedChangesViewController: NSViewController {
     /// Watches the working tree and the git directory so edits, stages, and
     /// commits all refresh the pane. The root covers `.git` in a normal repo; a
     /// linked worktree keeps its index under the main repo's
-    /// `.git/worktrees/<name>`, so that directory is watched too. The watcher's
+    /// `.git/worktrees/<name>`, so that directory is watched too. Turn
+    /// snapshot refs live under `refs/worktree/` in that same per-worktree git
+    /// directory, so a new snapshot refreshes the pane as well. The watcher's
     /// own deinit stops the stream when this controller goes away.
     private func startWatching() {
         watcher.onChange = { [weak self] in self?.repositoryChanged() }
@@ -217,11 +286,14 @@ final class UncommittedChangesViewController: NSViewController {
         }
         let request = requests.begin()
 
-        DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService, source] in
-            let result: Result<[ChangeSection], Error>
+        DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService, shownSource, scope] in
+            // A nil list means the scope has no snapshot to compare against.
+            let result: Result<[ChangeSection]?, Error>
             do {
-                if case .branch = source {
+                if case .branch = shownSource {
                     result = .success(try Self.branchSections(repositoryPath: repositoryPath, gitService: gitService))
+                } else if scope != .uncommitted {
+                    result = .success(try Self.snapshotSections(repositoryPath: repositoryPath, scope: scope))
                 } else {
                     // Keep a stable order by relative path; the focused file is
                     // scrolled into view rather than reordered to the top.
@@ -272,7 +344,23 @@ final class UncommittedChangesViewController: NSViewController {
         }
     }
 
-    private func finishLoad(request: Int, result: Result<[ChangeSection], Error>) {
+    /// The files changed since the scope's snapshot, in path order. nil when
+    /// the repository has no snapshot.
+    private nonisolated static func snapshotSections(repositoryPath: String, scope: ChangesScope) throws -> [ChangeSection]? {
+        let service = TurnSnapshotService.shared
+        guard let snapshot = scope.snapshot(in: try service.list(repositoryRoot: repositoryPath)) else { return nil }
+        return try service.changesSinceSnapshot(commit: snapshot.commit, repositoryRoot: repositoryPath).map { change in
+            ChangeSection(
+                relativePath: change.path,
+                diff: change.diff,
+                isConflicted: false,
+                status: change.status,
+                repositoryPath: repositoryPath
+            )
+        }
+    }
+
+    private func finishLoad(request: Int, result: Result<[ChangeSection]?, Error>) {
         // Watcher bursts and sidebar clicks overlap; only the newest wins.
         guard requests.isCurrent(request) else { return }
 
@@ -280,12 +368,15 @@ final class UncommittedChangesViewController: NSViewController {
         case .failure(let error):
             // A failed refresh keeps what is on screen; only a first load reports.
             guard displayedSections == nil else { return }
-            let what = source == .uncommitted ? "uncommitted changes" : "the changes on this branch"
-            showMessage("Failed to load \(what): \(error.localizedDescription)")
+            showMessage("Failed to load \(shownSource.loadSubject): \(error.localizedDescription)")
         case .success(let sections):
             // The tab was hidden while this ran: catch up when it is shown.
             if displayedSections != nil && !isVisible {
                 isStale = true
+                return
+            }
+            guard let sections else {
+                showMessage("No agent turn recorded in this repository yet.")
                 return
             }
             display(sections)
@@ -1176,7 +1267,7 @@ final class UncommittedChangesViewController: NSViewController {
         case .toggleCollapsed:
             changeState(of: path) { $0.toggleCollapsed(path) }
         case .stage:
-            guard let action = ChangesReview.stageAction(for: section, source: source) else { return }
+            guard let action = ChangesReview.stageAction(for: section, source: shownSource) else { return }
             DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService] in
                 let succeeded: Bool
                 switch action {
@@ -1663,7 +1754,7 @@ final class UncommittedChangesViewController: NSViewController {
 
     private func deliverComments(to agent: ChangesComments.Agent) {
         let count = comments.count
-        guard sendToAgent?(agent.id, ChangesComments.message(for: commentsForSending(), intro: source.commentIntro)) == true else {
+        guard sendToAgent?(agent.id, ChangesComments.message(for: commentsForSending(), intro: shownSource.commentIntro)) == true else {
             updateReviewBar()
             return
         }
@@ -1674,7 +1765,7 @@ final class UncommittedChangesViewController: NSViewController {
         let count = comments.count
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(ChangesComments.message(for: commentsForSending(), intro: source.commentIntro), forType: .string)
+        pasteboard.setString(ChangesComments.message(for: commentsForSending(), intro: shownSource.commentIntro), forType: .string)
         finishReview(confirmation: "Copied \(ChangesComments.countText(count))")
     }
 
@@ -1897,11 +1988,28 @@ nonisolated enum ChangesSource: Equatable, Sendable {
     /// (`git diff <default>...HEAD`). The name labels the tab and the review
     /// message; each load resolves the default branch afresh.
     case branch(defaultBranch: String)
+    /// The working tree against the newest turn snapshot in the repository.
+    case thisTurn
+    /// The working tree against the snapshot that started that turn's pane's
+    /// agent session.
+    case thisSession
 
     var tabTitle: String {
         switch self {
         case .uncommitted: return "Uncommitted Changes"
         case .branch(let defaultBranch): return "Changes vs \(defaultBranch)"
+        case .thisTurn: return "Changes This Turn"
+        case .thisSession: return "Changes This Session"
+        }
+    }
+
+    /// Names the changes in a failed load's message.
+    var loadSubject: String {
+        switch self {
+        case .uncommitted: return "uncommitted changes"
+        case .branch: return "the changes on this branch"
+        case .thisTurn: return "the changes in this turn"
+        case .thisSession: return "the changes in this session"
         }
     }
 
@@ -1912,10 +2020,19 @@ nonisolated enum ChangesSource: Equatable, Sendable {
             return "Review comments on the uncommitted changes in this repository. Please address each one."
         case .branch(let defaultBranch):
             return "Review comments on the changes committed on this branch (compared with \(defaultBranch)). Please address each one."
+        case .thisTurn:
+            return "Review comments on the changes made in this repository since the latest agent turn started. Please address each one."
+        case .thisSession:
+            return "Review comments on the changes made in this repository since the agent session started. Please address each one."
         }
     }
 
     var allowsStaging: Bool {
+        self == .uncommitted
+    }
+
+    /// Only a pane opened on uncommitted changes offers the scope control.
+    var offersScopes: Bool {
         self == .uncommitted
     }
 
@@ -1929,6 +2046,44 @@ nonisolated enum ChangesSource: Equatable, Sendable {
         source: ChangesSource
     ) -> Bool {
         paneRepository == repositoryPath && paneSource == source
+    }
+}
+
+/// The changes pane's scope control: what a pane opened on uncommitted
+/// changes shows. Always starts on `.uncommitted`.
+nonisolated enum ChangesScope: CaseIterable, Equatable, Sendable {
+    case uncommitted, thisTurn, thisSession
+
+    var title: String {
+        switch self {
+        case .uncommitted: return "Uncommitted"
+        case .thisTurn: return "This turn"
+        case .thisSession: return "This session"
+        }
+    }
+
+    var source: ChangesSource {
+        switch self {
+        case .uncommitted: return .uncommitted
+        case .thisTurn: return .thisTurn
+        case .thisSession: return .thisSession
+        }
+    }
+
+    /// The snapshot the scope compares against, from the repository's
+    /// snapshots oldest first; nil for `.uncommitted` or when there is none.
+    func snapshot(in snapshots: [TurnSnapshot]) -> TurnSnapshot? {
+        switch self {
+        case .uncommitted: return nil
+        case .thisTurn: return TurnSnapshotService.turnSnapshot(in: snapshots)
+        case .thisSession: return TurnSnapshotService.sessionSnapshot(in: snapshots)
+        }
+    }
+
+    /// What a pane opened on `source` shows with `scope` picked. A pane that
+    /// offers no scope control always shows its own source.
+    static func shownSource(createdWith source: ChangesSource, scope: ChangesScope) -> ChangesSource {
+        source.offersScopes ? scope.source : source
     }
 }
 

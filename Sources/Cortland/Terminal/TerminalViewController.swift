@@ -670,7 +670,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
                 to: state,
                 hookAuthoritative: self.agentStateDetector.hasExplicitStatus
             ) {
-                self.snapshotTurn()
+                self.snapshotTurn(isSessionStart: TurnSnapshotService.isSessionStart(from: previous))
             }
             self.delegate?.terminalDidDetectAgentState(self, state: state)
         }
@@ -699,11 +699,11 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// Saves this pane's working tree as the new turn's starting point, off
     /// the main thread. Failures are logged by the service and never reach
     /// agent state handling.
-    private func snapshotTurn() {
+    private func snapshotTurn(isSessionStart: Bool) {
         let paneID = self.paneID
         let cwd = currentCWD
         TurnSnapshotService.queue.async {
-            _ = TurnSnapshotService.shared.snapshotTurn(paneID: paneID, workingDirectory: cwd)
+            _ = TurnSnapshotService.shared.snapshotTurn(paneID: paneID, workingDirectory: cwd, isSessionStart: isSessionStart)
         }
     }
 

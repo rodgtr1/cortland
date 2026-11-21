@@ -224,6 +224,72 @@ final class TurnSnapshotTests: XCTestCase {
         XCTAssertEqual(try git(["status", "--porcelain"], in: repo), "")
     }
 
+    /// A main checkout and one linked worktree of the same repository.
+    private func makeRepoWithLinkedWorktree() throws -> (main: URL, worktree: URL) {
+        let repo = try makeRepoWithCommit()
+        let worktree = try makeTempDirectory().appendingPathComponent("wt")
+        try git(["worktree", "add", "-q", "-b", "feature", worktree.path], in: repo)
+        return (repo, worktree)
+    }
+
+    func testSnapshotsArePrivateToEachWorktree() throws {
+        let (main, worktree) = try makeRepoWithLinkedWorktree()
+        let service = TurnSnapshotService()
+
+        let inMain = try service.takeSnapshot(paneID: UUID(), repositoryRoot: main.path)
+        let inWorktree = try service.takeSnapshot(paneID: UUID(), repositoryRoot: worktree.path)
+
+        XCTAssertEqual(try service.list(repositoryRoot: main.path), [inMain])
+        XCTAssertEqual(try service.list(repositoryRoot: worktree.path), [inWorktree])
+        XCTAssertEqual(TurnSnapshotService.turnSnapshot(in: try service.list(repositoryRoot: main.path)), inMain)
+        XCTAssertEqual(TurnSnapshotService.turnSnapshot(in: try service.list(repositoryRoot: worktree.path)), inWorktree)
+        XCTAssertEqual(ChangesScope.thisTurn.snapshot(in: try service.list(repositoryRoot: worktree.path)), inWorktree)
+
+        // for-each-ref with the prefix works from both checkouts.
+        XCTAssertEqual(try snapshotRefs(in: main), [inMain.refName])
+        XCTAssertEqual(try snapshotRefs(in: worktree), [inWorktree.refName])
+        XCTAssertTrue(inMain.refName.hasPrefix("refs/worktree/cortland/turns/"))
+    }
+
+    func testSnapshotRefsLiveInTheGitDirectoryTheChangesPaneWatches() throws {
+        let (main, worktree) = try makeRepoWithLinkedWorktree()
+        let service = TurnSnapshotService()
+
+        let inMain = try service.takeSnapshot(paneID: UUID(), repositoryRoot: main.path)
+        let inWorktree = try service.takeSnapshot(paneID: UUID(), repositoryRoot: worktree.path)
+
+        // The pane watches the checkout root (which holds `.git` in a main
+        // checkout) and, for a linked worktree, its `.git/worktrees/<name>`.
+        XCTAssertNil(GitStatusModel.linkedWorktreeGitDir(forRoot: main.path))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: main.appendingPathComponent(".git").appendingPathComponent(inMain.refName).path
+        ))
+        let worktreeGitDir = try XCTUnwrap(GitStatusModel.linkedWorktreeGitDir(forRoot: worktree.path))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: URL(fileURLWithPath: worktreeGitDir).appendingPathComponent(inWorktree.refName).path
+        ))
+    }
+
+    func testPruningInOneWorktreeKeepsTheOthersSnapshots() throws {
+        let (main, worktree) = try makeRepoWithLinkedWorktree()
+        let service = TurnSnapshotService()
+        let mainPane = UUID()
+        let worktreePane = UUID()
+
+        let mainSnapshots = [
+            try service.takeSnapshot(paneID: mainPane, repositoryRoot: main.path),
+            try service.takeSnapshot(paneID: mainPane, repositoryRoot: main.path)
+        ]
+        var worktreeSnapshots: [TurnSnapshot] = []
+        for _ in 0..<(TurnSnapshotService.retainedCount + 2) {
+            worktreeSnapshots.append(try service.takeSnapshot(paneID: worktreePane, repositoryRoot: worktree.path))
+        }
+
+        XCTAssertEqual(try service.list(repositoryRoot: worktree.path), Array(worktreeSnapshots.suffix(TurnSnapshotService.retainedCount)))
+        XCTAssertEqual(try service.list(repositoryRoot: main.path), mainSnapshots)
+        XCTAssertEqual(try snapshotRefs(in: main), mainSnapshots.map(\.refName))
+    }
+
     // MARK: - 4. Unborn HEAD
 
     func testRepoWithNoCommitsSnapshotsAsParentlessCommit() throws {
@@ -263,8 +329,8 @@ final class TurnSnapshotTests: XCTestCase {
 
         XCTAssertEqual([a1.sequence, a2.sequence, a3.sequence], [1, 2, 3])
         XCTAssertEqual(b1.sequence, 1)
-        XCTAssertEqual(a1.refName, "refs/cortland/turns/\(paneA.uuidString.lowercased())/1")
-        XCTAssertEqual(b1.refName, "refs/cortland/turns/\(paneB.uuidString.lowercased())/1")
+        XCTAssertEqual(a1.refName, "refs/worktree/cortland/turns/\(paneA.uuidString.lowercased())/1")
+        XCTAssertEqual(b1.refName, "refs/worktree/cortland/turns/\(paneB.uuidString.lowercased())/1")
         XCTAssertNotEqual(a1.refName, b1.refName)
 
         XCTAssertEqual(try service.list(repositoryRoot: repo.path, paneID: paneA), [a1, a2, a3])
@@ -296,8 +362,9 @@ final class TurnSnapshotTests: XCTestCase {
         XCTAssertEqual(parsed?.paneID, pane)
         XCTAssertEqual(parsed?.sequence, 7)
         XCTAssertNil(TurnSnapshotService.parseRefName("refs/heads/main"))
-        XCTAssertNil(TurnSnapshotService.parseRefName("refs/cortland/turns/not-a-uuid/1"))
-        XCTAssertNil(TurnSnapshotService.parseRefName("refs/cortland/turns/\(pane.uuidString)/x"))
+        XCTAssertNil(TurnSnapshotService.parseRefName("refs/worktree/cortland/turns/not-a-uuid/1"))
+        XCTAssertNil(TurnSnapshotService.parseRefName("refs/cortland/turns/\(pane.uuidString.lowercased())/1"))
+        XCTAssertNil(TurnSnapshotService.parseRefName("refs/worktree/cortland/turns/\(pane.uuidString)/x"))
     }
 
     func testMalformedSnapshotRefIsSkippedAndDoesNotBlockSnapshots() throws {

@@ -538,7 +538,7 @@ nonisolated final class GitService: Sendable {
         return diffOutput
     }
 
-    private func untrackedFileDiff(relativePath: String, repositoryRoot: String) throws -> String {
+    func untrackedFileDiff(relativePath: String, repositoryRoot: String) throws -> String {
         let trimmedPath = relativePath.hasSuffix("/") ? String(relativePath.dropLast()) : relativePath
         let filePath = URL(fileURLWithPath: repositoryRoot).appendingPathComponent(trimmedPath).path
 
