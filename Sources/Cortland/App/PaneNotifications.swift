@@ -15,7 +15,8 @@ import Foundation
 // the extension opts out of the module's default main-actor isolation.
 nonisolated extension Notification.Name {
     /// A pane's agent state changed (idle/working/ready/done). `object` is the
-    /// `PaneModel`; `userInfo["agentState"]` carries the new `AgentState`.
+    /// `PaneModel`; `userInfo["agentState"]` carries the new `AgentState`
+    /// and `userInfo["previousAgentState"]` the one before it.
     static let paneAgentStateChanged = Notification.Name("PaneAgentStateChanged")
 
     /// A pane reported new agent telemetry (token usage) via the

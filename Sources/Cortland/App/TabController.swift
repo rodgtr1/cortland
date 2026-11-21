@@ -96,7 +96,9 @@ final class TabController: NSObject {
     /// Returns false when the tab cap refuses the tab, so callers can surface
     /// the failure (IPC must not report ok on a tab that never opened).
     @discardableResult
-    func installTab(_ tab: TabModel) -> Bool {
+    /// `activate: false` adds the tab after the active one without switching
+    /// to it, so focus and the visible tab stay as they are.
+    func installTab(_ tab: TabModel, activate: Bool = true) -> Bool {
         // Enforce the tab cap on every live creation path, not just restore.
         // The tab's panes may already have spawned shells, so tear them down
         // rather than leak them (mirrors closeTab's shutdown).
@@ -109,6 +111,21 @@ final class TabController: NSObject {
             return false
         }
 
+        let insertIndex = tabs.isEmpty ? 0 : min(activeTabIndex + 1, tabs.count)
+        // With no tabs at all there is nothing else to keep showing.
+        if !activate && !tabs.isEmpty {
+            tab.isActive = false
+            tabs.insert(tab, at: insertIndex)
+            let paneSplitController = PaneSplitController(config: config)
+            paneSplitController.delegate = self
+            tabSplitControllers[tab.id] = paneSplitController
+            // Detached, so the pane focus at the end of the rebuild has no
+            // window to take.
+            paneSplitController.rebuildSplitView(for: tab)
+            host?.reloadTabBar()
+            return true
+        }
+
         if let currentController = currentSplitController {
             detachController(currentController)
         }
@@ -117,7 +134,6 @@ final class TabController: NSObject {
         }
 
         tab.isActive = true
-        let insertIndex = tabs.isEmpty ? 0 : min(activeTabIndex + 1, tabs.count)
         tabs.insert(tab, at: insertIndex)
         activeTabIndex = insertIndex
 
@@ -306,6 +322,7 @@ final class TabController: NSObject {
         guard !tabs.isEmpty else { return }
 
         let tabStates: [SessionTabState] = tabs.map { tab in
+            let kept = tab.panes.map { $0.paneType == .terminal }
             let panes: [SessionPaneState] = tab.panes.compactMap { pane in
                 switch pane.paneType {
                 case .terminal:
@@ -321,7 +338,7 @@ final class TabController: NSObject {
             }
             return SessionTabState(
                 panes: panes,
-                activePaneIndex: min(tab.activePaneIndex, max(panes.count - 1, 0)),
+                activePaneIndex: Self.savedActivePaneIndex(kept: kept, activePaneIndex: tab.activePaneIndex),
                 customTitle: tab.customTitle
             )
         }
@@ -402,6 +419,17 @@ final class TabController: NSObject {
         }
         // Point the sidebar at the restored tab's directory right away.
         host?.syncSidebarToActiveTab()
+    }
+
+    /// The active pane's index among the panes a session saves (`kept`, one
+    /// flag per pane in order; only terminals are kept). A dropped active
+    /// pane (an editor or changes pane) maps to the kept pane before it, or
+    /// the first.
+    static func savedActivePaneIndex(kept: [Bool], activePaneIndex: Int) -> Int {
+        let before = kept.prefix(max(0, activePaneIndex)).filter { $0 }.count
+        let activeIsKept = kept.indices.contains(activePaneIndex) && kept[activePaneIndex]
+        let keptCount = kept.filter { $0 }.count
+        return max(0, min(activeIsKept ? before : before - 1, keptCount - 1))
     }
 
     private func restoreTab(from state: SessionTabState) {

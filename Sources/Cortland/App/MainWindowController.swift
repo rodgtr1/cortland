@@ -865,7 +865,10 @@ class MainWindowController: NSWindowController {
 
     @objc private func paneAgentStateChanged(_ notification: Notification) {
         guard let pane = notification.object as? PaneModel,
-              notification.userInfo?["agentState"] is AgentState else { return }
+              let state = notification.userInfo?["agentState"] as? AgentState else { return }
+        if let previous = notification.userInfo?["previousAgentState"] as? AgentState {
+            showChangesIfTurnChangedFiles(pane: pane, from: previous, to: state)
+        }
 
         if let tab = tabs.first(where: { $0.panes.contains(where: { $0.id == pane.id }) }) {
             // PaneModel has already stored the new state. Aggregate all panes
@@ -1146,22 +1149,37 @@ extension MainWindowController: SidebarContainerDelegate {
     }
 
     private func openUncommittedChangesInNewTab(repositoryPath: String, source: ChangesSource, focusedFilePath: String?) {
-        if let existingIndex = tabs.firstIndex(where: { tab in
-            tab.panes.count == 1 &&
-            tab.panes.first?.paneType == .uncommittedChanges &&
-            ChangesSource.paneMatches(
-                paneRepository: tab.panes.first?.currentDirectory,
-                paneSource: tab.panes.first?.uncommittedChangesViewController?.source,
-                repositoryPath: repositoryPath,
-                source: source
-            )
-        }) {
-            switchToTab(index: existingIndex)
-            tabs[existingIndex].panes.first?.uncommittedChangesViewController?.reload(focusedFilePath: focusedFilePath)
+        if let location = changesPaneLocation(repositoryPath: repositoryPath, source: source) {
+            let tab = tabs[location.tab]
+            let pane = tab.panes[location.pane]
+            switchToTab(index: location.tab)
+            automationSplitController(forTab: tab.id)?.focusPane(id: pane.id)
+            pane.uncommittedChangesViewController?.reload(focusedFilePath: focusedFilePath)
             return
         }
+        openSinglePaneTab(pane: makeChangesPane(repositoryPath: repositoryPath, source: source, focusedFilePath: focusedFilePath))
+    }
 
-        let pane = PaneFactory.uncommittedChangesPane(
+    /// The open changes pane for a checkout and source, in any tab, alone or
+    /// inside a split.
+    private func changesPaneLocation(repositoryPath: String, source: ChangesSource) -> (tab: Int, pane: Int)? {
+        ChangesSource.paneLocation(
+            in: tabs.map { tab in
+                tab.panes.map { pane in
+                    pane.paneType == .uncommittedChanges
+                        ? (pane.currentDirectory, pane.uncommittedChangesViewController?.source)
+                        : (nil, nil)
+                }
+            },
+            repositoryPath: repositoryPath,
+            source: source
+        )
+    }
+
+    /// A changes pane wired to open files, list and message agents, and ask
+    /// an agent pane's state.
+    private func makeChangesPane(repositoryPath: String, source: ChangesSource, focusedFilePath: String?) -> PaneModel {
+        PaneFactory.uncommittedChangesPane(
             repositoryPath: repositoryPath,
             source: source,
             focusedFilePath: focusedFilePath,
@@ -1178,7 +1196,70 @@ extension MainWindowController: SidebarContainerDelegate {
                 self?.tabs.lazy.flatMap(\.panes).first(where: { $0.id == paneID })?.agentState
             }
         )
-        openSinglePaneTab(pane: pane)
+    }
+
+    /// After an agent pane finishes a turn: when that turn took a snapshot
+    /// and changed files, shows the turn in a changes pane per
+    /// `[changes] show_on_agent_done`. The lookup and diff run on the
+    /// snapshot queue, after the turn's own snapshot.
+    private func showChangesIfTurnChangedFiles(pane: PaneModel, from previous: AgentState, to next: AgentState) {
+        guard next == .done,
+              (config.changes ?? ChangesConfig()).showOnAgentDoneSetting != .off,
+              let cwd = pane.resolvedWorkingDirectory() else { return }
+        let paneID = pane.id
+        let turnStartedAt = pane.terminalViewController?.turnSnapshotRequestedAt
+        TurnSnapshotService.queue.async {
+            let service = TurnSnapshotService.shared
+            guard let root = GitService().repositoryRoot(from: cwd) else { return }
+            let snapshot = try? TurnSnapshotService.finishedTurnToShow(
+                from: previous,
+                to: next,
+                turnStartedAt: turnStartedAt,
+                paneSnapshots: (try? service.list(repositoryRoot: root, paneID: paneID)) ?? [],
+                changeCount: { try service.changesSinceSnapshot(commit: $0.commit, repositoryRoot: root).count }
+            )
+            guard snapshot != nil else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.showFinishedTurn(agentPaneID: paneID, repositoryPath: root)
+            }
+        }
+    }
+
+    /// Never changes keyboard focus or the selected tab.
+    private func showFinishedTurn(agentPaneID: UUID, repositoryPath: String) {
+        guard let agentTab = tabs.first(where: { $0.panes.contains(where: { $0.id == agentPaneID }) }) else { return }
+        let existing = changesPaneLocation(repositoryPath: repositoryPath, source: .uncommitted)
+        let placement = ChangesShowOnAgentDone.placement(
+            (config.changes ?? ChangesConfig()).showOnAgentDoneSetting,
+            hasOpenPane: existing != nil,
+            panesInAgentTab: agentTab.panes.count
+        )
+        switch placement {
+        case .none:
+            return
+        case .reuse:
+            guard let existing else { return }
+            tabs[existing.tab].panes[existing.pane].uncommittedChangesViewController?.showTurn(following: agentPaneID)
+        case .split:
+            let pane = makeChangesPane(repositoryPath: repositoryPath, source: .uncommitted, focusedFilePath: nil)
+            pane.uncommittedChangesViewController?.showTurn(following: agentPaneID)
+            if automationSplitController(forTab: agentTab.id)?.splitPane(
+                direction: .horizontal,
+                targetPaneID: agentPaneID,
+                focus: false,
+                pane: pane
+            ) == nil {
+                openFinishedTurnInBackgroundTab(agentPaneID: agentPaneID, repositoryPath: repositoryPath)
+            }
+        case .tab:
+            openFinishedTurnInBackgroundTab(agentPaneID: agentPaneID, repositoryPath: repositoryPath)
+        }
+    }
+
+    private func openFinishedTurnInBackgroundTab(agentPaneID: UUID, repositoryPath: String) {
+        let pane = makeChangesPane(repositoryPath: repositoryPath, source: .uncommitted, focusedFilePath: nil)
+        pane.uncommittedChangesViewController?.showTurn(following: agentPaneID)
+        openSinglePaneTab(pane: pane, activate: false)
     }
 
     /// Terminal panes running an agent (the `agent_list` notion) whose
@@ -1213,13 +1294,13 @@ extension MainWindowController: SidebarContainerDelegate {
         return true
     }
 
-    private func openSinglePaneTab(pane: PaneModel) {
+    private func openSinglePaneTab(pane: PaneModel, activate: Bool = true) {
         let tab = TabModel()
         tab.panes = [pane]
         tab.activePaneIndex = 0
         tab.updateTitleFromActivePane()
 
-        guard tabController.installTab(tab) else { return }
+        guard tabController.installTab(tab, activate: activate), activate else { return }
         syncSidebarToActiveTab()
     }
 

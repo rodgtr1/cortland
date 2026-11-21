@@ -584,6 +584,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// The last state `agentStateDetector` delivered, so a change can be judged
     /// as a turn start (see `TurnSnapshotService.startsTurn`).
     private var lastAgentState: AgentState = .idle
+    /// When the current turn asked for its turn snapshot; nil when the
+    /// current turn took none.
+    private(set) var turnSnapshotRequestedAt: Date?
     /// Buffered OSC 133/666 sequence extraction from the output stream.
     private var shellIntegrationParser = ShellIntegrationParser()
     private var pendingDetectionOutput = ""
@@ -665,11 +668,17 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             guard let self else { return }
             let previous = self.lastAgentState
             self.lastAgentState = state
-            if TurnSnapshotService.startsTurn(
+            let startsTurn = TurnSnapshotService.startsTurn(
                 from: previous,
                 to: state,
                 hookAuthoritative: self.agentStateDetector.hasExplicitStatus
-            ) {
+            )
+            // Any turn start resets this, so a turn that took no snapshot never
+            // inherits an earlier turn's.
+            if state == .working, previous == .done || previous == .idle {
+                self.turnSnapshotRequestedAt = startsTurn ? Date() : nil
+            }
+            if startsTurn {
                 self.snapshotTurn(isSessionStart: TurnSnapshotService.isSessionStart(from: previous))
             }
             self.delegate?.terminalDidDetectAgentState(self, state: state)

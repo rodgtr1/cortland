@@ -270,6 +270,7 @@ extension PaneModel: TerminalViewControllerDelegate {
     }
 
     func terminalDidDetectAgentState(_ terminal: TerminalViewController, state: AgentState) {
+        let previous = agentState
         if agentState != state {
             agentState = state
             agentStateChangedAt = Date()
@@ -277,7 +278,7 @@ extension PaneModel: TerminalViewControllerDelegate {
         NotificationCenter.default.post(
             name: .paneAgentStateChanged,
             object: self,
-            userInfo: ["agentState": state]
+            userInfo: ["agentState": state, "previousAgentState": previous]
         )
     }
 

@@ -192,7 +192,8 @@ class PaneSplitController: NSViewController {
         targetPaneID: UUID? = nil,
         initialDirectory: String? = nil,
         command: [String]? = nil,
-        focus: Bool = true
+        focus: Bool = true,
+        pane prebuiltPane: PaneModel? = nil
     ) -> PaneModel? {
         guard panes.count < Limits.maxPanesPerTab else { return nil }
         let targetIndex: Int
@@ -219,12 +220,19 @@ class PaneSplitController: NSViewController {
         let currentDirectory = initialDirectory ?? activePane.resolvedWorkingDirectory()
         Log.debug("🔧 Starting new pane in directory: \(currentDirectory ?? "home")", category: "panes")
 
-        let newPane = PaneModel()
-        newPane.createTerminalViewController(
-            config: config,
-            initialDirectory: currentDirectory,
-            command: command
-        )
+        // A caller can hand in a pane it built (a changes pane); otherwise
+        // the split starts a terminal.
+        let newPane: PaneModel
+        if let prebuiltPane {
+            newPane = prebuiltPane
+        } else {
+            newPane = PaneModel()
+            newPane.createTerminalViewController(
+                config: config,
+                initialDirectory: currentDirectory,
+                command: command
+            )
+        }
 
         // The model isn't mutated and didAddPane isn't fired until the pane is
         // actually inserted into the view hierarchy below. A bail before then

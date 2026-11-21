@@ -16,6 +16,10 @@ final class UncommittedChangesViewController: NSViewController {
     /// The scope picked in the scope control; per pane, never saved. Only a
     /// pane opened on uncommitted changes offers the control.
     private var scope: ChangesScope = .uncommitted
+    /// The agent pane whose snapshots This turn and This session prefer;
+    /// nil to use the newest in the checkout.
+    private(set) var followedPaneID: UUID?
+    private var scopeControl: NSSegmentedControl?
     /// What the pane shows now: `source`, narrowed by `scope`.
     private var shownSource: ChangesSource {
         ChangesScope.shownSource(createdWith: source, scope: scope)
@@ -157,6 +161,19 @@ final class UncommittedChangesViewController: NSViewController {
         loadChanges()
     }
 
+    /// Switches to This turn, following `paneID`'s snapshots, and refreshes.
+    /// Used when that pane's agent finishes a turn; never takes focus.
+    func showTurn(following paneID: UUID) {
+        followedPaneID = paneID
+        if scope != .thisTurn {
+            scope = .thisTurn
+            scopeControl?.selectedSegment = ChangesScope.allCases.firstIndex(of: .thisTurn) ?? 0
+            rewindOffer = nil
+            updateRewindButtons()
+        }
+        loadChanges()
+    }
+
     /// The Uncommitted / This turn / This session switch along the top of a
     /// pane opened on uncommitted changes. Returns the anchor the scroll view
     /// hangs from: the bar's bottom, or the view's top when there is no bar.
@@ -184,6 +201,7 @@ final class UncommittedChangesViewController: NSViewController {
         control.selectedSegment = ChangesScope.allCases.firstIndex(of: scope) ?? 0
         control.refusesFirstResponder = true
         control.translatesAutoresizingMaskIntoConstraints = false
+        scopeControl = control
 
         let rewind = makeScopeBarButton(title: "Rewind\u{2026}", action: #selector(rewindClicked))
         rewind.toolTip = "Put the working tree back to how it was at this scope's start"
@@ -479,7 +497,7 @@ final class UncommittedChangesViewController: NSViewController {
         }
         let request = requests.begin()
 
-        DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService, shownSource, scope, source] in
+        DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService, shownSource, scope, source, followedPaneID] in
             // A nil list means the scope has no snapshot to compare against.
             let result: Result<[ChangeSection]?, Error>
             var rewindTarget: TurnSnapshot?
@@ -487,7 +505,11 @@ final class UncommittedChangesViewController: NSViewController {
                 if case .branch = shownSource {
                     result = .success(try Self.branchSections(repositoryPath: repositoryPath, gitService: gitService))
                 } else if scope != .uncommitted {
-                    let loaded = try Self.snapshotSections(repositoryPath: repositoryPath, scope: scope)
+                    let loaded = try Self.snapshotSections(
+                        repositoryPath: repositoryPath,
+                        scope: scope,
+                        followedPane: followedPaneID
+                    )
                     rewindTarget = loaded?.snapshot
                     result = .success(loaded?.sections)
                 } else {
@@ -547,10 +569,14 @@ final class UncommittedChangesViewController: NSViewController {
     /// nil when the repository has no snapshot.
     private nonisolated static func snapshotSections(
         repositoryPath: String,
-        scope: ChangesScope
+        scope: ChangesScope,
+        followedPane: UUID?
     ) throws -> (snapshot: TurnSnapshot, sections: [ChangeSection])? {
         let service = TurnSnapshotService.shared
-        guard let snapshot = scope.snapshot(in: try service.list(repositoryRoot: repositoryPath)) else { return nil }
+        guard let snapshot = scope.snapshot(
+            in: try service.list(repositoryRoot: repositoryPath),
+            followedPane: followedPane
+        ) else { return nil }
         let sections = try service.changesSinceSnapshot(commit: snapshot.commit, repositoryRoot: repositoryPath).map { change in
             ChangeSection(
                 relativePath: change.path,
@@ -2277,6 +2303,55 @@ nonisolated enum ChangesSource: Equatable, Sendable {
     ) -> Bool {
         paneRepository == repositoryPath && paneSource == source
     }
+
+    /// Where an open changes pane for `repositoryPath` and `source` is, given
+    /// every tab's panes in order (nil fields for panes that are not changes
+    /// panes). Finds one alone in a tab or inside a split.
+    static func paneLocation(
+        in tabs: [[(repository: String?, source: ChangesSource?)]],
+        repositoryPath: String,
+        source: ChangesSource
+    ) -> (tab: Int, pane: Int)? {
+        for (tabIndex, panes) in tabs.enumerated() {
+            if let paneIndex = panes.firstIndex(where: {
+                paneMatches(paneRepository: $0.repository, paneSource: $0.source, repositoryPath: repositoryPath, source: source)
+            }) {
+                return (tabIndex, paneIndex)
+            }
+        }
+        return nil
+    }
+}
+
+/// `[changes] show_on_agent_done`: how the changes pane appears when an agent
+/// finishes a turn that changed files.
+nonisolated enum ChangesShowOnAgentDone: String, CaseIterable, Sendable {
+    case split, tab, off
+
+    /// Unknown values read as the default, `split`.
+    init(configValue: String?) {
+        self = configValue.flatMap { Self(rawValue: $0.lowercased()) } ?? .split
+    }
+
+    /// Where the pane goes for a finished turn.
+    enum Placement: Equatable {
+        /// Refresh the changes pane already open for that checkout.
+        case reuse
+        /// Split it to the right of the agent's pane.
+        case split
+        /// Open it in a new tab, without switching to it.
+        case tab
+        case none
+    }
+
+    @MainActor static func placement(_ setting: ChangesShowOnAgentDone, hasOpenPane: Bool, panesInAgentTab: Int) -> Placement {
+        switch setting {
+        case .off: return .none
+        case _ where hasOpenPane: return .reuse
+        case .split: return panesInAgentTab < Limits.maxPanesPerTab ? .split : .tab
+        case .tab: return .tab
+        }
+    }
 }
 
 /// The changes pane's scope control: what a pane opened on uncommitted
@@ -2301,12 +2376,13 @@ nonisolated enum ChangesScope: CaseIterable, Equatable, Sendable {
     }
 
     /// The snapshot the scope compares against, from the repository's
-    /// snapshots oldest first; nil for `.uncommitted` or when there is none.
-    func snapshot(in snapshots: [TurnSnapshot]) -> TurnSnapshot? {
+    /// snapshots oldest first, preferring `followedPane`'s; nil for
+    /// `.uncommitted` or when there is none.
+    func snapshot(in snapshots: [TurnSnapshot], followedPane: UUID? = nil) -> TurnSnapshot? {
         switch self {
         case .uncommitted: return nil
-        case .thisTurn: return TurnSnapshotService.turnSnapshot(in: snapshots)
-        case .thisSession: return TurnSnapshotService.sessionSnapshot(in: snapshots)
+        case .thisTurn: return TurnSnapshotService.turnSnapshot(in: snapshots, followedPane: followedPane)
+        case .thisSession: return TurnSnapshotService.sessionSnapshot(in: snapshots, followedPane: followedPane)
         }
     }
 

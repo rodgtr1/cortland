@@ -16,6 +16,7 @@ public struct Config: Codable {
     public var notifications: NotificationsConfig?  // Make optional for backwards compatibility
     public var arcade: ArcadeConfig?  // Make optional for backwards compatibility
     public var handoff: HandoffConfig?  // Make optional for backwards compatibility
+    public var changes: ChangesConfig?  // Make optional for backwards compatibility
 
     /// True when this value is the defaults returned because the on-disk file
     /// existed but could not be read or parsed — as opposed to a legitimate
@@ -27,7 +28,7 @@ public struct Config: Codable {
     // Only the real config sections are (de)coded; `loadDidFail` is transient
     // and its default keeps synthesized Codable happy without persisting it.
     enum CodingKeys: String, CodingKey {
-        case theme, font, cursor, window, behavior, shell, diff, editor, approval, telemetry, notifications, arcade, handoff
+        case theme, font, cursor, window, behavior, shell, diff, editor, approval, telemetry, notifications, arcade, handoff, changes
     }
 
     public init() {
@@ -44,6 +45,7 @@ public struct Config: Codable {
         self.notifications = NotificationsConfig()
         self.arcade = ArcadeConfig()
         self.handoff = HandoffConfig()
+        self.changes = ChangesConfig()
     }
 
     public static func load(from path: String = "~/.config/cortland/config.toml") -> Config {
@@ -292,6 +294,18 @@ enabled = false
 #   handoff file's path; without the token, a sentence naming the path is
 #   appended. Leave unset to use the built-in prompt.
 # prompt = "Summarize this session for a new agent and write it to {path}, then stop."
+
+[changes]
+# show_on_agent_done: what happens when an agent finishes a turn that changed
+#   files (agents with Cortland hooks only). The changes pane shows that turn
+#   and never takes keyboard focus or switches tabs. An open changes pane for
+#   the checkout is reused.
+#   "split": split it to the right of the agent's pane (a new tab when the
+#            agent's tab is full). Default, and what an unrecognized
+#            value reads as.
+#   "tab":   open it in a new tab in the background.
+#   "off":   do nothing.
+show_on_agent_done = "split"
 """
 
         // Create directory if needed
@@ -767,5 +781,32 @@ nonisolated public struct HandoffConfig: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.prompt = try container.decodeIfPresent(String.self, forKey: .prompt)
+    }
+}
+
+// MARK: - Changes Configuration
+/// Settings for the changes pane. Optional in `Config` so files written
+/// before the section existed still parse.
+nonisolated public struct ChangesConfig: Codable, Sendable {
+    /// `split`, `tab`, or `off`; see `ChangesShowOnAgentDone`. Kept as the
+    /// raw string so an unknown value still parses and reads as the default.
+    public var showOnAgentDone: String
+
+    enum CodingKeys: String, CodingKey {
+        case showOnAgentDone = "show_on_agent_done"
+    }
+
+    public init() {
+        self.showOnAgentDone = ChangesShowOnAgentDone.split.rawValue
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        showOnAgentDone = try container.decodeIfPresent(String.self, forKey: .showOnAgentDone) ?? showOnAgentDone
+    }
+
+    var showOnAgentDoneSetting: ChangesShowOnAgentDone {
+        ChangesShowOnAgentDone(configValue: showOnAgentDone)
     }
 }
