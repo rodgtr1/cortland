@@ -7,6 +7,8 @@ final class UncommittedChangesViewController: NSViewController {
     var agentsForRepository: ((String) -> [ChangesComments.Agent])?
     /// Delivers a prompt to an agent pane by id; false when it is gone.
     var sendToAgent: ((UUID, String) -> Bool)?
+    /// A pane's current agent state; nil when the pane no longer exists.
+    var agentStateForPane: ((UUID) -> AgentState?)?
 
     private var repositoryPath: String
     /// The changes the pane was opened on, fixed at creation.
@@ -29,6 +31,9 @@ final class UncommittedChangesViewController: NSViewController {
     private var hasRewindUndo = false
     /// A rewind or undo is running, so neither button can start another.
     private var isRewinding = false
+    /// The last rewind this pane ran: the pane it targeted and whether that
+    /// pane's agent was told. Kept while the undo snapshot exists.
+    private var lastRewind: ChangesRewind.Record?
     private var focusedFilePath: String?
     private let gitService: GitService
     private var scrollView: NSScrollView!
@@ -140,6 +145,10 @@ final class UncommittedChangesViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         startWatching()
+        // Rewind and Undo Rewind wait for the target pane's agent to stop.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(paneAgentStateChanged), name: .paneAgentStateChanged, object: nil
+        )
         loadChanges()
     }
 
@@ -234,63 +243,138 @@ final class UncommittedChangesViewController: NSViewController {
             changedFileCount: rewindOffer.map { $0.counts.restored + $0.counts.deleted } ?? 0
         )
         undoRewindButton?.isHidden = !hasRewindUndo
-        rewindButton?.isEnabled = !isRewinding
-        undoRewindButton?.isEnabled = !isRewinding
+        let rewind = rewindAvailability()
+        let undo = undoRewindAvailability()
+        rewindButton?.isEnabled = !isRewinding && rewind.isEnabled
+        rewindButton?.toolTip = rewind.toolTip
+        undoRewindButton?.isEnabled = !isRewinding && undo.isEnabled
+        undoRewindButton?.toolTip = undo.toolTip
+    }
+
+    /// Rewind waits for the agent in the pane that took the snapshot.
+    private func rewindAvailability() -> ChangesRewind.Availability {
+        ChangesRewind.availability(
+            .rewind,
+            agentState: rewindOffer.flatMap { agentStateForPane?($0.snapshot.paneID) }
+        )
+    }
+
+    /// Undo Rewind waits for the agent in the pane the rewind targeted.
+    private func undoRewindAvailability() -> ChangesRewind.Availability {
+        ChangesRewind.availability(
+            .undo,
+            agentState: lastRewind.flatMap { agentStateForPane?($0.paneID) }
+        )
+    }
+
+    @objc private func paneAgentStateChanged() {
+        updateRewindButtons()
     }
 
     @objc private func rewindClicked() {
-        guard let window = view.window, let offer = rewindOffer, !isRewinding else { return }
+        guard let window = view.window, let offer = rewindOffer, !isRewinding, rewindAvailability().isEnabled else { return }
         let alert = NSAlert()
         alert.messageText = ChangesRewind.confirmationTitle(scope: scope)
         alert.informativeText = ChangesRewind.confirmationMessage(counts: offer.counts, scope: scope)
         alert.alertStyle = .warning
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Notify the agent"
+        alert.suppressionButton?.state = .on
         // The first button is the default, so Return cancels.
         alert.addButton(withTitle: "Cancel")
         let rewind = alert.addButton(withTitle: "Rewind")
         rewind.hasDestructiveAction = true
 
+        let rewoundScope = scope
         alert.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .alertSecondButtonReturn else { return }
-            self.runRewind(failureTitle: "Rewind Failed") { service, root in
-                try service.rewind(to: offer.snapshot.commit, repositoryRoot: root)
+            let updatesAgent = alert.suppressionButton?.state == .on
+            // The agent may have started a turn while the alert was open.
+            let availability = self.rewindAvailability()
+            guard availability.isEnabled else {
+                self.showRewindFailure(title: "Rewind Failed", message: availability.toolTip)
+                return
             }
+            self.runRewind(failureTitle: "Rewind Failed", { service, root in
+                try service.rewind(to: offer.snapshot.commit, repositoryRoot: root)
+            }, onSuccess: { changes in
+                let paneID = offer.snapshot.paneID
+                var updated = false
+                if updatesAgent {
+                    let prompt = ChangesRewind.agentPrompt(
+                        scope: rewoundScope,
+                        restored: changes.filter { $0.status != .added }.map(\.path),
+                        deleted: changes.filter { $0.status == .added && !$0.path.hasSuffix("/") }.map(\.path)
+                    )
+                    // The turn this prompt starts must not drop the undo ref.
+                    TurnSnapshotService.shared.markRewindUpdateTurn(paneID: paneID, repositoryRoot: self.repositoryPath)
+                    updated = self.sendToAgent?(paneID, prompt) == true
+                    if !updated {
+                        TurnSnapshotService.shared.clearRewindUpdateTurn(paneID: paneID, repositoryRoot: self.repositoryPath)
+                        self.showReviewBarNote("Rewound. The agent could not be told.")
+                    }
+                }
+                self.lastRewind = ChangesRewind.Record(paneID: paneID, updatedAgent: updated)
+            })
         }
     }
 
     @objc private func undoRewindClicked() {
-        guard !isRewinding else { return }
-        runRewind(failureTitle: "Undo Rewind Failed") { service, root in
+        guard !isRewinding, undoRewindAvailability().isEnabled else { return }
+        let promptPane = ChangesRewind.undoPromptPane(after: lastRewind)
+        runRewind(failureTitle: "Undo Rewind Failed", { service, root in
             try service.undoRewind(repositoryRoot: root)
-        }
+        }, onSuccess: { _ in
+            self.lastRewind = nil
+            guard let promptPane else { return }
+            if self.sendToAgent?(promptPane, ChangesRewind.undoAgentPrompt) != true {
+                self.showReviewBarNote("Rewind undone. The agent could not be told.")
+            }
+        })
     }
 
     /// Runs a rewind or undo on the snapshot queue, so it never interleaves
     /// with a turn snapshot, then refreshes the pane and reports a failure.
-    private func runRewind(failureTitle: String, _ operation: @escaping @Sendable (TurnSnapshotService, String) throws -> Void) {
+    /// `onSuccess` runs on the main thread with the operation's result.
+    private func runRewind<Result: Sendable>(
+        failureTitle: String,
+        _ operation: @escaping @Sendable (TurnSnapshotService, String) throws -> Result,
+        onSuccess: @escaping @MainActor @Sendable (Result) -> Void
+    ) {
         isRewinding = true
         updateRewindButtons()
         TurnSnapshotService.queue.async { [repositoryPath] in
-            let failure: String?
+            let outcome: Swift.Result<Result, Error>
             do {
-                try operation(TurnSnapshotService.shared, repositoryPath)
-                failure = nil
+                outcome = .success(try operation(TurnSnapshotService.shared, repositoryPath))
             } catch {
-                failure = error.localizedDescription
+                outcome = .failure(error)
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.isRewinding = false
-                self.updateRewindButtons()
-                self.loadChanges()
-                guard let failure, let window = self.view.window else { return }
-                let alert = NSAlert()
-                alert.messageText = failureTitle
-                alert.informativeText = failure
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "OK")
-                alert.beginSheetModal(for: window)
+                switch outcome {
+                case .success(let value):
+                    onSuccess(value)
+                    self.updateRewindButtons()
+                    self.loadChanges()
+                case .failure(let error):
+                    self.updateRewindButtons()
+                    self.loadChanges()
+                    self.showRewindFailure(title: failureTitle, message: error.localizedDescription)
+                }
             }
         }
+    }
+
+    private func showRewindFailure(title: String, message: String) {
+        guard let window = view.window else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window)
     }
 
     @objc private func scopeChanged(_ sender: NSSegmentedControl) {
@@ -493,6 +577,9 @@ final class UncommittedChangesViewController: NSViewController {
                 (snapshot, ChangesRewind.counts(for: (sections ?? []).map(\.status)))
             }
             self.hasRewindUndo = hasRewindUndo
+            if !hasRewindUndo {
+                lastRewind = nil
+            }
             updateRewindButtons()
         }
 
@@ -1921,6 +2008,17 @@ final class UncommittedChangesViewController: NSViewController {
         comments.removeAll()
         commentPopover?.close()
         positionCommentIcons()
+        showReviewBarConfirmation(confirmation)
+    }
+
+    /// A short note in the review bar, unless comments are waiting there.
+    private func showReviewBarNote(_ note: String) {
+        guard comments.isEmpty else { return }
+        showReviewBarConfirmation(note)
+    }
+
+    /// Shows `confirmation` in the review bar for a few seconds.
+    private func showReviewBarConfirmation(_ confirmation: String) {
         displayedSendMode = nil
         reviewCountLabel.stringValue = confirmation
         reviewPrimaryButton.isHidden = true
@@ -2254,10 +2352,88 @@ nonisolated enum ChangesRewind {
 
         Commits made since are not undone: the reverted content shows as uncommitted changes.
 
-        The agent is not told. Its conversation still assumes its edits exist.
+        The agent's conversation still assumes its edits exist, so it should be told.
 
         You can undo this once with Undo Rewind.
         """
+    }
+
+    // MARK: Updating the agent
+
+    /// A rewind this pane ran: the pane whose snapshot it went back to, and
+    /// whether that pane's agent was told.
+    struct Record: Equatable {
+        let paneID: UUID
+        let updatedAgent: Bool
+    }
+
+    /// The pane an Undo Rewind tells: the one the rewind told, and only if
+    /// it told one.
+    static func undoPromptPane(after rewind: Record?) -> UUID? {
+        guard let rewind, rewind.updatedAgent else { return nil }
+        return rewind.paneID
+    }
+
+    /// Paths listed per section of a rewind prompt before "and N more".
+    static let promptPathLimit = 20
+
+    /// What the agent in the snapshot's pane is told after a rewind: the
+    /// files restored and deleted, repository-relative. A list with nothing
+    /// in it is left out, heading and all.
+    static func agentPrompt(scope: ChangesScope, restored: [String], deleted: [String]) -> String {
+        let start = scope == .thisSession ? "this session started" : "this turn started"
+        var parts = ["The user rewound the working tree to how it was when \(start)."]
+        if !restored.isEmpty {
+            parts.append("Files restored to how they were then:\n" + pathList(restored))
+        }
+        if !deleted.isEmpty {
+            parts.append("Files deleted (created since then):\n" + pathList(deleted))
+        }
+        parts.append("Commits made since were not undone, so reverted content shows as uncommitted changes.")
+        parts.append("Do not assume your earlier edits exist. Re-read files before continuing.")
+        return parts.joined(separator: "\n\n")
+    }
+
+    /// What the same agent is told after Undo Rewind.
+    static let undoAgentPrompt = """
+    The user undid the rewind. The working tree is back to how it was just before the rewind. \
+    Re-read files before continuing.
+    """
+
+    private static func pathList(_ paths: [String]) -> String {
+        var lines = paths.prefix(promptPathLimit).map { "- \($0)" }
+        if paths.count > promptPathLimit {
+            lines.append("- and \(paths.count - promptPathLimit) more")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: Waiting for the agent
+
+    enum Action {
+        case rewind, undo
+    }
+
+    struct Availability: Equatable {
+        let isEnabled: Bool
+        let toolTip: String
+    }
+
+    /// Whether Rewind or Undo Rewind can run given the target pane's agent
+    /// state (nil when the pane no longer exists). A working agent (gated
+    /// included) or one waiting on input is mid-turn and would keep writing.
+    static func availability(_ action: Action, agentState: AgentState?) -> Availability {
+        let name = action == .rewind ? "Rewind" : "Undo Rewind"
+        switch agentState {
+        case .working:
+            return Availability(isEnabled: false, toolTip: "The agent is still working. \(name) is available when it stops.")
+        case .ready:
+            return Availability(isEnabled: false, toolTip: "The agent is waiting for input. \(name) is available when it stops.")
+        case .done, .idle, nil:
+            return Availability(isEnabled: true, toolTip: action == .rewind
+                ? "Put the working tree back to how it was at this scope's start"
+                : "Restore the working tree as it was before the last rewind")
+        }
     }
 
     private static func fileCount(_ count: Int) -> String {

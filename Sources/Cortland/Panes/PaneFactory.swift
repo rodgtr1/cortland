@@ -22,7 +22,8 @@ enum PaneFactory {
         focusedFilePath: String? = nil,
         onOpenFile: ((String) -> Void)? = nil,
         agentsForRepository: ((String) -> [ChangesComments.Agent])? = nil,
-        sendToAgent: ((UUID, String) -> Bool)? = nil
+        sendToAgent: ((UUID, String) -> Bool)? = nil,
+        agentStateForPane: ((UUID) -> AgentState?)? = nil
     ) -> PaneModel {
         let pane = PaneModel()
         pane.createUncommittedChangesViewController(
@@ -31,7 +32,8 @@ enum PaneFactory {
             focusedFilePath: focusedFilePath,
             onOpenFile: onOpenFile,
             agentsForRepository: agentsForRepository,
-            sendToAgent: sendToAgent
+            sendToAgent: sendToAgent,
+            agentStateForPane: agentStateForPane
         )
         return pane
     }

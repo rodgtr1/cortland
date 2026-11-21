@@ -157,7 +157,8 @@ class PaneModel: Identifiable, Hashable {
         focusedFilePath: String? = nil,
         onOpenFile: ((String) -> Void)? = nil,
         agentsForRepository: ((String) -> [ChangesComments.Agent])? = nil,
-        sendToAgent: ((UUID, String) -> Bool)? = nil
+        sendToAgent: ((UUID, String) -> Bool)? = nil,
+        agentStateForPane: ((UUID) -> AgentState?)? = nil
     ) {
         let changesVC = UncommittedChangesViewController(
             repositoryPath: repositoryPath,
@@ -167,6 +168,7 @@ class PaneModel: Identifiable, Hashable {
         changesVC.onOpenFile = onOpenFile
         changesVC.agentsForRepository = agentsForRepository
         changesVC.sendToAgent = sendToAgent
+        changesVC.agentStateForPane = agentStateForPane
         self.uncommittedChangesViewController = changesVC
         self.currentDirectory = repositoryPath
 

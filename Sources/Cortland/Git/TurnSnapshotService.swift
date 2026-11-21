@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// One saved working tree: the state a pane's repository was in when an agent
 /// in that pane started a turn. Stored as a commit under
@@ -31,6 +32,11 @@ nonisolated enum TurnSnapshotError: LocalizedError {
     case gitFailed(command: String, stderr: String)
     /// `undoRewind` found no undo snapshot.
     case noRewindUndo
+    /// Something the restore cannot clear stands where a file goes back:
+    /// a directory still holding files the rewind does not delete (ignored
+    /// ones, for example), or such a file where a directory goes back.
+    /// `path` is repository-relative.
+    case restoreBlocked(path: String, isDirectory: Bool)
 
     var errorDescription: String? {
         switch self {
@@ -39,6 +45,14 @@ nonisolated enum TurnSnapshotError: LocalizedError {
             return detail.isEmpty ? "git \(command) failed." : "git \(command) failed: \(detail)"
         case .noRewindUndo:
             return "There is no rewind to undo."
+        case .restoreBlocked(let path, true):
+            return "The directory \"\(path)\" is in the way of a file that needs to be restored, and it holds files "
+                + "that are not deleted (ignored files, for example). Nothing was changed. "
+                + "Move or remove \"\(path)\", then try again."
+        case .restoreBlocked(let path, false):
+            return "The file \"\(path)\" is in the way of a directory that needs to be restored, and it is "
+                + "not deleted (it is ignored, for example). Nothing was changed. "
+                + "Move or remove \"\(path)\", then try again."
         }
     }
 }
@@ -65,11 +79,46 @@ nonisolated final class TurnSnapshotService: Sendable {
     /// Paths per `checkout-index` call in a rewind, so a large rewind stays
     /// under the argument length limit. Tests pass a small one.
     private let checkoutBatchSize: Int
+    /// Panes whose next turn Cortland starts itself by telling the agent
+    /// about a rewind, keyed by resolved repository root and pane. That one
+    /// turn keeps the undo ref. Set on the main thread, consumed on `queue`.
+    private let rewindUpdateTurns = OSAllocatedUnfairLock(initialState: Set<RewindUpdateTurn>())
+
+    private struct RewindUpdateTurn: Hashable, Sendable {
+        let repositoryRoot: String
+        let paneID: UUID
+
+        init(repositoryRoot: String, paneID: UUID) {
+            self.repositoryRoot = URL(fileURLWithPath: repositoryRoot).resolvingSymlinksInPath().standardizedFileURL.path
+            self.paneID = paneID
+        }
+    }
 
     init(runner: ProcessRunning = ProcessRunner.shared, checkoutBatchSize: Int = 300) {
         self.runner = runner
         self.gitService = GitService(runner: runner)
         self.checkoutBatchSize = checkoutBatchSize
+    }
+
+    // MARK: - Rewind update turns
+
+    /// Marks the next turn `paneID` starts in `repositoryRoot` as the one a
+    /// rewind update prompt starts, so its snapshot keeps the undo ref.
+    func markRewindUpdateTurn(paneID: UUID, repositoryRoot: String) {
+        let key = RewindUpdateTurn(repositoryRoot: repositoryRoot, paneID: paneID)
+        _ = rewindUpdateTurns.withLock { $0.insert(key) }
+    }
+
+    /// Drops a mark that no turn will consume (the prompt was not sent).
+    func clearRewindUpdateTurn(paneID: UUID, repositoryRoot: String) {
+        let key = RewindUpdateTurn(repositoryRoot: repositoryRoot, paneID: paneID)
+        _ = rewindUpdateTurns.withLock { $0.remove(key) }
+    }
+
+    /// Removes the mark and reports whether it was there.
+    private func consumeRewindUpdateTurn(paneID: UUID, repositoryRoot: String) -> Bool {
+        let key = RewindUpdateTurn(repositoryRoot: repositoryRoot, paneID: paneID)
+        return rewindUpdateTurns.withLock { $0.remove(key) != nil }
     }
 
     // MARK: - Turn detection
@@ -112,7 +161,8 @@ nonisolated final class TurnSnapshotService: Sendable {
 
     /// Writes the working tree (tracked changes, staged and unstaged, plus
     /// untracked files that are not ignored) to a new snapshot ref, then prunes
-    /// the repository's snapshots to the newest `retainedCount`.
+    /// the repository's snapshots to the newest `retainedCount` and deletes
+    /// the undo ref, unless this pane's turn was marked as a rewind update.
     func takeSnapshot(paneID: UUID, repositoryRoot: String, isSessionStart: Bool = false) throws -> TurnSnapshot {
         let tree = try writeWorkingTree(repositoryRoot: repositoryRoot)
         let head = try currentHead(repositoryRoot: repositoryRoot)
@@ -137,8 +187,11 @@ nonisolated final class TurnSnapshotService: Sendable {
 
         try prune(repositoryRoot: repositoryRoot)
         // The tree has moved on, so a rewind from before this turn no longer
-        // has a state worth undoing to. Deleting a missing ref succeeds.
-        try git(["update-ref", "-d", Self.rewindUndoRef], repositoryRoot: repositoryRoot)
+        // has a state worth undoing to. Deleting a missing ref succeeds. The
+        // one turn a rewind update prompt starts is not the tree moving on.
+        if !consumeRewindUpdateTurn(paneID: paneID, repositoryRoot: repositoryRoot) {
+            try git(["update-ref", "-d", Self.rewindUndoRef], repositoryRoot: repositoryRoot)
+        }
 
         return TurnSnapshot(
             paneID: paneID,
@@ -229,12 +282,15 @@ nonisolated final class TurnSnapshotService: Sendable {
     /// touched, and HEAD, branches, commits, and the real index stay as they
     /// are, so content reverted past a commit shows as uncommitted changes.
     ///
-    /// First saves the current working tree at `rewindUndoRef`, replacing any
-    /// earlier one; if that fails nothing changes. A failure after that throws
-    /// and leaves the undo ref in place. Returns the changes it reverted.
+    /// First checks that nothing it would not delete blocks a restored path
+    /// (`restoreBlocked`), then saves the current working tree at
+    /// `rewindUndoRef`, replacing any earlier one; if either fails nothing
+    /// changes. A failure after that throws and leaves the undo ref in place.
+    /// Returns the changes it reverted.
     @discardableResult
     func rewind(to commit: String, repositoryRoot: String) throws -> [TurnSnapshotChange] {
         let changes = try changesSinceSnapshot(commit: commit, repositoryRoot: repositoryRoot)
+        try checkRestoreIsUnblocked(changes, repositoryRoot: repositoryRoot)
 
         let tree = try writeWorkingTree(repositoryRoot: repositoryRoot)
         var commitArguments = ["commit-tree", tree, "-m", "Cortland rewind undo"]
@@ -247,13 +303,15 @@ nonisolated final class TurnSnapshotService: Sendable {
     }
 
     /// Restores the working tree saved by the last `rewind`, by the same
-    /// mechanism, then deletes the undo ref. Throws `noRewindUndo` when there
-    /// is none; on any other failure the ref stays.
+    /// mechanism and with the same up-front check, then deletes the undo ref.
+    /// Throws `noRewindUndo` when there is none; on any other failure the ref
+    /// stays.
     func undoRewind(repositoryRoot: String) throws {
         guard let undo = try rewindUndoCommit(repositoryRoot: repositoryRoot) else {
             throw TurnSnapshotError.noRewindUndo
         }
         let changes = try changesSinceSnapshot(commit: undo, repositoryRoot: repositoryRoot)
+        try checkRestoreIsUnblocked(changes, repositoryRoot: repositoryRoot)
         try restoreWorkingTree(changes, from: undo, repositoryRoot: repositoryRoot)
         try git(["update-ref", "-d", Self.rewindUndoRef, undo], repositoryRoot: repositoryRoot)
     }
@@ -304,6 +362,67 @@ nonisolated final class TurnSnapshotService: Sendable {
         for path in created where !inTheWay.contains(path) {
             try deleteCreatedFile(path, root: root)
         }
+    }
+
+    /// Throws `restoreBlocked` when a path to restore, or a parent of it, is
+    /// occupied by something deleting the created files would not clear.
+    /// `checkout-index -f` would otherwise remove it, ignored files and all.
+    private func checkRestoreIsUnblocked(_ changes: [TurnSnapshotChange], repositoryRoot: String) throws {
+        let restored = changes.filter { $0.status != .added }.map(\.path)
+        let created = changes.filter { $0.status == .added && !$0.path.hasSuffix("/") }.map(\.path)
+        if let blocker = Self.restoreBlocker(restored: restored, created: created, repositoryRoot: repositoryRoot) {
+            throw TurnSnapshotError.restoreBlocked(path: blocker.path, isDirectory: blocker.isDirectory)
+        }
+    }
+
+    /// The first thing in the working tree that blocks restoring `restored`
+    /// and is not among `created`: a non-directory where a parent directory
+    /// goes back, or a directory where a file goes back that holds anything
+    /// but created files. Reads the file system and changes nothing.
+    static func restoreBlocker(
+        restored: [String],
+        created: [String],
+        repositoryRoot: String
+    ) -> (path: String, isDirectory: Bool)? {
+        let fileManager = FileManager.default
+        let root = URL(fileURLWithPath: repositoryRoot).standardizedFileURL
+        let createdSet = Set(created)
+        var checked = Set<String>()
+        for path in restored {
+            let parts = path.split(separator: "/").map(String.init)
+            for depth in parts.indices {
+                let prefix = parts[...depth].joined(separator: "/")
+                guard checked.insert(prefix).inserted else { continue }
+                // attributesOfItem does not follow symlinks.
+                guard let type = (try? fileManager.attributesOfItem(
+                    atPath: root.appendingPathComponent(prefix).path
+                ))?[.type] as? FileAttributeType else { break }
+                let isDirectory = type == .typeDirectory
+                if depth < parts.count - 1 {
+                    guard !isDirectory else { continue }
+                    if !createdSet.contains(prefix) { return (prefix, false) }
+                    break
+                }
+                if isDirectory, !holdsOnlyCreatedFiles(prefix, created: createdSet, root: root) {
+                    return (prefix, true)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Whether every non-directory inside `directory` is a created file, so
+    /// deleting them leaves nothing but empty directories.
+    private static func holdsOnlyCreatedFiles(_ directory: String, created: Set<String>, root: URL) -> Bool {
+        // A path enumerator does not traverse symlinks to directories.
+        guard let enumerator = FileManager.default.enumerator(atPath: root.appendingPathComponent(directory).path) else {
+            return false
+        }
+        while let relative = enumerator.nextObject() as? String {
+            if enumerator.fileAttributes?[.type] as? FileAttributeType == .typeDirectory { continue }
+            if !created.contains(directory + "/" + relative) { return false }
+        }
+        return true
     }
 
     /// Created paths that block writing a restored one back: inside a restored

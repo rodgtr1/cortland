@@ -505,7 +505,8 @@ final class TurnSnapshotRewindTests: XCTestCase {
         let turn = ChangesRewind.confirmationMessage(counts: .init(restored: 3, deleted: 1), scope: .thisTurn)
         XCTAssertTrue(turn.hasPrefix("3 files will be restored and 1 file will be deleted, putting the working tree back to how it was when this turn started."))
         XCTAssertTrue(turn.contains("Commits made since are not undone"))
-        XCTAssertTrue(turn.contains("The agent is not told. Its conversation still assumes its edits exist."))
+        XCTAssertTrue(turn.contains("The agent's conversation still assumes its edits exist, so it should be told."))
+        XCTAssertFalse(turn.contains("The agent is not told"))
 
         let session = ChangesRewind.confirmationMessage(counts: .init(restored: 1, deleted: 0), scope: .thisSession)
         XCTAssertTrue(session.hasPrefix("1 file will be restored and 0 files will be deleted"))
@@ -517,5 +518,357 @@ final class TurnSnapshotRewindTests: XCTestCase {
             XCTAssertFalse(text.contains("\u{2014}"))
             XCTAssertFalse(text.contains("\u{2013}"))
         }
+    }
+
+    // MARK: - 11. Updating the agent
+
+    func testAgentPromptForATurnListsRestoredAndDeleted() {
+        let prompt = ChangesRewind.agentPrompt(scope: .thisTurn, restored: ["a.txt", "src/b.swift"], deleted: ["new.txt"])
+        XCTAssertEqual(prompt, """
+        The user rewound the working tree to how it was when this turn started.
+
+        Files restored to how they were then:
+        - a.txt
+        - src/b.swift
+
+        Files deleted (created since then):
+        - new.txt
+
+        Commits made since were not undone, so reverted content shows as uncommitted changes.
+
+        Do not assume your earlier edits exist. Re-read files before continuing.
+        """)
+    }
+
+    func testAgentPromptForASessionSaysSession() {
+        let prompt = ChangesRewind.agentPrompt(scope: .thisSession, restored: ["a.txt"], deleted: [])
+        XCTAssertTrue(prompt.hasPrefix("The user rewound the working tree to how it was when this session started."))
+        XCTAssertFalse(prompt.contains("this turn"))
+    }
+
+    func testAgentPromptLeavesOutAnEmptyList() {
+        let onlyRestored = ChangesRewind.agentPrompt(scope: .thisTurn, restored: ["a.txt"], deleted: [])
+        XCTAssertTrue(onlyRestored.contains("Files restored"))
+        XCTAssertFalse(onlyRestored.contains("Files deleted"))
+
+        let onlyDeleted = ChangesRewind.agentPrompt(scope: .thisTurn, restored: [], deleted: ["new.txt"])
+        XCTAssertFalse(onlyDeleted.contains("Files restored"))
+        XCTAssertTrue(onlyDeleted.contains("Files deleted (created since then):\n- new.txt\n\n"))
+
+        let neither = ChangesRewind.agentPrompt(scope: .thisTurn, restored: [], deleted: [])
+        XCTAssertFalse(neither.contains("Files"))
+        XCTAssertFalse(neither.contains(":\n\n"))
+        XCTAssertFalse(neither.contains("\n\n\n"))
+    }
+
+    func testAgentPromptCapsEachListAtTwentyPaths() {
+        let restored = (1...23).map { "r\($0).txt" }
+        let deleted = (1...20).map { "d\($0).txt" }
+        let prompt = ChangesRewind.agentPrompt(scope: .thisTurn, restored: restored, deleted: deleted)
+        XCTAssertTrue(prompt.contains("- r20.txt\n- and 3 more\n\n"))
+        XCTAssertFalse(prompt.contains("r21.txt"))
+        // Exactly twenty is listed in full.
+        XCTAssertTrue(prompt.contains("- d20.txt\n\n"))
+        XCTAssertEqual(prompt.components(separatedBy: "more").count, 2)
+    }
+
+    func testAgentPromptsStateFactsWithOneInstruction() {
+        let prompts = [
+            ChangesRewind.agentPrompt(scope: .thisTurn, restored: ["a.txt"], deleted: ["b.txt"]),
+            ChangesRewind.agentPrompt(scope: .thisSession, restored: (1...30).map { "f\($0)" }, deleted: []),
+            ChangesRewind.undoAgentPrompt
+        ]
+        for prompt in prompts {
+            XCTAssertFalse(prompt.contains("\u{2014}"))
+            XCTAssertFalse(prompt.contains("\u{2013}"))
+            XCTAssertTrue(prompt.hasSuffix("Re-read files before continuing."))
+            XCTAssertFalse(prompt.lowercased().contains("redo"))
+            XCTAssertFalse(prompt.lowercased().contains("please"))
+        }
+    }
+
+    func testUndoAgentPromptWording() {
+        XCTAssertEqual(
+            ChangesRewind.undoAgentPrompt,
+            "The user undid the rewind. The working tree is back to how it was just before the rewind. "
+                + "Re-read files before continuing."
+        )
+    }
+
+    func testUndoTellsAnAgentOnlyWhenTheRewindDid() {
+        let pane = UUID()
+        XCTAssertEqual(ChangesRewind.undoPromptPane(after: .init(paneID: pane, updatedAgent: true)), pane)
+        XCTAssertNil(ChangesRewind.undoPromptPane(after: .init(paneID: pane, updatedAgent: false)))
+        XCTAssertNil(ChangesRewind.undoPromptPane(after: nil))
+    }
+
+    // MARK: - 12. Waiting for the agent
+
+    func testAvailabilityForEveryAgentStateAndAMissingPane() {
+        for action in [ChangesRewind.Action.rewind, .undo] {
+            let name = action == .rewind ? "Rewind" : "Undo Rewind"
+            for state in AgentState.allCases {
+                let availability = ChangesRewind.availability(action, agentState: state)
+                switch state {
+                case .working:
+                    XCTAssertEqual(availability, .init(
+                        isEnabled: false,
+                        toolTip: "The agent is still working. \(name) is available when it stops."
+                    ))
+                case .ready:
+                    XCTAssertEqual(availability, .init(
+                        isEnabled: false,
+                        toolTip: "The agent is waiting for input. \(name) is available when it stops."
+                    ))
+                case .done, .idle:
+                    XCTAssertTrue(availability.isEnabled, "\(action) \(state)")
+                }
+                XCTAssertFalse(availability.toolTip.contains("\u{2014}"))
+                XCTAssertFalse(availability.toolTip.contains("\u{2013}"))
+            }
+            let gone = ChangesRewind.availability(action, agentState: nil)
+            XCTAssertTrue(gone.isEnabled)
+            XCTAssertEqual(gone, ChangesRewind.availability(action, agentState: .done))
+        }
+        XCTAssertEqual(
+            ChangesRewind.availability(.rewind, agentState: .idle).toolTip,
+            "Put the working tree back to how it was at this scope's start"
+        )
+        XCTAssertEqual(
+            ChangesRewind.availability(.undo, agentState: .idle).toolTip,
+            "Restore the working tree as it was before the last rewind"
+        )
+    }
+
+    // MARK: - 13. Refusing a rewind that cannot complete
+
+    /// Every regular file under `repo` outside `.git`, with its bytes.
+    private func fileBytes(in repo: URL) throws -> [String: Data] {
+        var files: [String: Data] = [:]
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(atPath: repo.path))
+        while let relative = enumerator.nextObject() as? String {
+            if relative == ".git" { enumerator.skipDescendants(); continue }
+            guard enumerator.fileAttributes?[.type] as? FileAttributeType == .typeRegular else { continue }
+            files[relative] = try Data(contentsOf: repo.appendingPathComponent(relative))
+        }
+        return files
+    }
+
+    private func assertRestoreBlocked(
+        _ error: Error,
+        path: String,
+        isDirectory: Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard case TurnSnapshotError.restoreBlocked(let blocked, let blockedIsDirectory) = error else {
+            return XCTFail("expected restoreBlocked, got \(error)", file: file, line: line)
+        }
+        XCTAssertEqual(blocked, path, file: file, line: line)
+        XCTAssertEqual(blockedIsDirectory, isDirectory, file: file, line: line)
+        let message = error.localizedDescription
+        XCTAssertTrue(message.contains("\"\(path)\""), message, file: file, line: line)
+        XCTAssertTrue(message.contains("Move or remove"), message, file: file, line: line)
+        XCTAssertTrue(message.contains("Nothing was changed"), message, file: file, line: line)
+        XCTAssertFalse(message.contains("\u{2014}"), file: file, line: line)
+        XCTAssertFalse(message.contains("\u{2013}"), file: file, line: line)
+    }
+
+    func testRewindRefusesWhenACreatedDirectoryHoldsAnIgnoredFile() throws {
+        let repo = try makeRepo()
+        let service = TurnSnapshotService()
+        let snapshot = try service.takeSnapshot(paneID: UUID(), repositoryRoot: repo.path)
+        try write("a agent edit\n", to: "a.txt", in: repo)
+        try remove("b.txt", in: repo)
+        try write("created\n", to: "b.txt/created.txt", in: repo)
+        try write("ignored\n", to: "b.txt/nested/debug.log", in: repo)
+        try write("created\n", to: "other/created.txt", in: repo)
+        let before = try fileBytes(in: repo)
+        let refsBefore = try allRefs(in: repo)
+
+        XCTAssertThrowsError(try service.rewind(to: snapshot.commit, repositoryRoot: repo.path)) { error in
+            self.assertRestoreBlocked(error, path: "b.txt", isDirectory: true)
+        }
+
+        XCTAssertEqual(try fileBytes(in: repo), before)
+        XCTAssertNil(try undoRef(in: repo))
+        XCTAssertEqual(try allRefs(in: repo), refsBefore)
+    }
+
+    func testRefusedRewindLeavesAnOlderUndoRefUnchanged() throws {
+        let repo = try makeRepo()
+        let service = TurnSnapshotService()
+        let snapshot = try service.takeSnapshot(paneID: UUID(), repositoryRoot: repo.path)
+        try write("a agent edit\n", to: "a.txt", in: repo)
+        try service.rewind(to: snapshot.commit, repositoryRoot: repo.path)
+        let olderUndo = try XCTUnwrap(try undoRef(in: repo))
+
+        try remove("b.txt", in: repo)
+        try write("ignored\n", to: "b.txt/debug.log", in: repo)
+        let before = try fileBytes(in: repo)
+
+        XCTAssertThrowsError(try service.rewind(to: snapshot.commit, repositoryRoot: repo.path)) { error in
+            self.assertRestoreBlocked(error, path: "b.txt", isDirectory: true)
+        }
+
+        XCTAssertEqual(try fileBytes(in: repo), before)
+        XCTAssertEqual(try undoRef(in: repo), olderUndo)
+    }
+
+    func testRewindRefusesWhenAnIgnoredFileStandsWhereADirectoryGoesBack() throws {
+        let repo = try makeRepo()
+        try write("deep\n", to: "logs.log.d/deep.txt", in: repo)
+        try git(["add", "-A"], in: repo)
+        try git(["commit", "-q", "-m", "dir"], in: repo)
+        try write("*.log\nignored-file\n", to: ".gitignore", in: repo)
+        try git(["commit", "-q", "-am", "ignore"], in: repo)
+        try write("deep\n", to: "ignored-file/deep.txt", in: repo)
+        try git(["add", "-f", "ignored-file/deep.txt"], in: repo)
+        try git(["commit", "-q", "-m", "tracked under ignored name"], in: repo)
+        let service = TurnSnapshotService()
+        let snapshot = try service.takeSnapshot(paneID: UUID(), repositoryRoot: repo.path)
+        try remove("ignored-file", in: repo)
+        try write("now an ignored file\n", to: "ignored-file", in: repo)
+        let before = try fileBytes(in: repo)
+
+        XCTAssertThrowsError(try service.rewind(to: snapshot.commit, repositoryRoot: repo.path)) { error in
+            self.assertRestoreBlocked(error, path: "ignored-file", isDirectory: false)
+        }
+
+        XCTAssertEqual(try fileBytes(in: repo), before)
+        XCTAssertNil(try undoRef(in: repo))
+    }
+
+    func testPreflightAllowsADirectoryHoldingOnlyCreatedFiles() throws {
+        let repo = try makeRepo()
+        let service = TurnSnapshotService()
+        let snapshot = try service.takeSnapshot(paneID: UUID(), repositoryRoot: repo.path)
+        try remove("b.txt", in: repo)
+        try write("inside\n", to: "b.txt/inner/one.txt", in: repo)
+        try write("inside\n", to: "b.txt/two.txt", in: repo)
+
+        XCTAssertNil(TurnSnapshotService.restoreBlocker(
+            restored: ["b.txt"],
+            created: ["b.txt/inner/one.txt", "b.txt/two.txt"],
+            repositoryRoot: repo.path
+        ))
+        try service.rewind(to: snapshot.commit, repositoryRoot: repo.path)
+        XCTAssertEqual(try read("b.txt", in: repo), "b\n")
+    }
+
+    func testRestoreBlockerNamesTheFirstUncreatedOccupant() throws {
+        let repo = try makeRepo()
+        try write("x\n", to: "dir/ignored.log", in: repo)
+        try write("x\n", to: "file", in: repo)
+        XCTAssertEqual(
+            TurnSnapshotService.restoreBlocker(restored: ["dir"], created: [], repositoryRoot: repo.path)?.path,
+            "dir"
+        )
+        XCTAssertEqual(
+            TurnSnapshotService.restoreBlocker(restored: ["file/inner.txt"], created: [], repositoryRoot: repo.path)?.path,
+            "file"
+        )
+        XCTAssertNil(TurnSnapshotService.restoreBlocker(restored: ["file/inner.txt"], created: ["file"], repositoryRoot: repo.path))
+        // Absent paths and existing files where files go back never block.
+        XCTAssertNil(TurnSnapshotService.restoreBlocker(restored: ["a.txt", "missing/x.txt"], created: [], repositoryRoot: repo.path))
+    }
+
+    func testUndoRewindRefusesWhenBlockedAndKeepsItsUndoRef() throws {
+        let repo = try makeRepo()
+        let service = TurnSnapshotService()
+        let snapshot = try service.takeSnapshot(paneID: UUID(), repositoryRoot: repo.path)
+        try write("created\n", to: "new/created.txt", in: repo)
+        try service.rewind(to: snapshot.commit, repositoryRoot: repo.path)
+        let undo = try XCTUnwrap(try undoRef(in: repo))
+
+        // The undo would put new/created.txt back, but "new" is now an ignored file.
+        try write("*.log\nnew\n", to: ".gitignore", in: repo)
+        try git(["commit", "-q", "-am", "ignore new"], in: repo)
+        try write("in the way\n", to: "new", in: repo)
+        let before = try fileBytes(in: repo)
+
+        XCTAssertThrowsError(try service.undoRewind(repositoryRoot: repo.path)) { error in
+            self.assertRestoreBlocked(error, path: "new", isDirectory: false)
+        }
+
+        XCTAssertEqual(try fileBytes(in: repo), before)
+        XCTAssertEqual(try undoRef(in: repo), undo)
+    }
+
+    func testUndoRewindRefusesWhenADirectoryHoldsAnIgnoredFile() throws {
+        let repo = try makeRepo()
+        let service = TurnSnapshotService()
+        let snapshot = try service.takeSnapshot(paneID: UUID(), repositoryRoot: repo.path)
+        try write("created\n", to: "made.txt", in: repo)
+        try service.rewind(to: snapshot.commit, repositoryRoot: repo.path)
+        let undo = try XCTUnwrap(try undoRef(in: repo))
+
+        try write("ignored\n", to: "made.txt/debug.log", in: repo)
+        let before = try fileBytes(in: repo)
+
+        XCTAssertThrowsError(try service.undoRewind(repositoryRoot: repo.path)) { error in
+            self.assertRestoreBlocked(error, path: "made.txt", isDirectory: true)
+        }
+
+        XCTAssertEqual(try fileBytes(in: repo), before)
+        XCTAssertEqual(try undoRef(in: repo), undo)
+    }
+
+    // MARK: - 14. The turn a rewind update prompt starts
+
+    /// A repo with an undo ref from a rewind that `pane` took the snapshot for.
+    private func makeRewoundRepo(pane: UUID, service: TurnSnapshotService) throws -> URL {
+        let repo = try makeRepo()
+        let snapshot = try service.takeSnapshot(paneID: pane, repositoryRoot: repo.path)
+        try write("a agent edit\n", to: "a.txt", in: repo)
+        try service.rewind(to: snapshot.commit, repositoryRoot: repo.path)
+        XCTAssertNotNil(try undoRef(in: repo))
+        return repo
+    }
+
+    func testMarkedTurnKeepsTheUndoRefAndTheNextTurnDeletesIt() throws {
+        let pane = UUID()
+        let service = TurnSnapshotService()
+        let repo = try makeRewoundRepo(pane: pane, service: service)
+        let undo = try undoRef(in: repo)
+
+        service.markRewindUpdateTurn(paneID: pane, repositoryRoot: repo.path)
+        try service.takeSnapshot(paneID: pane, repositoryRoot: repo.path)
+        XCTAssertEqual(try undoRef(in: repo), undo)
+
+        try service.takeSnapshot(paneID: pane, repositoryRoot: repo.path)
+        XCTAssertNil(try undoRef(in: repo))
+    }
+
+    func testAnotherPanesTurnDeletesTheUndoRefWhileAMarkIsSet() throws {
+        let pane = UUID()
+        let service = TurnSnapshotService()
+        let repo = try makeRewoundRepo(pane: pane, service: service)
+
+        service.markRewindUpdateTurn(paneID: pane, repositoryRoot: repo.path)
+        try service.takeSnapshot(paneID: UUID(), repositoryRoot: repo.path)
+        XCTAssertNil(try undoRef(in: repo))
+    }
+
+    func testClearedMarkRestoresTheNormalRule() throws {
+        let pane = UUID()
+        let service = TurnSnapshotService()
+        let repo = try makeRewoundRepo(pane: pane, service: service)
+
+        service.markRewindUpdateTurn(paneID: pane, repositoryRoot: repo.path)
+        service.clearRewindUpdateTurn(paneID: pane, repositoryRoot: repo.path)
+        try service.takeSnapshot(paneID: pane, repositoryRoot: repo.path)
+        XCTAssertNil(try undoRef(in: repo))
+    }
+
+    func testMarkInOneRepositoryDoesNotApplyToAnother() throws {
+        let pane = UUID()
+        let service = TurnSnapshotService()
+        let repo = try makeRewoundRepo(pane: pane, service: service)
+        let other = try makeTempDirectory()
+
+        service.markRewindUpdateTurn(paneID: pane, repositoryRoot: other.path)
+        try service.takeSnapshot(paneID: pane, repositoryRoot: repo.path)
+        XCTAssertNil(try undoRef(in: repo))
     }
 }

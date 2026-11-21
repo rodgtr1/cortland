@@ -1173,6 +1173,9 @@ extension MainWindowController: SidebarContainerDelegate {
             },
             sendToAgent: { [weak self] paneID, text in
                 self?.sendReviewComments(text, toPane: paneID) ?? false
+            },
+            agentStateForPane: { [weak self] paneID in
+                self?.tabs.lazy.flatMap(\.panes).first(where: { $0.id == paneID })?.agentState
             }
         )
         openSinglePaneTab(pane: pane)
