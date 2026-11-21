@@ -408,6 +408,10 @@ final class UncommittedChangesViewController: NSViewController {
         loadChanges()
     }
 
+    private final class FlippedDocumentView: NSView {
+        override var isFlipped: Bool { true }
+    }
+
     private func setupScrollView(below topAnchor: NSLayoutYAxisAnchor) {
         scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -430,7 +434,8 @@ final class UncommittedChangesViewController: NSViewController {
         )
         stackView.translatesAutoresizingMaskIntoConstraints = false
 
-        let documentView = NSView()
+        // Flipped, so content shorter than the pane sits at its top.
+        let documentView = FlippedDocumentView()
         documentView.translatesAutoresizingMaskIntoConstraints = false
         documentView.wantsLayer = true
         documentView.layer?.backgroundColor = DiffColors.background.cgColor
@@ -638,7 +643,7 @@ final class UncommittedChangesViewController: NSViewController {
         stackView.addArrangedSubview(label)
     }
 
-    private func display(_ sections: [ChangeSection]) {
+    func display(_ sections: [ChangeSection]) {
         let focus = focusedFilePath
         focusedFilePath = nil
 
@@ -776,25 +781,19 @@ final class UncommittedChangesViewController: NSViewController {
 
     // MARK: - Scroll anchoring
 
-    // Positions below are distances from the top of the document, whichever
-    // way the document view is flipped.
+    // Positions below are distances from the top of the document, which is
+    // flipped, so they are plain y coordinates in it.
 
     private var visibleTop: CGFloat {
-        guard let documentView = scrollView.documentView else { return 0 }
-        let clip = scrollView.contentView.bounds
-        return documentView.isFlipped ? clip.minY : documentView.bounds.height - clip.maxY
+        scrollView.contentView.bounds.minY
     }
 
     private func sectionGeometry() -> [ChangesScrollAnchor.Section] {
         guard let documentView = scrollView.documentView, let displayedSections else { return [] }
-        let height = documentView.bounds.height
         return displayedSections.compactMap { section in
             guard let sectionView = sectionViews[section.relativePath] else { return nil }
             let frame = sectionView.convert(sectionView.bounds, to: documentView)
-            return ChangesScrollAnchor.Section(
-                path: section.relativePath,
-                top: documentView.isFlipped ? frame.minY : height - frame.maxY
-            )
+            return ChangesScrollAnchor.Section(path: section.relativePath, top: frame.minY)
         }
     }
 
@@ -815,8 +814,7 @@ final class UncommittedChangesViewController: NSViewController {
         let documentHeight = documentView.bounds.height
         let clipHeight = scrollView.contentView.bounds.height
         guard documentHeight > clipHeight else { return }
-        let clamped = min(max(0, top), documentHeight - clipHeight)
-        let y = documentView.isFlipped ? clamped : documentHeight - clamped - clipHeight
+        let y = min(max(0, top), documentHeight - clipHeight)
         scrollView.contentView.scroll(to: NSPoint(x: scrollView.contentView.bounds.minX, y: y))
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
@@ -1599,11 +1597,7 @@ final class UncommittedChangesViewController: NSViewController {
     private func documentSpan(_ rect: NSRect, in view: NSView) -> (top: CGFloat, bottom: CGFloat)? {
         guard let documentView = scrollView.documentView else { return nil }
         let frame = view.convert(rect, to: documentView)
-        if documentView.isFlipped {
-            return (frame.minY, frame.maxY)
-        }
-        let height = documentView.bounds.height
-        return (height - frame.maxY, height - frame.minY)
+        return (frame.minY, frame.maxY)
     }
 
     private func fileSpans() -> [ChangesReview.FileSpan] {
@@ -2075,16 +2069,9 @@ final class UncommittedChangesViewController: NSViewController {
 
         view.layoutSubtreeIfNeeded()
 
-        // Align the section's top edge with the top of the viewport,
-        // accounting for the document view's coordinate orientation.
+        // Align the section's top edge with the top of the viewport.
         let sectionFrame = sectionView.convert(sectionView.bounds, to: documentView)
-        let clipHeight = scrollView.contentView.bounds.height
-        let targetY: CGFloat
-        if documentView.isFlipped {
-            targetY = max(0, sectionFrame.minY - Metrics.sectionSpacing)
-        } else {
-            targetY = max(0, sectionFrame.maxY - clipHeight + Metrics.sectionSpacing)
-        }
+        let targetY = max(0, sectionFrame.minY - Metrics.sectionSpacing)
 
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
