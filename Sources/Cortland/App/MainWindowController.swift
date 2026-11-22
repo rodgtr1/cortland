@@ -637,6 +637,7 @@ class MainWindowController: NSWindowController {
             for pane in tab.panes {
                 pane.terminalViewController?.applyConfig(newConfig)
                 pane.editorViewController?.applyConfig(newConfig)
+                pane.uncommittedChangesViewController?.applyConfig(newConfig)
             }
         }
 
@@ -1221,7 +1222,7 @@ extension MainWindowController: SidebarContainerDelegate {
     /// A changes pane wired to open files, list and message agents, and ask
     /// an agent pane's state.
     private func makeChangesPane(repositoryPath: String, source: ChangesSource, focusedFilePath: String?) -> PaneModel {
-        PaneFactory.uncommittedChangesPane(
+        let pane = PaneFactory.uncommittedChangesPane(
             repositoryPath: repositoryPath,
             source: source,
             focusedFilePath: focusedFilePath,
@@ -1238,6 +1239,8 @@ extension MainWindowController: SidebarContainerDelegate {
                 self?.tabs.lazy.flatMap(\.panes).first(where: { $0.id == paneID })?.agentState
             }
         )
+        pane.uncommittedChangesViewController?.applyConfig(config)
+        return pane
     }
 
     /// After an agent pane finishes a turn: when that turn took a snapshot

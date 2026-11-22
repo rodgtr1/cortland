@@ -171,6 +171,7 @@ nonisolated final class DiffGutterLine: NSObject {
 /// - for paired removed/added lines, the changed character range is
 ///   emphasized with a stronger red/green
 enum InlineDiffRenderer {
+    /// The default code font, for callers that do not pass their own.
     static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
 
     /// Whole-line background, painted full-width by
@@ -199,20 +200,28 @@ enum InlineDiffRenderer {
         case none, ours, base, theirs
     }
 
-    /// Hanging indent the gutter is drawn in; wrapped lines continue at the
-    /// same indent, clear of the numbers.
-    private static let gutterParagraphStyle: NSParagraphStyle = {
-        let style = NSMutableParagraphStyle()
-        let width = DiffLineBackgroundLayoutManager.gutterMetrics(for: font).width
-        style.firstLineHeadIndent = width
-        style.headIndent = width
-        return style
-    }()
+    /// The code font and the hanging indent the gutter is drawn in, sized
+    /// from that font; wrapped lines continue at the same indent, clear of
+    /// the numbers.
+    private struct LineStyle {
+        let font: NSFont
+        let paragraph: NSParagraphStyle
+
+        init(font: NSFont) {
+            self.font = font
+            let style = NSMutableParagraphStyle()
+            let width = DiffLineBackgroundLayoutManager.gutterMetrics(for: font).width
+            style.firstLineHeadIndent = width
+            style.headIndent = width
+            paragraph = style
+        }
+    }
 
     /// `fileExtension` (lowercased, no dot) drives syntax highlighting of the
     /// diff content; pass "" to render plain (e.g. when the language is
-    /// unknown).
-    static func render(_ diff: String, fileExtension: String = "") -> NSAttributedString {
+    /// unknown). `font` is the code font; the gutter is sized from it.
+    static func render(_ diff: String, fileExtension: String = "", font: NSFont = InlineDiffRenderer.font) -> NSAttributedString {
+        let style = LineStyle(font: font)
         let result = NSMutableAttributedString()
         var lines = diff.components(separatedBy: "\n")
         if lines.last == "" {
@@ -241,9 +250,9 @@ enum InlineDiffRenderer {
                 newLineNumber = parseNewStart(line) ?? newLineNumber
                 let headerText = hunkHeaderText(line)
                 if !headerText.isEmpty {
-                    appendHunkHeader(headerText, to: result)
+                    appendHunkHeader(headerText, style: style, to: result)
                 } else if renderedAnyHunk {
-                    appendSeparator(to: result)
+                    appendSeparator(style: style, to: result)
                 }
                 insideHunk = true
                 renderedAnyHunk = true
@@ -273,7 +282,7 @@ enum InlineDiffRenderer {
                     added.append(String(lines[index].dropFirst()))
                     index += 1
                 }
-                appendChangeBlock(removed: removed, added: added, newLineNumber: &newLineNumber, ext: fileExtension, to: result)
+                appendChangeBlock(removed: removed, added: added, newLineNumber: &newLineNumber, ext: fileExtension, style: style, to: result)
                 continue
             }
 
@@ -283,7 +292,7 @@ enum InlineDiffRenderer {
                     added.append(String(lines[index].dropFirst()))
                     index += 1
                 }
-                appendChangeBlock(removed: [], added: added, newLineNumber: &newLineNumber, ext: fileExtension, to: result)
+                appendChangeBlock(removed: [], added: added, newLineNumber: &newLineNumber, ext: fileExtension, style: style, to: result)
                 continue
             }
 
@@ -296,9 +305,9 @@ enum InlineDiffRenderer {
             // Context line (leading space in unified format).
             let content = line.hasPrefix(" ") ? String(line.dropFirst()) : line
             if conflictMode {
-                appendConflictLine(content, number: newLineNumber, section: &conflictSection, ext: fileExtension, to: result)
+                appendConflictLine(content, number: newLineNumber, section: &conflictSection, ext: fileExtension, style: style, to: result)
             } else {
-                appendLine(content, number: newLineNumber, kind: .context, lineBG: nil, emphasis: nil, emphasisBG: nil, ext: fileExtension, to: result)
+                appendLine(content, number: newLineNumber, kind: .context, lineBG: nil, emphasis: nil, emphasisBG: nil, ext: fileExtension, style: style, to: result)
             }
             newLineNumber += 1
             index += 1
@@ -320,6 +329,7 @@ enum InlineDiffRenderer {
         added: [String],
         newLineNumber: inout Int,
         ext: String,
+        style: LineStyle,
         to result: NSMutableAttributedString
     ) {
         let pairCount = min(removed.count, added.count)
@@ -331,7 +341,7 @@ enum InlineDiffRenderer {
             if offset < pairCount {
                 emphasis = intralineDifference(removedLine, added[offset]).old
             }
-            appendLine(removedLine, number: nil, kind: .removed, lineBG: removedLineBG, emphasis: emphasis, emphasisBG: removedEmphasisBG, ext: ext, to: result)
+            appendLine(removedLine, number: nil, kind: .removed, lineBG: removedLineBG, emphasis: emphasis, emphasisBG: removedEmphasisBG, ext: ext, style: style, to: result)
         }
 
         for (offset, addedLine) in added.enumerated() {
@@ -339,7 +349,7 @@ enum InlineDiffRenderer {
             if offset < pairCount {
                 emphasis = intralineDifference(removed[offset], addedLine).new
             }
-            appendLine(addedLine, number: newLineNumber, kind: .added, lineBG: addedLineBG, emphasis: emphasis, emphasisBG: addedEmphasisBG, ext: ext, to: result)
+            appendLine(addedLine, number: newLineNumber, kind: .added, lineBG: addedLineBG, emphasis: emphasis, emphasisBG: addedEmphasisBG, ext: ext, style: style, to: result)
             newLineNumber += 1
         }
     }
@@ -352,6 +362,7 @@ enum InlineDiffRenderer {
         number: Int,
         section: inout ConflictSection,
         ext: String,
+        style: LineStyle,
         to result: NSMutableAttributedString
     ) {
         let isMarker: Bool
@@ -372,7 +383,7 @@ enum InlineDiffRenderer {
         }
 
         if isMarker {
-            appendLine(content, number: number, kind: .context, lineBG: conflictMarkerBG, emphasis: nil, emphasisBG: nil, ext: ext, to: result, foreground: conflictMarkerText)
+            appendLine(content, number: number, kind: .context, lineBG: conflictMarkerBG, emphasis: nil, emphasisBG: nil, ext: ext, style: style, to: result, foreground: conflictMarkerText)
             return
         }
 
@@ -383,7 +394,7 @@ enum InlineDiffRenderer {
         case .base: sectionBG = conflictBaseBG
         case .theirs: sectionBG = conflictTheirsBG
         }
-        appendLine(content, number: number, kind: .context, lineBG: sectionBG, emphasis: nil, emphasisBG: nil, ext: ext, to: result)
+        appendLine(content, number: number, kind: .context, lineBG: sectionBG, emphasis: nil, emphasisBG: nil, ext: ext, style: style, to: result)
     }
 
     /// Common-prefix/suffix character diff between a removed and added line,
@@ -432,6 +443,7 @@ enum InlineDiffRenderer {
         emphasis: NSRange?,
         emphasisBG: NSColor?,
         ext: String,
+        style: LineStyle,
         to result: NSMutableAttributedString,
         foreground: NSColor? = nil
     ) {
@@ -444,9 +456,9 @@ enum InlineDiffRenderer {
 
         let lineStart = result.length
         var attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
+            .font: style.font,
             .foregroundColor: foreground ?? textColor,
-            .paragraphStyle: gutterParagraphStyle,
+            .paragraphStyle: style.paragraph,
             InlineDiffRenderer.gutterLine: DiffGutterLine(
                 number: number,
                 kind: kind,
@@ -484,19 +496,19 @@ enum InlineDiffRenderer {
 
     /// A muted, unnumbered row with git's enclosing function/section text for
     /// a hunk.
-    private static func appendHunkHeader(_ text: String, to result: NSMutableAttributedString) {
+    private static func appendHunkHeader(_ text: String, style: LineStyle, to result: NSMutableAttributedString) {
         result.append(NSAttributedString(string: text + "\n", attributes: [
-            .font: font,
+            .font: style.font,
             .foregroundColor: gutterColor,
-            .paragraphStyle: gutterParagraphStyle
+            .paragraphStyle: style.paragraph
         ]))
     }
 
-    private static func appendSeparator(to result: NSMutableAttributedString) {
+    private static func appendSeparator(style: LineStyle, to result: NSMutableAttributedString) {
         result.append(NSAttributedString(string: "⋯\n", attributes: [
-            .font: font,
+            .font: style.font,
             .foregroundColor: separatorColor,
-            .paragraphStyle: gutterParagraphStyle
+            .paragraphStyle: style.paragraph
         ]))
     }
 

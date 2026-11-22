@@ -100,11 +100,20 @@ final class UncommittedChangesViewController: NSViewController {
     /// The repository changed while the pane was hidden.
     private var isStale = false
 
+    /// The diff's code font: the built-in editor's, from `applyConfig`.
+    private(set) var diffFont = EditorViewController.editorFont(for: EditorConfig())
+    /// One diff line's height for height seeds and scroll steps, from `diffFont`.
+    private var diffLineHeight = Metrics.diffLineHeight(for: EditorViewController.editorFont(for: EditorConfig()))
+
     private enum Metrics {
         static let horizontalPadding: CGFloat = 12
         static let sectionSpacing: CGFloat = 10
         static let headerHeight: CGFloat = 28
-        static let diffLineHeight: CGFloat = 19
+        /// The laid-out line plus 3pt, which keeps the old 19pt seed and
+        /// scroll step at the default 13pt font.
+        static func diffLineHeight(for font: NSFont) -> CGFloat {
+            NSLayoutManager().defaultLineHeight(for: font) + 3
+        }
         static let reviewBarHeight: CGFloat = 34
         static let scopeBarHeight: CGFloat = 30
         static let commentIconSize: CGFloat = 12
@@ -154,6 +163,50 @@ final class UncommittedChangesViewController: NSViewController {
             self, selector: #selector(paneAgentStateChanged), name: .paneAgentStateChanged, object: nil
         )
         loadChanges()
+    }
+
+    /// Draws the diff text in the editor font from `config`. Built diffs are
+    /// re-rendered in place, so their rows (and the comments on them) stay
+    /// put, and the reader's place is held.
+    func applyConfig(_ config: Config) {
+        let font = EditorViewController.editorFont(for: config.editor ?? EditorConfig())
+        guard font != diffFont else { return }
+        diffFont = font
+        diffLineHeight = Metrics.diffLineHeight(for: font)
+        guard isViewLoaded, let displayedSections else { return }
+
+        let anchor = captureScrollAnchor()
+        let previousTop = visibleTop
+        for section in displayedSections {
+            if section.isConflicted {
+                // Conflict blocks carry no comments, so rebuild the section.
+                guard let old = sectionViews[section.relativePath],
+                      let index = stackView.arrangedSubviews.firstIndex(of: old) else { continue }
+                stackView.removeArrangedSubview(old)
+                old.removeFromSuperview()
+                diffColumns.removeAll { !$0.textView.isDescendant(of: stackView) }
+                let sectionView = makeSectionView(section)
+                stackView.insertArrangedSubview(sectionView, at: index)
+                sectionViews[section.relativePath] = sectionView
+            } else if let body = diffBodies[section.relativePath] {
+                body.textView.font = font
+                body.textView.textStorage?.setAttributedString(renderDiff(section))
+            }
+        }
+        view.needsLayout = true
+        settleLayout()
+        if let anchor {
+            scroll(toVisibleTop: anchor.restoredTop(in: sectionGeometry(), fallback: previousTop))
+        }
+        applyReviewMarks()
+    }
+
+    private func renderDiff(_ section: ChangeSection) -> NSAttributedString {
+        InlineDiffRenderer.render(
+            section.diff,
+            fileExtension: (section.relativePath as NSString).pathExtension.lowercased(),
+            font: diffFont
+        )
     }
 
     func reload(focusedFilePath: String?) {
@@ -880,7 +933,7 @@ final class UncommittedChangesViewController: NSViewController {
     /// The text diff under a header. Built only when the section is first
     /// expanded, so a collapsed lockfile never renders.
     private func makeDiffBody(_ section: ChangeSection) -> NSView {
-        let renderedDiff = InlineDiffRenderer.render(section.diff, fileExtension: (section.relativePath as NSString).pathExtension.lowercased())
+        let renderedDiff = renderDiff(section)
         let diffView = makeDiffColumn(text: renderedDiff)
         let path = section.relativePath
         (diffView as? ChangesDiffTextView)?.onMouseDown = { [weak self] event in
@@ -893,7 +946,7 @@ final class UncommittedChangesViewController: NSViewController {
         // it ignores soft-wrapping, so viewDidLayout corrects it to the real
         // laid-out height once the width is known.
         let lineCount = max(1, renderedDiff.string.filter { $0 == "\n" }.count + 1)
-        let diffHeight = CGFloat(lineCount) * Metrics.diffLineHeight + 14
+        let diffHeight = CGFloat(lineCount) * diffLineHeight + 14
         let diffHeightConstraint = diffView.heightAnchor.constraint(equalToConstant: diffHeight)
         diffHeightConstraint.isActive = true
 
@@ -1157,7 +1210,7 @@ final class UncommittedChangesViewController: NSViewController {
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = true
-        textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.font = diffFont
         textView.backgroundColor = DiffColors.background
         textView.textColor = DiffColors.text
         textView.textContainerInset = NSSize(width: 12, height: 7)
@@ -1293,7 +1346,7 @@ final class UncommittedChangesViewController: NSViewController {
         let textView = makeDiffColumn(text: text)
         // Seed from the logical line count; viewDidLayout corrects it to the
         // real wrapped height once the width is known, same as diff sections.
-        let textHeight = CGFloat(max(1, lineCount)) * Metrics.diffLineHeight + 14
+        let textHeight = CGFloat(max(1, lineCount)) * diffLineHeight + 14
         let textHeightConstraint = textView.heightAnchor.constraint(equalToConstant: textHeight)
 
         block.addSubview(buttonRow)
@@ -1354,7 +1407,7 @@ final class UncommittedChangesViewController: NSViewController {
 
         func append(_ line: String, bg: NSColor?, fg: NSColor) {
             var attributes: [NSAttributedString.Key: Any] = [
-                .font: InlineDiffRenderer.font,
+                .font: diffFont,
                 .foregroundColor: fg
             ]
             if let bg { attributes[.backgroundColor] = bg }
@@ -1453,7 +1506,7 @@ final class UncommittedChangesViewController: NSViewController {
                 visibleTop: visibleTop,
                 viewportHeight: scrollView.contentView.bounds.height,
                 documentHeight: documentView.bounds.height,
-                lineHeight: Metrics.diffLineHeight
+                lineHeight: diffLineHeight
               ) else { return false }
         scroll(toVisibleTop: top)
         return true
@@ -1650,7 +1703,7 @@ final class UncommittedChangesViewController: NSViewController {
         let point = textView.convert(event.locationInWindow, from: nil)
         let origin = textView.textContainerOrigin
         let gutterRight = origin.x + container.lineFragmentPadding
-            + DiffLineBackgroundLayoutManager.gutterMetrics(for: InlineDiffRenderer.font).width
+            + DiffLineBackgroundLayoutManager.gutterMetrics(for: diffFont).width
         guard point.x < gutterRight, layoutManager.numberOfGlyphs > 0 else { return false }
         let containerPoint = NSPoint(x: max(0, point.x - origin.x), y: point.y - origin.y)
         let glyph = layoutManager.glyphIndex(for: containerPoint, in: container)
