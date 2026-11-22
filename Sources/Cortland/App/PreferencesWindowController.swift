@@ -49,6 +49,7 @@ class PreferencesWindowController: NSWindowController {
     private var showHiddenFilesCheckbox: NSButton!
     private var agentStatusLabels: [AgentIntegrationInstaller.AgentID: NSTextField] = [:]
     private var agentInstallButtons: [AgentIntegrationInstaller.AgentID: NSButton] = [:]
+    private var showChangesOnAgentDonePopup: NSPopUpButton!
 
     // Approvals Tab
     private var approvalModePopup: NSPopUpButton!
@@ -395,6 +396,22 @@ class PreferencesWindowController: NSWindowController {
         }
 
         updateAgentIntegrationStatuses()
+
+        showChangesOnAgentDonePopup = NSPopUpButton()
+        showChangesOnAgentDonePopup.addItems(withTitles: Self.showChangesOnAgentDoneOptions.map(\.title))
+        showChangesOnAgentDonePopup.target = self
+        showChangesOnAgentDonePopup.action = #selector(showChangesOnAgentDoneChanged(_:))
+
+        let showChangesHelp = Self.wrappingLabel(
+            "The changes pane never takes keyboard focus. Needs an agent with Cortland's hooks installed (above). A changes pane already open for the same checkout is reused.",
+            fontSize: 11,
+            maxLines: 4,
+            preferredWidth: 420
+        )
+
+        form.fieldLabel("When an agent finishes a turn that changed files:", gapAbove: 30)
+        form.leadingControl(showChangesOnAgentDonePopup, gapAbove: 10, width: 280)
+        form.fullWidth(showChangesHelp, gapAbove: 6)
         form.finish()
 
         addTab(agentsView, identifier: "agents", label: "Agents", symbol: "sparkles")
@@ -760,6 +777,9 @@ class PreferencesWindowController: NSWindowController {
         alwaysAskField.stringValue = approval.alwaysAsk.joined(separator: ", ")
         worktreeAutoApproveCheckbox.state = approval.worktreeAutoApprove ? .on : .off
 
+        // Load changes-pane settings (defaults when the section is absent).
+        showChangesOnAgentDonePopup.selectItem(at: Self.showChangesOnAgentDoneIndex(config.changes?.showOnAgentDone))
+
         // Load notification settings (defaults when the section is absent).
         let notifications = config.notifications ?? NotificationsConfig()
         notificationsEnabledCheckbox.state = notifications.enabled ? .on : .off
@@ -955,6 +975,34 @@ class PreferencesWindowController: NSWindowController {
     @objc private func approvalModeChanged(_ sender: NSPopUpButton) {
         let mode = Self.approvalModes[safe: sender.indexOfSelectedItem] ?? "ask"
         mutateConfig { Self.ensuringApproval(&$0); $0.approval?.mode = mode }
+        mainWindowController?.applyRuntimeConfig(config)
+    }
+
+    /// `[changes] show_on_agent_done` choices in popup order.
+    static let showChangesOnAgentDoneOptions: [(title: String, value: ChangesShowOnAgentDone)] = [
+        ("Show the changes beside the agent", .split),
+        ("Show the changes in a background tab", .tab),
+        ("Do nothing", .off)
+    ]
+
+    /// The popup item for a stored value. Unknown or missing values select
+    /// the default, `split`, matching `ChangesShowOnAgentDone(configValue:)`.
+    static func showChangesOnAgentDoneIndex(_ configValue: String?) -> Int {
+        let setting = ChangesShowOnAgentDone(configValue: configValue)
+        return showChangesOnAgentDoneOptions.firstIndex { $0.value == setting } ?? 0
+    }
+
+    /// Writes the choice into `config`, adding a `[changes]` section if absent.
+    static func settingShowChangesOnAgentDone(_ value: ChangesShowOnAgentDone, in config: inout Config) {
+        if config.changes == nil {
+            config.changes = ChangesConfig()
+        }
+        config.changes?.showOnAgentDone = value.rawValue
+    }
+
+    @objc private func showChangesOnAgentDoneChanged(_ sender: NSPopUpButton) {
+        let value = Self.showChangesOnAgentDoneOptions[safe: sender.indexOfSelectedItem]?.value ?? .split
+        mutateConfig { Self.settingShowChangesOnAgentDone(value, in: &$0) }
         mainWindowController?.applyRuntimeConfig(config)
     }
 
