@@ -28,6 +28,8 @@ final class UncommittedChangesViewController: NSViewController {
     /// no scope bar.
     private var rewindButton: NSButton?
     private var undoRewindButton: NSButton?
+    /// The scope bar's Collapse All / Expand All button, in every pane.
+    private var collapseAllButton: NSButton!
     /// What the last load found to rewind to: the scope's snapshot and the
     /// files a rewind would restore and delete.
     private var rewindOffer: (snapshot: TurnSnapshot, counts: ChangesRewind.Counts)?
@@ -93,6 +95,11 @@ final class UncommittedChangesViewController: NSViewController {
     /// reconcile. nil until a load has displayed something.
     private var displayedSections: [ChangeSection]?
     private var sectionViews: [String: ChangeSectionView] = [:]
+    /// The file list above the first section, and its rows keyed by relative
+    /// path. nil while there are fewer than two files.
+    private var fileListView: NSView?
+    private var fileListRows: [String: ChangesFileListRowView] = [:]
+    private var displayedFileList: ChangesFileList.Summary?
     /// Collapse and Viewed marks, keyed by relative path, for this pane only.
     private var sectionStates = ChangesSectionStates()
     private var requests = LatestRequestGate()
@@ -109,6 +116,7 @@ final class UncommittedChangesViewController: NSViewController {
         static let horizontalPadding: CGFloat = 12
         static let sectionSpacing: CGFloat = 10
         static let headerHeight: CGFloat = 28
+        static let fileListRowHeight: CGFloat = 20
         /// The laid-out line plus 3pt, which keeps the old 19pt seed and
         /// scroll step at the default 13pt font.
         static func diffLineHeight(for font: NSFont) -> CGFloat {
@@ -228,12 +236,11 @@ final class UncommittedChangesViewController: NSViewController {
         loadChanges()
     }
 
-    /// The Uncommitted / This turn / This session switch along the top of a
-    /// pane opened on uncommitted changes. Returns the anchor the scroll view
-    /// hangs from: the bar's bottom, or the view's top when there is no bar.
+    /// The bar along the top of the pane: the Uncommitted / This turn / This
+    /// session switch, Rewind and Undo Rewind in a pane opened on uncommitted
+    /// changes, and Collapse All in every pane. Returns the anchor the scroll
+    /// view hangs from: the bar's bottom.
     private func setupScopeBar() -> NSLayoutYAxisAnchor {
-        guard source.offersScopes else { return view.topAnchor }
-
         let bar = NSView()
         bar.wantsLayer = true
         bar.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
@@ -244,37 +251,52 @@ final class UncommittedChangesViewController: NSViewController {
         divider.layer?.backgroundColor = AppTheme.divider.cgColor
         divider.translatesAutoresizingMaskIntoConstraints = false
 
-        let control = NSSegmentedControl(
-            labels: ChangesScope.allCases.map(\.title),
-            trackingMode: .selectOne,
-            target: self,
-            action: #selector(scopeChanged(_:))
-        )
-        control.controlSize = .small
-        control.font = NSFont.systemFont(ofSize: 11)
-        control.selectedSegment = ChangesScope.allCases.firstIndex(of: scope) ?? 0
-        control.refusesFirstResponder = true
-        control.translatesAutoresizingMaskIntoConstraints = false
-        scopeControl = control
+        let collapseAll = makeScopeBarButton(title: "Collapse All", action: #selector(collapseAllClicked))
+        collapseAllButton = collapseAll
+        updateCollapseAllButton()
 
-        let rewind = makeScopeBarButton(title: "Rewind\u{2026}", action: #selector(rewindClicked))
-        rewind.toolTip = "Put the working tree back to how it was at this scope's start"
-        let undo = makeScopeBarButton(title: "Undo Rewind", action: #selector(undoRewindClicked))
-        undo.toolTip = "Restore the working tree as it was before the last rewind"
         // Hidden buttons drop out of the stack, so whichever shows sits at the
         // trailing end.
-        let buttons = NSStackView(views: [undo, rewind])
+        let buttons = NSStackView(views: [collapseAll])
         buttons.orientation = .horizontal
         buttons.spacing = 8
         buttons.translatesAutoresizingMaskIntoConstraints = false
-        rewindButton = rewind
-        undoRewindButton = undo
-        updateRewindButtons()
 
         view.addSubview(bar)
         bar.addSubview(divider)
-        bar.addSubview(control)
         bar.addSubview(buttons)
+
+        if source.offersScopes {
+            let control = NSSegmentedControl(
+                labels: ChangesScope.allCases.map(\.title),
+                trackingMode: .selectOne,
+                target: self,
+                action: #selector(scopeChanged(_:))
+            )
+            control.controlSize = .small
+            control.font = NSFont.systemFont(ofSize: 11)
+            control.selectedSegment = ChangesScope.allCases.firstIndex(of: scope) ?? 0
+            control.refusesFirstResponder = true
+            control.translatesAutoresizingMaskIntoConstraints = false
+            scopeControl = control
+
+            let rewind = makeScopeBarButton(title: "Rewind\u{2026}", action: #selector(rewindClicked))
+            rewind.toolTip = "Put the working tree back to how it was at this scope's start"
+            let undo = makeScopeBarButton(title: "Undo Rewind", action: #selector(undoRewindClicked))
+            undo.toolTip = "Restore the working tree as it was before the last rewind"
+            buttons.addArrangedSubview(undo)
+            buttons.addArrangedSubview(rewind)
+            rewindButton = rewind
+            undoRewindButton = undo
+            updateRewindButtons()
+
+            bar.addSubview(control)
+            NSLayoutConstraint.activate([
+                control.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: Metrics.horizontalPadding),
+                control.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+                control.trailingAnchor.constraint(lessThanOrEqualTo: buttons.leadingAnchor, constant: -8)
+            ])
+        }
 
         NSLayoutConstraint.activate([
             bar.topAnchor.constraint(equalTo: view.topAnchor),
@@ -287,10 +309,7 @@ final class UncommittedChangesViewController: NSViewController {
             divider.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
             divider.heightAnchor.constraint(equalToConstant: 1),
 
-            control.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: Metrics.horizontalPadding),
-            control.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            control.trailingAnchor.constraint(lessThanOrEqualTo: buttons.leadingAnchor, constant: -8),
-
+            buttons.leadingAnchor.constraint(greaterThanOrEqualTo: bar.leadingAnchor, constant: Metrics.horizontalPadding),
             buttons.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -Metrics.horizontalPadding),
             buttons.centerYAnchor.constraint(equalTo: bar.centerYAnchor)
         ])
@@ -459,6 +478,44 @@ final class UncommittedChangesViewController: NSViewController {
         rewindOffer = nil
         updateRewindButtons()
         loadChanges()
+    }
+
+    private func updateCollapseAllButton() {
+        let paths = displayedSections?.map(\.relativePath) ?? []
+        let decision = ChangesCollapseAll.button(collapsed: paths.map { sectionStates.state(for: $0).isCollapsed })
+        collapseAllButton?.title = decision.title
+        collapseAllButton?.isEnabled = decision.isEnabled
+    }
+
+    /// Collapses every section and shows the top, or, when all are already
+    /// collapsed, expands every section with the file at the top of the
+    /// visible area held in place. Viewed marks stay as they are.
+    @objc private func collapseAllClicked() {
+        let paths = displayedSections?.map(\.relativePath) ?? []
+        let collapses = ChangesCollapseAll.collapses(collapsed: paths.map { sectionStates.state(for: $0).isCollapsed })
+        let anchor = collapses ? nil : captureScrollAnchor()
+        let previousTop = visibleTop
+        for path in paths {
+            if collapses {
+                sectionStates.collapse(path)
+            } else {
+                sectionStates.expand(path)
+            }
+            if let sectionView = sectionViews[path] {
+                applyState(to: sectionView, path: path)
+            }
+        }
+        if collapses {
+            currentBlock = nil
+        }
+        settleLayout()
+        if collapses {
+            scroll(toVisibleTop: 0)
+        } else if let anchor {
+            scroll(toVisibleTop: anchor.restoredTop(in: sectionGeometry(), fallback: previousTop))
+        }
+        applyReviewMarks()
+        updateCollapseAllButton()
     }
 
     private final class FlippedDocumentView: NSView {
@@ -726,24 +783,30 @@ final class UncommittedChangesViewController: NSViewController {
                 }
             }
             displayedSections = sections
+            updateFileList()
         }
 
-        // A sidebar click opens the file's section if it is collapsed; its
-        // Viewed mark stays as it is.
-        if let focus,
-           let path = sectionViews.first(where: { $0.value.identifier?.rawValue == focus })?.key,
+        if let focus {
+            reveal(focus)
+        }
+        updateCollapseAllButton()
+    }
+
+    /// Opens the section whose identifier is `focus` (an absolute path) if it
+    /// is collapsed, leaving its Viewed mark as it is, and scrolls it to the
+    /// top. A Git sidebar click and a file list row both land here.
+    private func reveal(_ focus: String) {
+        if let path = sectionViews.first(where: { $0.value.identifier?.rawValue == focus })?.key,
            let sectionView = sectionViews[path],
            sectionStates.state(for: path).isCollapsed {
             sectionStates.expand(path)
             applyState(to: sectionView, path: path)
         }
 
-        if let focus {
-            // Frames are only valid after layout, so scroll on the next
-            // runloop pass once the stack view has sized its sections.
-            DispatchQueue.main.async { [weak self] in
-                self?.scrollToFocusedFile(focus)
-            }
+        // Frames are only valid after layout, so scroll on the next
+        // runloop pass once the stack view has sized its sections.
+        DispatchQueue.main.async { [weak self] in
+            self?.scrollToFocusedFile(focus)
         }
     }
 
@@ -757,7 +820,10 @@ final class UncommittedChangesViewController: NSViewController {
             return nil
         })
         let replaced = rebuilt.union(plan.removed)
-        let keptViews = Set(sectionViews.filter { !replaced.contains($0.key) }.values.map(ObjectIdentifier.init))
+        var keptViews = Set(sectionViews.filter { !replaced.contains($0.key) }.values.map(ObjectIdentifier.init))
+        if let fileListView {
+            keptViews.insert(ObjectIdentifier(fileListView))
+        }
         for arranged in stackView.arrangedSubviews where !keptViews.contains(ObjectIdentifier(arranged)) {
             stackView.removeArrangedSubview(arranged)
             arranged.removeFromSuperview()
@@ -786,11 +852,13 @@ final class UncommittedChangesViewController: NSViewController {
         }
 
         // Kept views are already in path order, so everything before index i
-        // is exactly sections[0..<i] and a new view slots in at i.
+        // is exactly sections[0..<i] (after the file list) and a new view
+        // slots in at i.
+        let firstSection = fileListView == nil ? 0 : 1
         for (index, section) in sections.enumerated() {
             guard sectionViews[section.relativePath] == nil else { continue }
             let sectionView = makeSectionView(section)
-            stackView.insertArrangedSubview(sectionView, at: index)
+            stackView.insertArrangedSubview(sectionView, at: firstSection + index)
             sectionViews[section.relativePath] = sectionView
         }
 
@@ -798,6 +866,7 @@ final class UncommittedChangesViewController: NSViewController {
             showMessage("No changes")
         }
         displayedSections = sections
+        updateFileList()
 
         // The current file follows its neighbour if it left; a block mark
         // survives only on a section that was kept as it was.
@@ -826,10 +895,94 @@ final class UncommittedChangesViewController: NSViewController {
         blockMark.removeFromSuperview()
         sectionViews.removeAll()
         displayedSections = nil
+        fileListView = nil
+        fileListRows.removeAll()
+        displayedFileList = nil
         stackView.arrangedSubviews.forEach { view in
             stackView.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
+        updateCollapseAllButton()
+    }
+
+    // MARK: - File list
+
+    /// Brings the file list in line with the displayed sections: built,
+    /// rebuilt when a file or its counts changed, or removed below two files.
+    /// Section views are never touched.
+    private func updateFileList() {
+        let rows = (displayedSections ?? []).map { section in
+            ChangesFileList.Row(
+                path: section.relativePath,
+                status: section.status,
+                counts: sectionViews[section.relativePath]?.counts
+            )
+        }
+        let summary = ChangesFileList.summary(rows)
+        guard summary != displayedFileList else { return }
+        displayedFileList = summary
+        if let fileListView {
+            stackView.removeArrangedSubview(fileListView)
+            fileListView.removeFromSuperview()
+        }
+        fileListView = nil
+        fileListRows.removeAll()
+        guard let summary else { return }
+
+        let total = NSTextField(labelWithString: summary.total)
+        total.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        total.textColor = DiffColors.context
+        total.translatesAutoresizingMaskIntoConstraints = false
+
+        let list = NSStackView()
+        list.orientation = .vertical
+        list.alignment = .width
+        list.spacing = 0
+        list.edgeInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
+        list.wantsLayer = true
+        list.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+        list.translatesAutoresizingMaskIntoConstraints = false
+
+        let totalRow = NSView()
+        totalRow.translatesAutoresizingMaskIntoConstraints = false
+        totalRow.addSubview(total)
+        NSLayoutConstraint.activate([
+            totalRow.heightAnchor.constraint(equalToConstant: Metrics.fileListRowHeight),
+            total.leadingAnchor.constraint(equalTo: totalRow.leadingAnchor, constant: 10),
+            total.trailingAnchor.constraint(lessThanOrEqualTo: totalRow.trailingAnchor, constant: -10),
+            total.centerYAnchor.constraint(equalTo: totalRow.centerYAnchor)
+        ])
+        list.addArrangedSubview(totalRow)
+
+        for row in summary.rows {
+            let rowView = ChangesFileListRowView(
+                path: row.path,
+                status: Self.makeStatusLabel(row.status),
+                counts: Self.makeCountsLabel(row.counts),
+                height: Metrics.fileListRowHeight
+            )
+            rowView.setViewed(sectionStates.state(for: row.path).isViewed)
+            rowView.onClick = { [weak self] in
+                self?.fileListRowClicked(row.path)
+            }
+            list.addArrangedSubview(rowView)
+            fileListRows[row.path] = rowView
+        }
+
+        stackView.insertArrangedSubview(list, at: 0)
+        fileListView = list
+    }
+
+    /// A row click scrolls its file's header to the top (opening it when
+    /// collapsed) and makes it the current file, as a sidebar click would.
+    private func fileListRowClicked(_ path: String) {
+        if let window = view.window,
+           !((window.firstResponder as? NSView)?.isDescendant(of: view) ?? false) {
+            window.makeFirstResponder(view)
+        }
+        setCurrentFile(path)
+        guard let focus = sectionViews[path]?.identifier?.rawValue else { return }
+        reveal(focus)
     }
 
     // MARK: - Scroll anchoring
@@ -850,8 +1003,14 @@ final class UncommittedChangesViewController: NSViewController {
         }
     }
 
+    /// nil while the reader sits above every section (the file list or the
+    /// top padding), so a change in the list's height leaves them where they are.
     private func captureScrollAnchor() -> ChangesScrollAnchor? {
-        ChangesScrollAnchor.capture(visibleTop: visibleTop, sections: sectionGeometry())
+        let sections = sectionGeometry()
+        if fileListView != nil, let first = sections.first, visibleTop < first.top {
+            return nil
+        }
+        return ChangesScrollAnchor.capture(visibleTop: visibleTop, sections: sections)
     }
 
     /// Diff heights are seeded from line counts and corrected in viewDidLayout,
@@ -896,27 +1055,28 @@ final class UncommittedChangesViewController: NSViewController {
 
     private func makeSectionView(_ section: ChangeSection) -> ChangeSectionView {
         let path = section.relativePath
-        let header: ChangeSectionHeaderView
         let makeBody: () -> NSView
+        var showsImagePreview = false
 
         if section.isConflicted {
-            header = makeHeaderView(section, counts: nil)
             makeBody = { [weak self] in self?.makeConflictBody(section) ?? NSView() }
         } else if let preview = makeImagePreview(for: section) {
             // An image can't be shown as a text diff: git reports it as binary
             // and the section body would just read "(binary)". When the
             // working-tree file decodes as an image, show the picture itself.
-            header = makeHeaderView(section, counts: nil)
+            showsImagePreview = true
             makeBody = {
                 preview.view.heightAnchor.constraint(equalToConstant: preview.height).isActive = true
                 return preview.view
             }
         } else {
-            header = makeHeaderView(section, counts: InlineDiffRenderer.changeCounts(section.diff))
             makeBody = { [weak self] in self?.makeDiffBody(section) ?? NSView() }
         }
+        let counts = ChangesFileList.counts(for: section, showsImagePreview: showsImagePreview)
+        let header = makeHeaderView(section, counts: counts)
 
         let sectionView = ChangeSectionView(header: header, headerHeight: Metrics.headerHeight, makeBody: makeBody)
+        sectionView.counts = counts
         sectionView.wantsLayer = true
         sectionView.layer?.backgroundColor = AppTheme.windowBackground.cgColor
         sectionView.identifier = NSUserInterfaceItemIdentifier(section.absolutePath(repositoryPath: repositoryPath))
@@ -970,6 +1130,8 @@ final class UncommittedChangesViewController: NSViewController {
         let state = sectionStates.state(for: path)
         sectionView.header.apply(state)
         sectionView.setCollapsed(state.isCollapsed)
+        fileListRows[path]?.setViewed(state.isViewed)
+        updateCollapseAllButton()
     }
 
     /// Applies a user's collapse or Viewed change, keeping the clicked header
@@ -990,9 +1152,38 @@ final class UncommittedChangesViewController: NSViewController {
         }
     }
 
+    /// A file's status letter in its color, as a header or file list row shows it.
+    private static func makeStatusLabel(_ status: GitFileStatus) -> NSTextField {
+        let label = NSTextField(labelWithString: status.rawValue)
+        label.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        label.textColor = status.color
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
+    }
+
+    /// A file's `+N  -M` counts, as a header or file list row shows them;
+    /// empty for nil.
+    private static func makeCountsLabel(_ counts: ChangesFileList.Counts?) -> NSTextField {
+        let label = NSTextField(labelWithString: "")
+        if let counts {
+            let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            let text = ChangesFileList.countsText(counts)
+            let attributed = NSMutableAttributedString(string: text.added, attributes: [
+                .font: font, .foregroundColor: AppTheme.success
+            ])
+            attributed.append(NSAttributedString(string: text.removed, attributes: [
+                .font: font, .foregroundColor: AppTheme.error
+            ]))
+            label.attributedStringValue = attributed
+        }
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
+    }
+
     /// `counts` (added, removed) shows on the right; nil omits it (image
     /// previews and conflicted files).
-    private func makeHeaderView(_ section: ChangeSection, counts: (added: Int, removed: Int)?) -> ChangeSectionHeaderView {
+    private func makeHeaderView(_ section: ChangeSection, counts: ChangesFileList.Counts?) -> ChangeSectionHeaderView {
         let chevron = NSButton(image: NSImage(), target: nil, action: nil)
         chevron.isBordered = false
         chevron.imagePosition = .imageOnly
@@ -1001,10 +1192,7 @@ final class UncommittedChangesViewController: NSViewController {
         chevron.refusesFirstResponder = true
         chevron.translatesAutoresizingMaskIntoConstraints = false
 
-        let status = NSTextField(labelWithString: section.status.rawValue)
-        status.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        status.textColor = section.status.color
-        status.translatesAutoresizingMaskIntoConstraints = false
+        let status = Self.makeStatusLabel(section.status)
 
         let directory = (section.relativePath as NSString).deletingLastPathComponent
         let path = NSTextField(labelWithString: directory.isEmpty ? "" : directory + "/")
@@ -1045,19 +1233,7 @@ final class UncommittedChangesViewController: NSViewController {
         header.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
         header.translatesAutoresizingMaskIntoConstraints = false
 
-        let countsLabel = NSTextField(labelWithString: "")
-        if let counts {
-            let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-            let text = NSMutableAttributedString(string: "+\(counts.added)", attributes: [
-                .font: font, .foregroundColor: AppTheme.success
-            ])
-            text.append(NSAttributedString(string: "  -\(counts.removed)", attributes: [
-                .font: font, .foregroundColor: AppTheme.error
-            ]))
-            countsLabel.attributedStringValue = text
-        }
-        countsLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        countsLabel.translatesAutoresizingMaskIntoConstraints = false
+        let countsLabel = Self.makeCountsLabel(counts)
 
         let openImage = NSImage(systemSymbolName: "arrow.up.forward.square", accessibilityDescription: "Open File") ?? NSImage()
         let openButton = NSButton(image: openImage, target: self, action: #selector(openFileClicked(_:)))
@@ -2137,6 +2313,8 @@ final class UncommittedChangesViewController: NSViewController {
 /// and hidden, not rebuilt, when it collapses again.
 private final class ChangeSectionView: NSView {
     let header: ChangeSectionHeaderView
+    /// The counts its header shows, which its file list row shows too.
+    var counts: ChangesFileList.Counts?
     private let makeBody: () -> NSView
     private var body: NSView?
     private var collapsedBottom: NSLayoutConstraint!
@@ -2258,6 +2436,143 @@ private final class ChangeSectionHeaderView: NSView {
 
     @objc private func viewedClicked(_ sender: NSButton) {
         onViewedChange?(sender.state == .on)
+    }
+}
+
+/// One file's row in the file list: its status, its path (directory dimmed,
+/// truncated in the middle when narrow), and its counts. A click anywhere on
+/// it reports through `onClick`.
+final class ChangesFileListRowView: NSView {
+    let path: String
+    var onClick: (() -> Void)?
+    private(set) var isViewed = false
+    let pathLabel: NSTextField
+
+    init(path: String, status: NSTextField, counts: NSTextField, height: CGFloat) {
+        self.path = path
+        pathLabel = NSTextField(labelWithString: "")
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        pathLabel.lineBreakMode = .byTruncatingMiddle
+        pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        pathLabel.translatesAutoresizingMaskIntoConstraints = false
+        applyPathText()
+
+        addSubview(status)
+        addSubview(pathLabel)
+        addSubview(counts)
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: height),
+            status.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            status.centerYAnchor.constraint(equalTo: centerYAnchor),
+            status.widthAnchor.constraint(greaterThanOrEqualToConstant: 10),
+            pathLabel.leadingAnchor.constraint(equalTo: status.trailingAnchor, constant: 8),
+            pathLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            pathLabel.trailingAnchor.constraint(lessThanOrEqualTo: counts.leadingAnchor, constant: -12),
+            counts.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            counts.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    /// A Viewed file's name dims to the directory's color.
+    func setViewed(_ viewed: Bool) {
+        guard viewed != isViewed else { return }
+        isViewed = viewed
+        applyPathText()
+    }
+
+    private func applyPathText() {
+        let directory = (path as NSString).deletingLastPathComponent
+        let text = NSMutableAttributedString(string: directory.isEmpty ? "" : directory + "/", attributes: [
+            .font: NSFont.systemFont(ofSize: 12),
+            .foregroundColor: DiffColors.context
+        ])
+        text.append(NSAttributedString(string: (path as NSString).lastPathComponent, attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: isViewed ? AppTheme.mutedText : AppTheme.primaryText
+        ]))
+        pathLabel.attributedStringValue = text
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?()
+    }
+}
+
+/// The file list's content: the total line and one row per file, in section
+/// order. Absent below two files.
+enum ChangesFileList {
+    struct Counts: Equatable {
+        let added: Int
+        let removed: Int
+    }
+
+    struct Row: Equatable {
+        let path: String
+        let status: GitFileStatus
+        /// nil for a file whose header shows no counts.
+        let counts: Counts?
+    }
+
+    struct Summary: Equatable {
+        let total: String
+        let rows: [Row]
+    }
+
+    /// The counts a file's header and list row show: none for a conflicted
+    /// file or one shown as an image preview.
+    static func counts(for section: ChangeSection, showsImagePreview: Bool) -> Counts? {
+        guard !section.isConflicted, !showsImagePreview else { return nil }
+        let counts = InlineDiffRenderer.changeCounts(section.diff)
+        return Counts(added: counts.added, removed: counts.removed)
+    }
+
+    /// The added and removed parts of `+N  -M`.
+    static func countsText(_ counts: Counts) -> (added: String, removed: String) {
+        ("+\(counts.added)", "  -\(counts.removed)")
+    }
+
+    /// The list for `rows`, given in section order; nil for fewer than two.
+    static func summary(_ rows: [Row]) -> Summary? {
+        guard rows.count >= 2 else { return nil }
+        let added = rows.reduce(0) { $0 + ($1.counts?.added ?? 0) }
+        let removed = rows.reduce(0) { $0 + ($1.counts?.removed ?? 0) }
+        return Summary(total: totalText(fileCount: rows.count, added: added, removed: removed), rows: rows)
+    }
+
+    /// The total line, for example "7 files, +120 -34".
+    static func totalText(fileCount: Int, added: Int, removed: Int) -> String {
+        "\(fileCount == 1 ? "1 file" : "\(fileCount) files"), +\(added) -\(removed)"
+    }
+}
+
+/// The scope bar's Collapse All / Expand All button.
+nonisolated enum ChangesCollapseAll {
+    struct Button: Equatable {
+        let title: String
+        let isEnabled: Bool
+    }
+
+    /// Whether a press collapses: true while any section is expanded.
+    static func collapses(collapsed: [Bool]) -> Bool {
+        collapsed.contains(false)
+    }
+
+    /// From each section's collapsed state: Collapse All while any is
+    /// expanded, Expand All once all are collapsed, disabled with none.
+    static func button(collapsed: [Bool]) -> Button {
+        Button(
+            title: collapsed.isEmpty || collapses(collapsed: collapsed) ? "Collapse All" : "Expand All",
+            isEnabled: !collapsed.isEmpty
+        )
     }
 }
 
@@ -2782,6 +3097,13 @@ nonisolated struct ChangesSectionStates {
     mutating func expand(_ path: String) {
         var state = state(for: path)
         state.isCollapsed = false
+        states[path] = state
+    }
+
+    /// Closes the section without touching its Viewed mark.
+    mutating func collapse(_ path: String) {
+        var state = state(for: path)
+        state.isCollapsed = true
         states[path] = state
     }
 }
