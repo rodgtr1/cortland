@@ -120,6 +120,27 @@ final class TurnSnapshotRewindTests: XCTestCase {
         XCTAssertEqual(try git(["status", "--porcelain"], in: repo), "")
     }
 
+    func testRewindKeepsAFileTheTurnUnignoredByEditingGitignore() throws {
+        let repo = try makeTempDirectory()
+        try git(["init", "-q", "-b", "main"], in: repo)
+        try write(".env\n*.log\n", to: ".gitignore", in: repo)
+        try write("a\n", to: "a.txt", in: repo)
+        try git(["add", "-A"], in: repo)
+        try git(["commit", "-q", "-m", "initial"], in: repo)
+        try write("SECRET=1\n", to: ".env", in: repo)
+        let service = TurnSnapshotService()
+        let snapshot = try service.takeSnapshot(paneID: UUID(), repositoryRoot: repo.path)
+        try write("*.log\n", to: ".gitignore", in: repo)
+        try write("new\n", to: "new.txt", in: repo)
+
+        let reverted = try service.rewind(to: snapshot.commit, repositoryRoot: repo.path)
+
+        XCTAssertEqual(reverted.map(\.path), [".gitignore", "new.txt"])
+        XCTAssertEqual(try read(".gitignore", in: repo), ".env\n*.log\n")
+        XCTAssertEqual(try read(".env", in: repo), "SECRET=1\n")
+        XCTAssertFalse(exists("new.txt", in: repo))
+    }
+
     func testRewindKeepsADirectoryThatStillHoldsOtherFiles() throws {
         let repo = try makeRepo()
         try write("ignored\n", to: "logs/keep.log", in: repo)

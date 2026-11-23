@@ -40,6 +40,30 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(entry?.stagedStatus, "R")
     }
 
+    func testParsesRenameSourceAsOriginalPath() {
+        let entry = GitService.parseStatusLine("R  old/path.swift -> new/path.swift")
+
+        XCTAssertEqual(entry?.originalPath, "old/path.swift")
+    }
+
+    func testParsesQuotedRenameSourceAsOriginalPath() {
+        let entry = GitService.parseStatusLine("R  \"old name.txt\" -> new.txt")
+
+        XCTAssertEqual(entry?.originalPath, "old name.txt")
+        XCTAssertEqual(entry?.path, "new.txt")
+    }
+
+    func testRenameSourceNamedWithAnArrowKeepsItsWholeName() {
+        let entry = GitService.parseStatusLine("R  \"a -> b.txt\" -> \"dest -> arrow.txt\"")
+
+        XCTAssertEqual(entry?.originalPath, "a -> b.txt")
+        XCTAssertEqual(entry?.path, "dest -> arrow.txt")
+    }
+
+    func testNonRenameHasNoOriginalPath() {
+        XCTAssertNil(GitService.parseStatusLine(" M \"docs/a -> b.md\"")?.originalPath)
+    }
+
     func testParsesPathWithSpaces() {
         let entry = GitService.parseStatusLine(" M docs/my notes.md")
 

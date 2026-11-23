@@ -51,9 +51,12 @@ nonisolated struct GitFileItem: Sendable {
     let isStaged: Bool
     let isConflicted: Bool
     let isDirectory: Bool
+    /// The source path of a rename or copy; nil for every other entry.
+    let originalPath: String?
 
-    init(path: String, stagedChar: Character, unstagedChar: Character) {
+    init(path: String, stagedChar: Character, unstagedChar: Character, originalPath: String? = nil) {
         self.path = path
+        self.originalPath = originalPath
         self.filename = URL(fileURLWithPath: path).lastPathComponent
         self.stagedStatus = GitFileStatus(rawValue: String(stagedChar)) ?? .unmodified
         self.unstagedStatus = GitFileStatus(rawValue: String(unstagedChar)) ?? .unmodified
@@ -353,7 +356,12 @@ class GitStatusModel {
         do {
             return Self.sortedByPath(
                 try gitService.status(repositoryRoot: repositoryRoot)
-                    .map { GitFileItem(path: $0.path, stagedChar: $0.stagedStatus, unstagedChar: $0.unstagedStatus) },
+                    .map {
+                        GitFileItem(
+                            path: $0.path, stagedChar: $0.stagedStatus, unstagedChar: $0.unstagedStatus,
+                            originalPath: $0.originalPath
+                        )
+                    },
                 path: \.path
             )
         } catch {
@@ -397,7 +405,10 @@ class GitStatusModel {
         guard let index = files.firstIndex(where: { $0.path == path }) else { return }
         guard let chars = Self.optimisticStatusChars(for: files[index], staged: staged) else { return }
 
-        files[index] = GitFileItem(path: path, stagedChar: chars.staged, unstagedChar: chars.unstaged)
+        files[index] = GitFileItem(
+            path: path, stagedChar: chars.staged, unstagedChar: chars.unstaged,
+            originalPath: files[index].originalPath
+        )
         notifyChanged()
     }
 
@@ -480,6 +491,8 @@ class GitStatusModel {
     /// the way it shows a failed pull or push, instead of silently doing nothing.
     func discardChanges(_ file: GitFileItem, completion: @escaping @MainActor (Bool, String?) -> Void) {
         let command: [String]
+        // Runs after `command` succeeds, for the one case that needs two steps.
+        var followUp: [String]?
 
         // Handle different file states
         if file.unstagedStatus == .untracked {
@@ -493,22 +506,38 @@ class GitStatusModel {
             // A staged new file isn't in HEAD, so there is nothing to restore:
             // discarding it means unstaging and deleting it.
             command = ["rm", "-f", "--", file.path]
+        } else if (file.stagedStatus == .renamed || file.stagedStatus == .copied), let source = file.originalPath {
+            // The destination isn't in HEAD: remove it from the index and the
+            // working tree, unstaged edits included. A rename then gets its
+            // source back from HEAD; a copy's source was never touched.
+            command = ["rm", "-f", "--", file.path]
+            if file.stagedStatus == .renamed { followUp = ["checkout", "HEAD", "--", source] }
         } else if file.isStaged {
             // For staged files, restore from HEAD (discards both staged and unstaged changes).
-            // A staged rename's path is the destination, which isn't in HEAD; the
-            // source isn't kept on GitFileItem, so that case fails and is reported.
             command = ["checkout", "HEAD", "--", file.path]
         } else {
             // For unstaged files, restore from index (discards unstaged changes only)
             command = ["checkout", "--", file.path]
         }
 
+        let followUpCommand = followUp
         executeGitCommandWithOutput(command) { [weak self] success, _, errorOutput in
-            if success {
+            guard success else {
+                completion(false, errorOutput ?? "Failed to discard changes")
+                return
+            }
+            guard let followUpCommand else {
                 self?.refreshStatus(force: true)
                 completion(true, nil)
-            } else {
-                completion(false, errorOutput ?? "Failed to discard changes")
+                return
+            }
+            guard let self else {
+                completion(false, "Failed to discard changes")
+                return
+            }
+            self.executeGitCommandWithOutput(followUpCommand) { [weak self] success, _, errorOutput in
+                self?.refreshStatus(force: true)
+                completion(success, success ? nil : errorOutput ?? "Failed to discard changes")
             }
         }
     }

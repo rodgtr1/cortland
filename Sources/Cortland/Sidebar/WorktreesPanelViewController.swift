@@ -388,11 +388,25 @@ final class WorktreesPanelViewController: NSViewController {
         }
     }
 
+    /// Re-reads the worktree's status off the main thread before asking, since
+    /// `row.summary` is from the last reload and misses changes made by a
+    /// shell or another editor since.
     private func presentRemoveDialog(for row: Row) {
+        guard view.window != nil, row.branch != nil else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let summary = try? GitService().statusSummary(repositoryRoot: row.path)
+            DispatchQueue.main.async {
+                self?.presentRemoveDialog(for: row, freshSummary: summary)
+            }
+        }
+    }
+
+    private func presentRemoveDialog(for row: Row, freshSummary: WorktreeStatusSummary?) {
         guard let window = view.window, let branch = row.branch else { return }
+        let decision = Self.removeDecision(name: row.displayName, summary: freshSummary, hasPane: row.hasPane)
         let alert = NSAlert()
         alert.messageText = "Remove Worktree?"
-        alert.informativeText = Self.removeMessage(for: row)
+        alert.informativeText = decision.message
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Open Diff")
         let removeButton = alert.addButton(withTitle: "Remove Anyway")
@@ -404,7 +418,7 @@ final class WorktreesPanelViewController: NSViewController {
             case .alertSecondButtonReturn:   // Open Diff
                 self.delegate?.worktreesPanel(self, didRequestDiffForWorktree: row.path)
             case .alertThirdButtonReturn:    // Remove Anyway
-                self.delegate?.worktreesPanel(self, didRequestRemoveBranch: branch, force: true)
+                self.delegate?.worktreesPanel(self, didRequestRemoveBranch: branch, force: decision.force)
             default:
                 break
             }
@@ -425,12 +439,23 @@ final class WorktreesPanelViewController: NSViewController {
         }
     }
 
-    private static func removeMessage(for row: Row) -> String {
+    /// The remove dialog's text and whether "Remove Anyway" forces. `summary`
+    /// is nil when git status could not be read, which counts as dirty. Only a
+    /// worktree the dialog warned about is forced; a clean one is removed
+    /// without `--force`, so git refuses if files changed since the check.
+    static func removeDecision(name: String, summary: WorktreeStatusSummary?, hasPane: Bool) -> (message: String, force: Bool) {
+        let force = summary.map { !$0.clean } ?? true
+        return (removeMessage(name: name, summary: summary, hasPane: hasPane), force)
+    }
+
+    private static func removeMessage(name: String, summary: WorktreeStatusSummary?, hasPane: Bool) -> String {
+        guard let summary else {
+            return "\(name)'s status could not be read. Removing it may delete local work."
+        }
         var clauses: [String] = []
-        if row.summary.changed > 0 { clauses.append("\(row.summary.changed) changed file\(row.summary.changed == 1 ? "" : "s")") }
-        if row.summary.conflicted > 0 { clauses.append("\(row.summary.conflicted) conflicted") }
-        if row.hasPane { clauses.append("an active agent pane") }
-        let name = row.branch ?? URL(fileURLWithPath: row.path).lastPathComponent
+        if summary.changed > 0 { clauses.append("\(summary.changed) changed file\(summary.changed == 1 ? "" : "s")") }
+        if summary.conflicted > 0 { clauses.append("\(summary.conflicted) conflicted") }
+        if hasPane { clauses.append("an active agent pane") }
         if clauses.isEmpty {
             return "\(name) is clean. Remove its worktree?"
         }

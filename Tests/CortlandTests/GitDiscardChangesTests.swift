@@ -67,14 +67,39 @@ final class GitDiscardChangesTests: XCTestCase {
         XCTAssertEqual(try git(["status", "--porcelain"]), "")
     }
 
-    func testDiscardStagedRenameReportsGitError() throws {
-        // GitFileItem keeps only the destination, so this discard can't restore
-        // the source; it must fail with git's message rather than do nothing.
+    /// The status row for `path`, built the way the changes pane builds it.
+    private func statusItem(_ path: String) throws -> GitFileItem {
+        let entry = try XCTUnwrap(try GitService().status(repositoryRoot: repo.path).first { $0.path == path })
+        return GitFileItem(
+            path: entry.path, stagedChar: entry.stagedStatus, unstagedChar: entry.unstagedStatus,
+            originalPath: entry.originalPath
+        )
+    }
+
+    func testDiscardStagedRenameRestoresSourceAndRemovesDestination() throws {
         try git(["mv", "README", "MOVED"])
+        let item = try statusItem("MOVED")
+        XCTAssertEqual(item.originalPath, "README")
 
-        let (success, message) = discard(GitFileItem(path: "MOVED", stagedChar: "R", unstagedChar: " "))
+        let (success, message) = discard(item)
 
-        XCTAssertFalse(success)
-        XCTAssertTrue(message?.contains("MOVED") == true, message ?? "nil")
+        XCTAssertTrue(success, message ?? "")
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent("README"), encoding: .utf8), "base\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("MOVED").path))
+        XCTAssertEqual(try git(["status", "--porcelain"]), "")
+    }
+
+    func testDiscardStagedRenameWithUnstagedEditRestoresSourceAndRemovesDestination() throws {
+        try git(["mv", "README", "MOVED"])
+        try "edited\n".write(to: repo.appendingPathComponent("MOVED"), atomically: true, encoding: .utf8)
+        let item = try statusItem("MOVED")
+        XCTAssertEqual(item.unstagedStatus, .modified)
+
+        let (success, message) = discard(item)
+
+        XCTAssertTrue(success, message ?? "")
+        XCTAssertEqual(try String(contentsOf: repo.appendingPathComponent("README"), encoding: .utf8), "base\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("MOVED").path))
+        XCTAssertEqual(try git(["status", "--porcelain"]), "")
     }
 }

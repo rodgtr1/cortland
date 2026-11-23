@@ -653,7 +653,8 @@ final class UncommittedChangesViewController: NSViewController {
                             status: GitFileItem(
                                 path: entry.path,
                                 stagedChar: entry.stagedStatus,
-                                unstagedChar: entry.unstagedStatus
+                                unstagedChar: entry.unstagedStatus,
+                                originalPath: entry.originalPath
                             ).displayStatus,
                             repositoryPath: repositoryPath,
                             isFullyStaged: ChangesReview.isFullyStaged(entry)

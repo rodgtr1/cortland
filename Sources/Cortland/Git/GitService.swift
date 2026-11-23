@@ -4,6 +4,8 @@ nonisolated struct GitStatusEntry: Equatable, Sendable {
     let path: String
     let stagedStatus: Character
     let unstagedStatus: Character
+    /// The source path of a rename or copy; nil for every other entry.
+    var originalPath: String? = nil
 
     var isUntracked: Bool {
         stagedStatus == "?" && unstagedStatus == "?"
@@ -352,11 +354,13 @@ nonisolated final class GitService: Sendable {
         let rawPath = String(line[pathStart...])
         let isRenameOrCopy = "RC".contains(stagedStatus) || "RC".contains(unstagedStatus)
         let destination = isRenameOrCopy ? renameDestination(in: rawPath) : rawPath
+        let source = isRenameOrCopy ? renameSource(in: rawPath) : nil
 
         return GitStatusEntry(
             path: unquoteGitPath(destination),
             stagedStatus: stagedStatus,
-            unstagedStatus: unstagedStatus
+            unstagedStatus: unstagedStatus,
+            originalPath: source.map(unquoteGitPath)
         )
     }
 
@@ -371,14 +375,24 @@ nonisolated final class GitService: Sendable {
     /// non-rename entry — truncates such a name at the arrow and shows a path
     /// that doesn't exist.
     static func renameDestination(in rawPath: String) -> String {
+        guard let separator = renameSeparator(in: rawPath) else { return rawPath }
+        return String(rawPath[separator.upperBound...])
+    }
+
+    /// The source half of a rename/copy path field, still quoted as git wrote
+    /// it; nil when there is no separator.
+    static func renameSource(in rawPath: String) -> String? {
+        guard let separator = renameSeparator(in: rawPath) else { return nil }
+        return String(rawPath[..<separator.lowerBound])
+    }
+
+    /// The real " -> " in a rename/copy path field, found as `renameDestination` describes.
+    private static func renameSeparator(in rawPath: String) -> Range<String.Index>? {
         var searchStart = rawPath.startIndex
         if rawPath.hasPrefix("\""), let closingQuote = closingQuoteIndex(in: rawPath) {
             searchStart = rawPath.index(after: closingQuote)
         }
-        guard let separator = rawPath.range(of: " -> ", range: searchStart..<rawPath.endIndex) else {
-            return rawPath
-        }
-        return String(rawPath[separator.upperBound...])
+        return rawPath.range(of: " -> ", range: searchStart..<rawPath.endIndex)
     }
 
     /// Index of the quote that closes a C-quoted path, skipping `\"` escapes.

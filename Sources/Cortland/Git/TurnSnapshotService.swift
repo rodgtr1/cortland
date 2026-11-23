@@ -303,8 +303,8 @@ nonisolated final class TurnSnapshotService: Sendable {
         let undo = try git(commitArguments, repositoryRoot: repositoryRoot, environment: Self.identityEnvironment)
         try git(["update-ref", Self.rewindUndoRef, undo], repositoryRoot: repositoryRoot)
 
-        try restoreWorkingTree(changes, from: commit, repositoryRoot: repositoryRoot)
-        return changes
+        let kept = try restoreWorkingTree(changes, from: commit, repositoryRoot: repositoryRoot)
+        return changes.filter { !kept.contains($0.path) }
     }
 
     /// Restores the working tree saved by the last `rewind`, by the same
@@ -337,7 +337,13 @@ nonisolated final class TurnSnapshotService: Sendable {
     /// deleted after that, so a git failure leaves them in place; only a
     /// created path in a restored file's way (a directory that replaced a
     /// snapshot file, or a file where a snapshot directory was) goes first.
-    private func restoreWorkingTree(_ changes: [TurnSnapshotChange], from commit: String, repositoryRoot: String) throws {
+    ///
+    /// Returns the created paths it kept: ones the restored ignore files
+    /// cover. "Created" was judged by the ignore rules as they are now, so a
+    /// turn that dropped a `.gitignore` line would otherwise delete a file
+    /// that predates it.
+    @discardableResult
+    private func restoreWorkingTree(_ changes: [TurnSnapshotChange], from commit: String, repositoryRoot: String) throws -> Set<String> {
         let root = URL(fileURLWithPath: repositoryRoot).standardizedFileURL
         let restored = changes.filter { $0.status != .added }.map(\.path)
         // `ls-files --others` names a nested repository as `dir/`. That is a
@@ -349,6 +355,8 @@ nonisolated final class TurnSnapshotService: Sendable {
             try deleteCreatedFile(path, root: root)
         }
 
+        // nil means delete every created path, as no ignore file changed back.
+        var stillUntracked: Set<String>?
         if !restored.isEmpty {
             let tempIndex = FileManager.default.temporaryDirectory
                 .appendingPathComponent("cortland-rewind-index-\(UUID().uuidString)")
@@ -362,11 +370,25 @@ nonisolated final class TurnSnapshotService: Sendable {
                 let batch = Array(restored[start..<min(start + max(checkoutBatchSize, 1), restored.count)])
                 try git(["checkout-index", "-f", "--"] + batch, repositoryRoot: repositoryRoot, environment: indexEnvironment)
             }
+            // Ask again under the snapshot's ignore rules, now restored.
+            let others = try git(
+                ["ls-files", "-z", "--others", "--exclude-standard"],
+                repositoryRoot: repositoryRoot,
+                environment: indexEnvironment,
+                trimmingOutput: false
+            )
+            stillUntracked = Set(others.split(separator: "\0").map(String.init))
         }
 
+        var kept = Set<String>()
         for path in created where !inTheWay.contains(path) {
+            if let stillUntracked, !stillUntracked.contains(path) {
+                kept.insert(path)
+                continue
+            }
             try deleteCreatedFile(path, root: root)
         }
+        return kept
     }
 
     /// Throws `restoreBlocked` when a path to restore, or a parent of it, is
