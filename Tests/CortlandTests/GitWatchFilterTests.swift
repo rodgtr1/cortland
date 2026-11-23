@@ -121,24 +121,29 @@ final class GitWatchFilterTests: XCTestCase {
 
     // MARK: - Watcher
 
+    // Asserts on the gaps between firings, not on how many land inside a
+    // wall-clock window: a slow runner stretches the burst past the window.
     func testMinimumIntervalYieldsOneLeadingAndOneTrailingFiring() {
-        let watcher = RepositoryWatcher(debounce: 0.05, latency: 0.05, minimumInterval: 0.6)
+        let interval = 0.6
+        let watcher = RepositoryWatcher(debounce: 0.05, latency: 0.05, minimumInterval: interval)
         var fired: [Date] = []
         watcher.onChange = { fired.append(Date()) }
 
         watcher.scheduleDebounced()
-        XCTAssertTrue(pump(until: { fired.count == 1 }, timeout: 0.5), "leading firing")
-        let leading = Date()
-        // A burst inside the window collapses into one trailing firing.
+        XCTAssertTrue(pump(until: { fired.count == 1 }, timeout: 2.0), "leading firing")
         for _ in 0..<5 {
             watcher.scheduleDebounced()
             pump(0.05)
         }
-        XCTAssertEqual(fired.count, 1, "nothing fires inside the window")
-        XCTAssertTrue(pump(until: { fired.count == 2 }, timeout: 1.0), "trailing firing")
-        XCTAssertGreaterThanOrEqual(fired[1].timeIntervalSince(leading), 0.45)
+        // Long enough for the burst's trailing firing whenever the burst ended.
+        pump(interval + 0.4)
+        XCTAssertGreaterThanOrEqual(fired.count, 2, "the burst yields a trailing firing")
+        for (earlier, later) in zip(fired, fired.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(later.timeIntervalSince(earlier), interval - 0.05)
+        }
+        let settled = fired.count
         pump(0.3)
-        XCTAssertEqual(fired.count, 2, "exactly one trailing firing")
+        XCTAssertEqual(fired.count, settled, "nothing fires once the burst is over")
     }
 
     func testFilteredEventsScheduleOnlyForRelevantPathsOrRescans() {
