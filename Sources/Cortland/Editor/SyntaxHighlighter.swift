@@ -200,6 +200,18 @@ class SyntaxHighlighter {
         let keywords: [String]
         let types: [String]
         fileprivate let comment: CommentStyle
+        // Built once per rule set: the diff tokenizer runs per line and would
+        // otherwise escape and join the whole list every time.
+        let keywordPattern: String
+        let typePattern: String
+
+        fileprivate init(keywords: [String], types: [String], comment: CommentStyle) {
+            self.keywords = keywords
+            self.types = types
+            self.comment = comment
+            self.keywordPattern = SyntaxHighlighter.keywordAlternation(keywords)
+            self.typePattern = SyntaxHighlighter.keywordAlternation(types)
+        }
     }
 
     /// Single source of truth for every keyword-based language, shared by the
@@ -283,8 +295,8 @@ class SyntaxHighlighter {
         add("\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b", scheme.number)
 
         if let rules = rulesByExt[ext] {
-            add(keywordAlternation(rules.keywords), keywordColor)
-            add(keywordAlternation(rules.types), typeColor)
+            add(rules.keywordPattern, keywordColor)
+            add(rules.typePattern, typeColor)
             commentPattern = Self.commentPattern(for: rules.comment)
         } else {
             switch ext {
@@ -309,7 +321,7 @@ class SyntaxHighlighter {
         return out
     }
 
-    private static func keywordAlternation(_ keywords: [String]) -> String {
+    fileprivate static func keywordAlternation(_ keywords: [String]) -> String {
         let escaped = keywords.map { NSRegularExpression.escapedPattern(for: $0) }
         return "\\b(?:\(escaped.joined(separator: "|")))\\b"
     }

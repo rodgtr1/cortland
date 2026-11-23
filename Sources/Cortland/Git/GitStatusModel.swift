@@ -147,6 +147,11 @@ class GitStatusModel {
     private var pendingMutationCount: Int = 0
     private var watcherSuppressed: Bool = false
     private var unsuppressWork: DispatchWorkItem?
+    // Whether the git panel is on screen. While it is not, watcher and
+    // fallback-timer ticks only mark the model stale (the panel is its only
+    // reader), and showing the panel again refreshes once.
+    private var isPanelVisible = true
+    private(set) var isStale = false
 
     init(gitService: GitService = GitService()) {
         self.gitService = gitService
@@ -154,8 +159,25 @@ class GitStatusModel {
         // they complete; ignore the `.git` churn they generate in the meantime.
         watcher.onChange = { [weak self] in
             guard let self, !self.watcherSuppressed else { return }
-            self.refreshStatus()
+            self.backgroundRefresh()
         }
+    }
+
+    /// A watcher or fallback-timer tick: refreshes while the panel is shown,
+    /// otherwise remembers the model is behind.
+    func backgroundRefresh() {
+        guard isPanelVisible else {
+            isStale = true
+            return
+        }
+        refreshStatus()
+    }
+
+    /// Called by the panel whenever it may have been shown or hidden.
+    func setPanelVisible(_ visible: Bool) {
+        isPanelVisible = visible
+        guard visible, isStale else { return }
+        refreshStatus()
     }
 
     var repositoryPath: String {
@@ -236,6 +258,8 @@ class GitStatusModel {
     func refreshStatus(force: Bool = false) {
         guard !_repositoryPath.isEmpty else { return }
         guard force || !isLoading else { return }
+        // A refresh is running or about to, so nothing is left behind.
+        isStale = false
 
         // A query is already running — fold this request into a single trailing
         // refresh instead of launching a second, redundant set of git processes.
@@ -294,7 +318,7 @@ class GitStatusModel {
     private func startAutoRefresh() {
         stopAutoRefresh()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: fallbackRefreshInterval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshStatus() }
+            MainActor.assumeIsolated { self?.backgroundRefresh() }
         }
     }
 

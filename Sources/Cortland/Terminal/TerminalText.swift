@@ -229,16 +229,26 @@ nonisolated enum TerminalText {
     /// Reading `.normal` rather than `.active` is what makes an alternate-screen
     /// pane readable: the emulator keeps the main-screen buffer intact while a TUI
     /// runs, so it still holds everything printed before the TUI took over.
+    ///
+    /// `since` is the cursor the read will resolve with (nil, a full read, always
+    /// takes the screen). The main-screen dump
+    /// walks the whole scrollback, and only a full read uses it, so a live delta
+    /// read (a supervisor polling a worker) skips it. The alternate frame is
+    /// still taken: a live delta read of an alternate-screen pane serves it.
     static func recentReadSnapshot(
         terminal: Terminal,
         buffer: String,
         total: Int,
         dropped: Int,
-        generation: Int
+        generation: Int,
+        since: String? = nil
     ) -> RecentReadSnapshot {
         let onAlternateScreen = terminal.isCurrentBufferAlternate
+        let needsScreen = isFullRecentRead(since: since, total: total, dropped: dropped, generation: generation)
         return RecentReadSnapshot(
-            screen: String(decoding: terminal.getBufferAsData(kind: .normal), as: UTF8.self),
+            screen: needsScreen
+                ? String(decoding: terminal.getBufferAsData(kind: .normal), as: UTF8.self)
+                : nil,
             alternateFrame: onAlternateScreen
                 ? String(decoding: terminal.getBufferAsData(kind: .alt), as: UTF8.self)
                 : nil,
@@ -271,12 +281,8 @@ nonisolated enum TerminalText {
     /// only the last fragment of it. Both reads are served from the emulator
     /// instead — see `alternateScreenRead`.
     static func recentRead(_ snapshot: RecentReadSnapshot, since: String?, lineLimit: Int?) -> RecentDelta {
-        // Same staleness rule `recentDelta` applies: a cursor is usable only when
-        // it parses, names this generation, and still points inside the retained
-        // window. Anything else re-syncs as a full read flagged `truncated`.
-        let staleCursor = since.map { token in
-            guard let offset = parseRecentCursor(token, generation: snapshot.generation) else { return true }
-            return offset < snapshot.dropped || offset > snapshot.total
+        let staleCursor = since.map {
+            isStaleRecentCursor($0, total: snapshot.total, dropped: snapshot.dropped, generation: snapshot.generation)
         } ?? false
         let isFullRead = since == nil || staleCursor
 
@@ -338,6 +344,23 @@ nonisolated enum TerminalText {
         return RecentDelta(text: caughtUp ? "" : transcript(screen: frame, limit: lineLimit),
                            cursor: cursor,
                            truncated: false)
+    }
+
+    /// Whether a `recent` read with `since` resolves as a full read (no cursor,
+    /// or a stale one that re-syncs), the only reads that use the main-screen
+    /// dump. `recentReadSnapshot` and `recentRead` both decide by this, against
+    /// the same captured counters, so a read never needs a screen that was skipped.
+    static func isFullRecentRead(since: String?, total: Int, dropped: Int, generation: Int) -> Bool {
+        guard let since else { return true }
+        return isStaleRecentCursor(since, total: total, dropped: dropped, generation: generation)
+    }
+
+    /// Same staleness rule `recentDelta` applies: a cursor is usable only when
+    /// it parses, names this generation, and still points inside the retained
+    /// window. Anything else re-syncs as a full read flagged `truncated`.
+    static func isStaleRecentCursor(_ token: String, total: Int, dropped: Int, generation: Int) -> Bool {
+        guard let offset = parseRecentCursor(token, generation: generation) else { return true }
+        return offset < dropped || offset > total
     }
 
     /// Parses a `"<generation>:<offset>"` cursor, returning the byte offset only

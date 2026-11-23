@@ -1865,13 +1865,14 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     /// counters (scoped to this pane's shell PID, so a cursor minted by a previous
     /// shell reads as truncated) plus the interpreted line buffer. See
     /// `TerminalText.recentRead` for the delta/truncation semantics.
-    func recentReadSnapshot() -> TerminalText.RecentReadSnapshot {
+    func recentReadSnapshot(since: String?) -> TerminalText.RecentReadSnapshot {
         TerminalText.recentReadSnapshot(
             terminal: terminalView.getTerminal(),
             buffer: automationOutput,
             total: automationOutputTotalBytes,
             dropped: automationOutputDroppedBytes,
-            generation: Int(shellPID))
+            generation: Int(shellPID),
+            since: since)
     }
 
     /// The recent-output buffer with just the CSI escapes stripped — the shape the

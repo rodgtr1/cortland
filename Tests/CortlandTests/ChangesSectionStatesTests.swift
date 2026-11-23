@@ -184,4 +184,45 @@ final class ChangesSectionStatesTests: XCTestCase {
         )
         XCTAssertEqual(changed, [])
     }
+    // MARK: - Truncating a huge diff
+
+    func testDiffUnderTheCapRendersInFull() {
+        let plan = ChangesSectionStates.renderedDiffLines(totalLines: 4_999, fullyShown: false)
+        XCTAssertEqual(plan.rendered, 4_999)
+        XCTAssertEqual(plan.remaining, 0)
+    }
+
+    func testDiffAtTheCapRendersInFull() {
+        let plan = ChangesSectionStates.renderedDiffLines(totalLines: ChangesSectionStates.maxRenderedDiffLines, fullyShown: false)
+        XCTAssertEqual(plan.rendered, 5_000)
+        XCTAssertEqual(plan.remaining, 0)
+    }
+
+    func testDiffOverTheCapRendersTheCapAndOffersTheRest() {
+        let plan = ChangesSectionStates.renderedDiffLines(totalLines: 12_345, fullyShown: false)
+        XCTAssertEqual(plan.rendered, 5_000)
+        XCTAssertEqual(plan.remaining, 7_345)
+    }
+
+    func testFullyShownDiffOverTheCapRendersInFull() {
+        let plan = ChangesSectionStates.renderedDiffLines(totalLines: 12_345, fullyShown: true)
+        XCTAssertEqual(plan.rendered, 12_345)
+        XCTAssertEqual(plan.remaining, 0)
+    }
+
+    func testShowingTheFullDiffSurvivesARefreshUntilTheFileLeaves() {
+        var states = ChangesSectionStates()
+        let a = section("a.swift")
+        refresh(&states, from: [], to: [a])
+        XCTAssertFalse(states.isFullyShown("a.swift"))
+        states.showFullDiff("a.swift")
+
+        let changed = section("a.swift", diff: "@@ -1 +1 @@\n-a\n+c")
+        refresh(&states, from: [a], to: [changed])
+        XCTAssertTrue(states.isFullyShown("a.swift"))
+
+        refresh(&states, from: [changed], to: [])
+        refresh(&states, from: [], to: [changed])
+        XCTAssertFalse(states.isFullyShown("a.swift"))
+    }
 }

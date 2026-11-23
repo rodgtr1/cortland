@@ -221,6 +221,14 @@ enum InlineDiffRenderer {
     /// diff content; pass "" to render plain (e.g. when the language is
     /// unknown). `font` is the code font; the gutter is sized from it.
     static func render(_ diff: String, fileExtension: String = "", font: NSFont = InlineDiffRenderer.font) -> NSAttributedString {
+        render(diff, fileExtension: fileExtension, font: font, lineLimit: nil).text
+    }
+
+    /// Renders only the first `lineLimit` rows (all of them when nil) and
+    /// reports how many rows the whole diff has. Rows past the limit are
+    /// counted, never built, so a huge diff costs a line walk, not a render.
+    /// The rows that are built match the first rows of a full render.
+    static func render(_ diff: String, fileExtension: String, font: NSFont, lineLimit: Int?) -> (text: NSAttributedString, lineCount: Int) {
         let style = LineStyle(font: font)
         let result = NSMutableAttributedString()
         var lines = diff.components(separatedBy: "\n")
@@ -234,6 +242,8 @@ enum InlineDiffRenderer {
         var conflictMode = false
         var conflictSection = ConflictSection.none
         var index = 0
+        var lineCount = 0
+        func fits() -> Bool { lineLimit.map { lineCount < $0 } ?? true }
 
         while index < lines.count {
             let line = lines[index]
@@ -250,9 +260,11 @@ enum InlineDiffRenderer {
                 newLineNumber = parseNewStart(line) ?? newLineNumber
                 let headerText = hunkHeaderText(line)
                 if !headerText.isEmpty {
-                    appendHunkHeader(headerText, style: style, to: result)
+                    if fits() { appendHunkHeader(headerText, style: style, to: result) }
+                    lineCount += 1
                 } else if renderedAnyHunk {
-                    appendSeparator(style: style, to: result)
+                    if fits() { appendSeparator(style: style, to: result) }
+                    lineCount += 1
                 }
                 insideHunk = true
                 renderedAnyHunk = true
@@ -282,7 +294,9 @@ enum InlineDiffRenderer {
                     added.append(String(lines[index].dropFirst()))
                     index += 1
                 }
-                appendChangeBlock(removed: removed, added: added, newLineNumber: &newLineNumber, ext: fileExtension, style: style, to: result)
+                appendChangeBlock(removed: removed, added: added, newLineNumber: &newLineNumber, ext: fileExtension, style: style,
+                                  rowLimit: lineLimit.map { max(0, $0 - lineCount) }, to: result)
+                lineCount += removed.count + added.count
                 continue
             }
 
@@ -292,7 +306,9 @@ enum InlineDiffRenderer {
                     added.append(String(lines[index].dropFirst()))
                     index += 1
                 }
-                appendChangeBlock(removed: [], added: added, newLineNumber: &newLineNumber, ext: fileExtension, style: style, to: result)
+                appendChangeBlock(removed: [], added: added, newLineNumber: &newLineNumber, ext: fileExtension, style: style,
+                                  rowLimit: lineLimit.map { max(0, $0 - lineCount) }, to: result)
+                lineCount += added.count
                 continue
             }
 
@@ -303,12 +319,15 @@ enum InlineDiffRenderer {
             }
 
             // Context line (leading space in unified format).
-            let content = line.hasPrefix(" ") ? String(line.dropFirst()) : line
-            if conflictMode {
-                appendConflictLine(content, number: newLineNumber, section: &conflictSection, ext: fileExtension, style: style, to: result)
-            } else {
-                appendLine(content, number: newLineNumber, kind: .context, lineBG: nil, emphasis: nil, emphasisBG: nil, ext: fileExtension, style: style, to: result)
+            if fits() {
+                let content = line.hasPrefix(" ") ? String(line.dropFirst()) : line
+                if conflictMode {
+                    appendConflictLine(content, number: newLineNumber, section: &conflictSection, ext: fileExtension, style: style, to: result)
+                } else {
+                    appendLine(content, number: newLineNumber, kind: .context, lineBG: nil, emphasis: nil, emphasisBG: nil, ext: fileExtension, style: style, to: result)
+                }
             }
+            lineCount += 1
             newLineNumber += 1
             index += 1
         }
@@ -319,7 +338,7 @@ enum InlineDiffRenderer {
                 .foregroundColor: gutterColor
             ]))
         }
-        return result
+        return (result, lineCount)
     }
 
     // MARK: - Blocks
@@ -330,13 +349,16 @@ enum InlineDiffRenderer {
         newLineNumber: inout Int,
         ext: String,
         style: LineStyle,
+        rowLimit: Int? = nil,
         to result: NSMutableAttributedString
     ) {
         let pairCount = min(removed.count, added.count)
+        // Rows at or past `rowLimit` are skipped; line numbers still advance.
+        func fits(_ row: Int) -> Bool { rowLimit.map { row < $0 } ?? true }
 
         // Removed lines first (the "before" block), with emphasis computed
         // against the paired replacement line.
-        for (offset, removedLine) in removed.enumerated() {
+        for (offset, removedLine) in removed.enumerated() where fits(offset) {
             var emphasis: NSRange?
             if offset < pairCount {
                 emphasis = intralineDifference(removedLine, added[offset]).old
@@ -345,6 +367,10 @@ enum InlineDiffRenderer {
         }
 
         for (offset, addedLine) in added.enumerated() {
+            guard fits(removed.count + offset) else {
+                newLineNumber += 1
+                continue
+            }
             var emphasis: NSRange?
             if offset < pairCount {
                 emphasis = intralineDifference(removed[offset], addedLine).new

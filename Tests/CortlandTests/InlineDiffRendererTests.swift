@@ -263,4 +263,57 @@ final class InlineDiffRendererTests: XCTestCase {
         XCTAssertEqual(lines[1], "second line")
         XCTAssertEqual(gutterLine(rendered, line: 1)?.number, 2)
     }
+    /// A row-limited render builds exactly the first rows of a full render,
+    /// including a change block cut in the middle, and counts every row.
+    func testLineLimitedRenderIsAPrefixOfTheFullRender() {
+        let diff = """
+        diff --git a/f.swift b/f.swift
+        @@ -1,4 +1,5 @@ func a()
+         let x = 1
+        -let y = 2
+        -let z = 3
+        +let y = 20
+        +let z = 30
+        +let w = 40
+         return x
+        @@ -10,2 +11,2 @@
+        -old
+        +new
+        """
+        let font = InlineDiffRenderer.font
+        let full = InlineDiffRenderer.render(diff, fileExtension: "swift", font: font, lineLimit: nil)
+        XCTAssertEqual(signature(full.text), signature(InlineDiffRenderer.render(diff, fileExtension: "swift", font: font)))
+        let fullRows = full.text.string.split(separator: "\n", omittingEmptySubsequences: false).count - 1
+        XCTAssertEqual(full.lineCount, fullRows)
+        XCTAssertEqual(full.lineCount, 11)
+
+        for limit in 1...full.lineCount + 1 {
+            let partial = InlineDiffRenderer.render(diff, fileExtension: "swift", font: font, lineLimit: limit)
+            XCTAssertEqual(partial.lineCount, full.lineCount, "limit \(limit)")
+            let prefixLength = (full.text.string as NSString)
+                .components(separatedBy: "\n").prefix(min(limit, full.lineCount))
+                .reduce(0) { $0 + ($1 as NSString).length + 1 }
+            XCTAssertEqual(signature(partial.text),
+                           signature(full.text.attributedSubstring(from: NSRange(location: 0, length: prefixLength))),
+                           "limit \(limit)")
+        }
+    }
+
+    /// The text and every attribute run the renderer sets, in comparable form
+    /// (the gutter and paragraph attributes are objects without value equality).
+    private func signature(_ text: NSAttributedString) -> [String] {
+        var out = [text.string]
+        text.enumerateAttributes(in: NSRange(location: 0, length: text.length)) { attributes, range, _ in
+            let gutter = attributes[InlineDiffRenderer.gutterLine] as? DiffGutterLine
+            out.append([
+                "\(range)",
+                "\(String(describing: attributes[.foregroundColor]))",
+                "\(String(describing: attributes[.backgroundColor]))",
+                "\(String(describing: attributes[InlineDiffRenderer.lineFillColor]))",
+                "\(String(describing: gutter?.number))",
+                "\(String(describing: gutter?.kind))"
+            ].joined(separator: "|"))
+        }
+        return out
+    }
 }

@@ -676,7 +676,7 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
             // is real work: two regex passes over a 64KB stream, a redraw collapse,
             // a line cap. So copy the pane's buffers here (cheap) and do the rest
             // on a background queue — `sendResponse` already runs off main.
-            let snapshot = terminal.recentReadSnapshot()
+            let snapshot = terminal.recentReadSnapshot(since: since)
             DispatchQueue.global(qos: .userInitiated).async {
                 let read = TerminalText.recentRead(snapshot, since: since, lineLimit: lines)
                 completion(IPCResponse(result: IPCResult(

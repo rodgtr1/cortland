@@ -353,4 +353,24 @@ final class TreeSitterHighlighterTests: XCTestCase {
             "keyword in the dirty range should be highlighted"
         )
     }
+    /// Overlapping captures resolve first-wins: a later capture only gets the
+    /// positions no earlier one claimed, as maximal runs.
+    func testOverlappingCapturesResolveFirstWins() {
+        // Flags cover positions 10..<30.
+        var colored = [Bool](repeating: false, count: 20)
+        func runs(_ location: Int, _ length: Int) -> [NSRange] {
+            TreeSitterHighlighter.Document.uncoloredRuns(
+                in: NSRange(location: location, length: length), base: 10, colored: &colored)
+        }
+        XCTAssertEqual(runs(14, 4), [NSRange(location: 14, length: 4)])
+        XCTAssertEqual(runs(20, 2), [NSRange(location: 20, length: 2)])
+        // Spans both earlier captures: only the gaps around them are fresh.
+        XCTAssertEqual(runs(12, 12), [NSRange(location: 12, length: 2),
+                                      NSRange(location: 18, length: 2),
+                                      NSRange(location: 22, length: 2)])
+        // Fully claimed already: nothing to apply.
+        XCTAssertEqual(runs(14, 8), [])
+        XCTAssertEqual(runs(10, 20), [NSRange(location: 10, length: 2),
+                                      NSRange(location: 24, length: 6)])
+    }
 }

@@ -177,8 +177,9 @@ class FileTreeViewController: NSViewController {
             startWatching(path: displayPath)
         }
 
-        // (Re)create the gitignore checker for this root. It loads asynchronously
-        // and triggers another rebuild once ready to apply ignore filtering.
+        // Create the gitignore checker for a new root, or reload the current
+        // one. It loads asynchronously and triggers another rebuild only when
+        // the ignored set it lands with differs.
         setupGitIgnoreChecker(for: displayPath)
 
         rebuildTree(displayPath: displayPath, expandedPaths: expandedPaths)
@@ -186,6 +187,9 @@ class FileTreeViewController: NSViewController {
 
     /// Configures `gitIgnoreChecker` for `displayPath`: a checker for git repos
     /// (which rebuilds the tree once its ignore data loads), or nil otherwise.
+    /// A checker already serving this root is kept and reloaded, so the rebuild
+    /// that follows a refresh still filters with the last loaded set instead of
+    /// briefly showing every ignored entry.
     private func setupGitIgnoreChecker(for displayPath: String) {
         let gitPath = URL(fileURLWithPath: displayPath).appendingPathComponent(".git").path
         guard FileManager.default.fileExists(atPath: gitPath) else {
@@ -193,9 +197,15 @@ class FileTreeViewController: NSViewController {
             return
         }
 
+        if let existing = gitIgnoreChecker, existing.rootPath == displayPath {
+            existing.reload()
+            return
+        }
+
         let checker = GitIgnoreChecker(rootPath: displayPath)
-        checker.onLoadComplete = { [weak self] in
-            guard let self = self, self.currentPath == displayPath else { return }
+        checker.onLoadComplete = { [weak self, weak checker] in
+            guard let self = self, self.currentPath == displayPath,
+                  let checker, self.gitIgnoreChecker === checker else { return }
             Log.debug("🔄 GitIgnore data loaded, refreshing tree", category: "sidebar")
             // Rebuild applying ignore filtering, preserving the live expansion.
             self.rebuildTree(displayPath: displayPath, expandedPaths: self.expandedDirectoryPaths())

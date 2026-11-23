@@ -373,23 +373,44 @@ extension TreeSitterHighlighter {
                 // First-capture-wins per character, matching tree-sitter's convention
                 // that earlier (more specific) query patterns take precedence — so a
                 // keyword inside a string keeps the string color, etc.
-                var colored = IndexSet()
+                // One flag per position in `range`, so each capture walks only its
+                // own span (an IndexSet of colored runs was re-walked per token).
+                var colored = [Bool](repeating: false, count: range.length)
                 for match in cursor {
                     for capture in match.captures {
                         guard let color = color(forCapture: capture.nameComponents, scheme: scheme) else { continue }
                         let nodeRange = NSIntersectionRange(capture.node.range, range)
                         guard nodeRange.length > 0 else { continue }
-                        let positions = IndexSet(integersIn: nodeRange.location..<(nodeRange.location + nodeRange.length))
-                        let fresh = positions.subtracting(colored)
-                        guard !fresh.isEmpty else { continue }
-                        for run in fresh.rangeView {
-                            textStorage.addAttribute(.foregroundColor, value: color, range: NSRange(run))
+                        for run in Self.uncoloredRuns(in: nodeRange, base: range.location, colored: &colored) {
+                            textStorage.addAttribute(.foregroundColor, value: color, range: run)
                         }
-                        colored.formUnion(positions)
                     }
                 }
             }
             return true
+        }
+
+        /// The maximal runs of `span` not yet colored, marking them colored.
+        /// `colored[i]` covers position `base + i`; `span` must lie inside it.
+        static func uncoloredRuns(in span: NSRange, base: Int, colored: inout [Bool]) -> [NSRange] {
+            var runs: [NSRange] = []
+            var runStart: Int?
+            for position in span.location..<NSMaxRange(span) {
+                let index = position - base
+                if colored[index] {
+                    if let start = runStart {
+                        runs.append(NSRange(location: start, length: position - start))
+                        runStart = nil
+                    }
+                } else {
+                    colored[index] = true
+                    if runStart == nil { runStart = position }
+                }
+            }
+            if let start = runStart {
+                runs.append(NSRange(location: start, length: NSMaxRange(span) - start))
+            }
+            return runs
         }
 
         /// The regions to recolor: the dirty range, the edit itself (tree-sitter

@@ -45,6 +45,28 @@ protocol GitPanelDelegate: AnyObject {
     func gitPanel(_ panel: GitPanelViewController, didRequestBranchChangesFor repositoryPath: String, defaultBranch: String, focusedFilePath: String?)
 }
 
+/// The git panel's root view, reporting when it joins or leaves a window (the
+/// panel being selected or another one replacing it) and when it or the
+/// sidebar is hidden or shown.
+private final class GitPanelRootView: NSView {
+    var onVisibilityMayHaveChanged: (() -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onVisibilityMayHaveChanged?()
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        onVisibilityMayHaveChanged?()
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        onVisibilityMayHaveChanged?()
+    }
+}
+
 class GitPanelViewController: NSViewController {
     // Created up front (not in viewDidLoad) so the owning sidebar can seed a
     // repository path via setRepositoryPath before the view loads — lazy panel
@@ -86,9 +108,29 @@ class GitPanelViewController: NSViewController {
     private var themeObserver: ThemeObserver?
 
     override func loadView() {
-        view = NSView()
+        let rootView = GitPanelRootView()
+        rootView.onVisibilityMayHaveChanged = { [weak self] in self?.visibilityMayHaveChanged() }
+        view = rootView
         view.wantsLayer = true
         view.layer?.backgroundColor = AppTheme.sidebarBackground.cgColor
+    }
+
+    /// The panel is on screen while it is mounted in the sidebar, the sidebar
+    /// is shown, and its window is not hidden or covered.
+    private var isPanelVisible: Bool {
+        guard let window = view.window else { return false }
+        return !view.isHiddenOrHasHiddenAncestor && window.occlusionState.contains(.visible)
+    }
+
+    /// Hidden, the model's background ticks only mark it stale; shown again,
+    /// it refreshes once if it fell behind.
+    private func visibilityMayHaveChanged() {
+        gitStatusModel.setPanelVisible(isPanelVisible)
+    }
+
+    @objc private func windowOcclusionChanged(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === view.window else { return }
+        visibilityMayHaveChanged()
     }
 
     override func viewDidLoad() {
@@ -505,6 +547,13 @@ class GitPanelViewController: NSViewController {
             self?.applyModelState()
         }
         applyModelState()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowOcclusionChanged(_:)),
+            name: NSWindow.didChangeOcclusionStateNotification,
+            object: nil
+        )
 
         // Enable commit button when message is not empty
         NotificationCenter.default.addObserver(

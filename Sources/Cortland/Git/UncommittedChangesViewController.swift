@@ -206,7 +206,7 @@ final class UncommittedChangesViewController: NSViewController {
                 sectionViews[section.relativePath] = sectionView
             } else if let body = diffBodies[section.relativePath] {
                 body.textView.font = font
-                body.textView.textStorage?.setAttributedString(renderDiff(section))
+                body.textView.textStorage?.setAttributedString(renderDiff(section).text)
             }
         }
         view.needsLayout = true
@@ -217,11 +217,14 @@ final class UncommittedChangesViewController: NSViewController {
         applyReviewMarks()
     }
 
-    private func renderDiff(_ section: ChangeSection) -> NSAttributedString {
+    /// The section's rendered diff, capped at `maxRenderedDiffLines` rows
+    /// unless the user chose to see it in full, and its total row count.
+    private func renderDiff(_ section: ChangeSection) -> (text: NSAttributedString, lineCount: Int) {
         InlineDiffRenderer.render(
             section.diff,
             fileExtension: (section.relativePath as NSString).pathExtension.lowercased(),
-            font: diffFont
+            font: diffFont,
+            lineLimit: sectionStates.isFullyShown(section.relativePath) ? nil : ChangesSectionStates.maxRenderedDiffLines
         )
     }
 
@@ -1123,11 +1126,17 @@ final class UncommittedChangesViewController: NSViewController {
     }
 
     /// The text diff under a header. Built only when the section is first
-    /// expanded, so a collapsed lockfile never renders.
+    /// expanded, so a collapsed lockfile never renders. A diff over
+    /// `maxRenderedDiffLines` renders only that many rows, followed by a row
+    /// that renders the rest when clicked.
     private func makeDiffBody(_ section: ChangeSection) -> NSView {
-        let renderedDiff = renderDiff(section)
-        let diffView = makeDiffColumn(text: renderedDiff)
         let path = section.relativePath
+        let render = renderDiff(section)
+        let renderedDiff = render.text
+        let remaining = ChangesSectionStates.renderedDiffLines(
+            totalLines: render.lineCount, fullyShown: sectionStates.isFullyShown(path)
+        ).remaining
+        let diffView = makeDiffColumn(text: renderedDiff)
         (diffView as? ChangesDiffTextView)?.onMouseDown = { [weak self] event in
             self?.handleGutterClick(event, path: path) ?? false
         }
@@ -1148,7 +1157,74 @@ final class UncommittedChangesViewController: NSViewController {
         for index in comments.indices where comments[index].path == path && comments[index].anchor == .pending {
             reanchor(&comments[index], rows: rows)
         }
-        return diffView
+        guard remaining > 0 else { return diffView }
+        return makeTruncatedDiffBody(diffView: diffView, path: path, remaining: remaining)
+    }
+
+    /// The truncated diff with a "Show N more lines" row under it.
+    private func makeTruncatedDiffBody(diffView: NSView, path: String, remaining: Int) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = DiffColors.background.cgColor
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        let title = "Show \(remaining.formatted()) more \(remaining == 1 ? "line" : "lines")"
+        let button = NSButton(title: title, target: self, action: #selector(showFullDiffClicked(_:)))
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.refusesFirstResponder = true
+        button.identifier = NSUserInterfaceItemIdentifier(path)
+        button.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(diffView)
+        container.addSubview(button)
+        NSLayoutConstraint.activate([
+            diffView.topAnchor.constraint(equalTo: container.topAnchor),
+            diffView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            diffView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            button.topAnchor.constraint(equalTo: diffView.bottomAnchor, constant: 4),
+            button.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            button.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10)
+        ])
+        return container
+    }
+
+    @objc private func showFullDiffClicked(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue else { return }
+        showFullDiff(path)
+    }
+
+    /// Renders the whole diff of a truncated section: rebuilds its view in
+    /// place, as a refresh would, keeping its header where it sits on screen.
+    private func showFullDiff(_ path: String) {
+        guard let oldView = sectionViews[path],
+              let section = displayedSections?.first(where: { $0.relativePath == path }),
+              let index = stackView.arrangedSubviews.firstIndex(of: oldView) else { return }
+        let headerOffset = sectionGeometry().first { $0.path == path }.map { $0.top - visibleTop }
+        sectionStates.showFullDiff(path)
+
+        stackView.removeArrangedSubview(oldView)
+        oldView.removeFromSuperview()
+        diffColumns.removeAll { !$0.textView.isDescendant(of: stackView) }
+        diffBodies.removeValue(forKey: path)
+        for commentIndex in comments.indices where comments[commentIndex].path == path {
+            comments[commentIndex].anchor = .pending
+        }
+        if currentBlock?.path == path {
+            currentBlock = nil
+        }
+
+        let sectionView = makeSectionView(section)
+        stackView.insertArrangedSubview(sectionView, at: index)
+        sectionViews[path] = sectionView
+        applyReviewMarks()
+        commentsChanged()
+
+        guard let headerOffset else { return }
+        settleLayout()
+        if let top = sectionGeometry().first(where: { $0.path == path })?.top {
+            scroll(toVisibleTop: top - headerOffset)
+        }
     }
 
     private func updateSectionStates(_ sections: [ChangeSection], contentChanged: Set<String>) {
@@ -3094,6 +3170,17 @@ nonisolated struct ChangesSectionStates {
     /// A diff with more changed lines (added plus removed) than this starts collapsed.
     static let largeDiffLineCount = 500
 
+    /// A diff with more rendered rows than this renders only this many until
+    /// the user asks for the rest, so expanding a huge one stays bounded.
+    static let maxRenderedDiffLines = 5_000
+
+    /// How many of a diff's `totalLines` rendered rows to build, and how many
+    /// the "Show N more lines" row offers (0: no row).
+    static func renderedDiffLines(totalLines: Int, fullyShown: Bool, cap: Int = maxRenderedDiffLines) -> (rendered: Int, remaining: Int) {
+        guard !fullyShown, totalLines > cap else { return (totalLines, 0) }
+        return (cap, totalLines - cap)
+    }
+
     static func startsCollapsed(relativePath: String, changedLines: Int) -> Bool {
         lockfileNames.contains((relativePath as NSString).lastPathComponent)
             || changedLines > largeDiffLineCount
@@ -3113,9 +3200,19 @@ nonisolated struct ChangesSectionStates {
     }
 
     private var states: [String: State] = [:]
+    /// Sections over `maxRenderedDiffLines` the user chose to see in full.
+    private var fullyShownPaths: Set<String> = []
 
     func state(for path: String) -> State {
         states[path] ?? State(isCollapsed: false, isViewed: false)
+    }
+
+    func isFullyShown(_ path: String) -> Bool {
+        fullyShownPaths.contains(path)
+    }
+
+    mutating func showFullDiff(_ path: String) {
+        fullyShownPaths.insert(path)
     }
 
     /// Brings the states in line with a new result. A path seen for the first
@@ -3125,6 +3222,7 @@ nonisolated struct ChangesSectionStates {
     mutating func update(sections: [ChangeSection], contentChanged: Set<String>, changedLines: (ChangeSection) -> Int) {
         let incoming = Set(sections.map(\.relativePath))
         states = states.filter { incoming.contains($0.key) }
+        fullyShownPaths = fullyShownPaths.filter { incoming.contains($0) }
         for section in sections {
             let path = section.relativePath
             if let existing = states[path] {

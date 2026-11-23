@@ -1,7 +1,7 @@
 import Foundation
 
 class GitIgnoreChecker {
-    private let rootPath: String
+    let rootPath: String
     // Written on the main actor after the git load completes, read by isIgnored
     // on the file-tree background queue. Both accesses go through `stateLock`,
     // so the nonisolated(unsafe) opt-out is backed by real synchronization
@@ -10,8 +10,17 @@ class GitIgnoreChecker {
     private nonisolated(unsafe) var ignoredFiles: Set<String> = []
     private nonisolated(unsafe) var isLoaded = false
     private var isLoading = false
+    // A reload asked for while a load runs: one more load follows it, and
+    // these completions are answered by that one.
+    private var reloadPending = false
+    private var pendingCompletions: [(Bool) -> Void] = []
+    // Answered when the running load lands; kept here rather than captured
+    // by the background closure, which must stay Sendable.
+    private var inFlightCompletions: [(Bool) -> Void] = []
     private let queue = DispatchQueue(label: "app.cortland.gitignore", qos: .userInitiated)
 
+    /// Fired when a load lands and changed the answers: always for the first
+    /// load, and after a reload only when the ignored set differs.
     var onLoadComplete: (() -> Void)?
 
     init(rootPath: String) {
@@ -49,7 +58,26 @@ class GitIgnoreChecker {
         let alreadyLoaded = isLoaded
         stateLock.unlock()
         guard !isLoading && !alreadyLoaded else { return }
+        runLoad()
+    }
+
+    /// Re-reads the ignored set in the background. The set already loaded
+    /// keeps answering `isIgnored` until the new one is swapped in.
+    /// `completion` gets whether the answers changed. A reload asked for while
+    /// a load runs queues exactly one more load after it.
+    func reload(completion: ((Bool) -> Void)? = nil) {
+        if let completion { pendingCompletions.append(completion) }
+        guard !isLoading else {
+            reloadPending = true
+            return
+        }
+        runLoad()
+    }
+
+    private func runLoad() {
         isLoading = true
+        inFlightCompletions = pendingCompletions
+        pendingCompletions = []
 
         // The git invocation runs off-main and touches no instance state; the
         // result is folded back in on the main actor, so this MainActor class
@@ -59,14 +87,26 @@ class GitIgnoreChecker {
             let loaded = Self.loadIgnoredFiles(rootPath: root)
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                self.stateLock.withLock {
-                    if let loaded = loaded {
+                let changed = self.stateLock.withLock {
+                    // The first load always counts as a change: until it, every
+                    // path read as not ignored.
+                    var changed = !self.isLoaded
+                    if let loaded = loaded, loaded != self.ignoredFiles {
                         self.ignoredFiles = loaded
+                        changed = true
                     }
                     self.isLoaded = true
+                    return changed
                 }
                 self.isLoading = false
-                self.onLoadComplete?()
+                let completions = self.inFlightCompletions
+                self.inFlightCompletions = []
+                if changed { self.onLoadComplete?() }
+                completions.forEach { $0(changed) }
+                if self.reloadPending {
+                    self.reloadPending = false
+                    self.reload()
+                }
             }
         }
     }
