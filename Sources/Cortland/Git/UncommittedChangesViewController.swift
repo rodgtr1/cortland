@@ -9,6 +9,9 @@ final class UncommittedChangesViewController: NSViewController {
     var sendToAgent: ((UUID, String) -> Bool)?
     /// A pane's current agent state; nil when the pane no longer exists.
     var agentStateForPane: ((UUID) -> AgentState?)?
+    /// The ids of the panes in this changes pane's tab; This turn and This
+    /// session prefer their snapshots when no pane is followed.
+    var paneIDsInOwnTab: (() -> Set<UUID>)?
 
     private var repositoryPath: String
     /// The changes the pane was opened on, fixed at creation.
@@ -612,6 +615,7 @@ final class UncommittedChangesViewController: NSViewController {
             showMessage("Loading changes...")
         }
         let request = requests.begin()
+        let tabPanes = paneIDsInOwnTab?() ?? []
 
         DispatchQueue.global(qos: .userInitiated).async { [repositoryPath, gitService, shownSource, scope, source, followedPaneID] in
             // A nil list means the scope has no snapshot to compare against.
@@ -624,7 +628,8 @@ final class UncommittedChangesViewController: NSViewController {
                     let loaded = try Self.snapshotSections(
                         repositoryPath: repositoryPath,
                         scope: scope,
-                        followedPane: followedPaneID
+                        followedPane: followedPaneID,
+                        tabPanes: tabPanes
                     )
                     rewindTarget = loaded?.snapshot
                     result = .success(loaded?.sections)
@@ -686,12 +691,14 @@ final class UncommittedChangesViewController: NSViewController {
     private nonisolated static func snapshotSections(
         repositoryPath: String,
         scope: ChangesScope,
-        followedPane: UUID?
+        followedPane: UUID?,
+        tabPanes: Set<UUID>
     ) throws -> (snapshot: TurnSnapshot, sections: [ChangeSection])? {
         let service = TurnSnapshotService.shared
         guard let snapshot = scope.snapshot(
             in: try service.list(repositoryRoot: repositoryPath),
-            followedPane: followedPane
+            followedPane: followedPane,
+            tabPanes: tabPanes
         ) else { return nil }
         let sections = try service.changesSinceSnapshot(commit: snapshot.commit, repositoryRoot: repositoryPath).map { change in
             ChangeSection(
@@ -968,6 +975,18 @@ final class UncommittedChangesViewController: NSViewController {
             list.addArrangedSubview(rowView)
             fileListRows[row.path] = rowView
         }
+
+        let bottomLine = NSView()
+        bottomLine.wantsLayer = true
+        bottomLine.layer?.backgroundColor = AppTheme.divider.cgColor
+        bottomLine.translatesAutoresizingMaskIntoConstraints = false
+        list.addSubview(bottomLine)
+        NSLayoutConstraint.activate([
+            bottomLine.leadingAnchor.constraint(equalTo: list.leadingAnchor),
+            bottomLine.trailingAnchor.constraint(equalTo: list.trailingAnchor),
+            bottomLine.bottomAnchor.constraint(equalTo: list.bottomAnchor),
+            bottomLine.heightAnchor.constraint(equalToConstant: 1)
+        ])
 
         stackView.insertArrangedSubview(list, at: 0)
         fileListView = list
@@ -2677,6 +2696,30 @@ nonisolated enum ChangesSource: Equatable, Sendable {
         }
         return nil
     }
+
+    /// The open uncommitted changes pane a finished turn of `agentPaneID`
+    /// reuses, given every tab's panes in order (nil fields for panes that are
+    /// not changes panes): one in the agent's tab, `agentTab`, or else one in
+    /// any tab already following that agent. nil when neither is open.
+    static func finishedTurnPaneLocation(
+        in tabs: [[(repository: String?, source: ChangesSource?, followedPaneID: UUID?)]],
+        agentTab: Int,
+        agentPaneID: UUID,
+        repositoryPath: String
+    ) -> (tab: Int, pane: Int)? {
+        let matches: ((repository: String?, source: ChangesSource?, followedPaneID: UUID?)) -> Bool = {
+            paneMatches(paneRepository: $0.repository, paneSource: $0.source, repositoryPath: repositoryPath, source: .uncommitted)
+        }
+        if tabs.indices.contains(agentTab), let paneIndex = tabs[agentTab].firstIndex(where: matches) {
+            return (agentTab, paneIndex)
+        }
+        for (tabIndex, panes) in tabs.enumerated() {
+            if let paneIndex = panes.firstIndex(where: { matches($0) && $0.followedPaneID == agentPaneID }) {
+                return (tabIndex, paneIndex)
+            }
+        }
+        return nil
+    }
 }
 
 /// `[changes] show_on_agent_done`: how the changes pane appears when an agent
@@ -2732,13 +2775,13 @@ nonisolated enum ChangesScope: CaseIterable, Equatable, Sendable {
     }
 
     /// The snapshot the scope compares against, from the repository's
-    /// snapshots oldest first, preferring `followedPane`'s; nil for
-    /// `.uncommitted` or when there is none.
-    func snapshot(in snapshots: [TurnSnapshot], followedPane: UUID? = nil) -> TurnSnapshot? {
+    /// snapshots oldest first, preferring `followedPane`'s, then those of the
+    /// panes in `tabPanes`; nil for `.uncommitted` or when there is none.
+    func snapshot(in snapshots: [TurnSnapshot], followedPane: UUID? = nil, tabPanes: Set<UUID> = []) -> TurnSnapshot? {
         switch self {
         case .uncommitted: return nil
-        case .thisTurn: return TurnSnapshotService.turnSnapshot(in: snapshots, followedPane: followedPane)
-        case .thisSession: return TurnSnapshotService.sessionSnapshot(in: snapshots, followedPane: followedPane)
+        case .thisTurn: return TurnSnapshotService.turnSnapshot(in: snapshots, followedPane: followedPane, tabPanes: tabPanes)
+        case .thisSession: return TurnSnapshotService.sessionSnapshot(in: snapshots, followedPane: followedPane, tabPanes: tabPanes)
         }
     }
 

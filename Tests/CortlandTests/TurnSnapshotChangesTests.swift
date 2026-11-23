@@ -292,6 +292,47 @@ final class TurnSnapshotChangesTests: XCTestCase {
         XCTAssertEqual(TurnSnapshotService.sessionSnapshot(in: snapshots), snapshots[0])
     }
 
+    func testUnfollowedPanePicksItsOwnTabsNewestOverANewerOneElsewhere() {
+        let inTab = UUID()
+        let elsewhere = UUID()
+        let snapshots = [
+            snapshot(pane: inTab, sequence: 1, at: 1, sessionStart: true),
+            snapshot(pane: elsewhere, sequence: 1, at: 2, sessionStart: true),
+            snapshot(pane: inTab, sequence: 2, at: 3),
+            snapshot(pane: elsewhere, sequence: 2, at: 4)
+        ]
+        let tab: Set<UUID> = [inTab, UUID()]
+        XCTAssertEqual(TurnSnapshotService.turnSnapshot(in: snapshots, tabPanes: tab), snapshots[2])
+        XCTAssertEqual(TurnSnapshotService.sessionSnapshot(in: snapshots, tabPanes: tab), snapshots[0])
+        XCTAssertEqual(ChangesScope.thisTurn.snapshot(in: snapshots, tabPanes: tab), snapshots[2])
+        XCTAssertEqual(ChangesScope.thisSession.snapshot(in: snapshots, tabPanes: tab), snapshots[0])
+    }
+
+    func testFollowedPaneWinsOverTheTabsSnapshots() {
+        let inTab = UUID()
+        let followed = UUID()
+        let snapshots = [
+            snapshot(pane: followed, sequence: 1, at: 1, sessionStart: true),
+            snapshot(pane: inTab, sequence: 1, at: 2, sessionStart: true)
+        ]
+        XCTAssertEqual(TurnSnapshotService.turnSnapshot(in: snapshots, followedPane: followed, tabPanes: [inTab]), snapshots[0])
+        // A followed pane with no snapshot here falls to the tab's.
+        XCTAssertEqual(TurnSnapshotService.turnSnapshot(in: snapshots, followedPane: UUID(), tabPanes: [inTab]), snapshots[1])
+    }
+
+    func testTabWithoutSnapshotsFallsBackToNewestInRepository() {
+        let paneA = UUID()
+        let paneB = UUID()
+        let snapshots = [
+            snapshot(pane: paneA, sequence: 1, at: 1, sessionStart: true),
+            snapshot(pane: paneB, sequence: 1, at: 2, sessionStart: true),
+            snapshot(pane: paneB, sequence: 2, at: 3)
+        ]
+        let alone: Set<UUID> = [UUID()]
+        XCTAssertEqual(TurnSnapshotService.turnSnapshot(in: snapshots, tabPanes: alone), snapshots[2])
+        XCTAssertEqual(TurnSnapshotService.sessionSnapshot(in: snapshots, tabPanes: alone), snapshots[1])
+    }
+
     // MARK: - 7. Pane scope decisions
 
     func testScopesMapToSourcesInControlOrder() {

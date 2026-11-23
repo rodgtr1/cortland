@@ -1239,6 +1239,10 @@ extension MainWindowController: SidebarContainerDelegate {
                 self?.tabs.lazy.flatMap(\.panes).first(where: { $0.id == paneID })?.agentState
             }
         )
+        let changesPaneID = pane.id
+        pane.uncommittedChangesViewController?.paneIDsInOwnTab = { [weak self] in
+            Set(self?.tabs.first(where: { $0.panes.contains(where: { $0.id == changesPaneID }) })?.panes.map(\.id) ?? [])
+        }
         pane.uncommittedChangesViewController?.applyConfig(config)
         return pane
     }
@@ -1272,8 +1276,20 @@ extension MainWindowController: SidebarContainerDelegate {
 
     /// Never changes keyboard focus or the selected tab.
     private func showFinishedTurn(agentPaneID: UUID, repositoryPath: String) {
-        guard let agentTab = tabs.first(where: { $0.panes.contains(where: { $0.id == agentPaneID }) }) else { return }
-        let existing = changesPaneLocation(repositoryPath: repositoryPath, source: .uncommitted)
+        guard let agentTabIndex = tabs.firstIndex(where: { $0.panes.contains(where: { $0.id == agentPaneID }) }) else { return }
+        let agentTab = tabs[agentTabIndex]
+        let existing = ChangesSource.finishedTurnPaneLocation(
+            in: tabs.map { tab in
+                tab.panes.map { pane in
+                    pane.paneType == .uncommittedChanges
+                        ? (pane.currentDirectory, pane.uncommittedChangesViewController?.source, pane.uncommittedChangesViewController?.followedPaneID)
+                        : (nil, nil, nil)
+                }
+            },
+            agentTab: agentTabIndex,
+            agentPaneID: agentPaneID,
+            repositoryPath: repositoryPath
+        )
         let placement = ChangesShowOnAgentDone.placement(
             (config.changes ?? ChangesConfig()).showOnAgentDoneSetting,
             hasOpenPane: existing != nil,

@@ -196,16 +196,15 @@ final class AgentDashboardTurnFilesTests: XCTestCase {
 
     // MARK: - 3. Row model
 
-    func testUnionAcrossPanesListsEachPathOnceInPathOrder() {
+    func testUnionAcrossPanesCountsEachPathOnce() {
         let store = store([
             paneA: entry([file("z.swift"), file("b/shared.swift")], finishedAt: 100),
             paneB: entry([file("b/shared.swift"), file("a.swift", .added)], finishedAt: 200)
         ])
         let row = AgentRowFiles.make(paneIDs: [paneA, paneB], store: store)
-        XCTAssertEqual(row.shown.map(\.file.path), ["a.swift", "b/shared.swift", "z.swift"])
-        XCTAssertEqual(row.moreCount, 0)
-        XCTAssertEqual(row.lineCount, 3)
-        // Same order whichever pane comes first in the tab.
+        XCTAssertEqual(row.count, 3)
+        XCTAssertEqual(row.lineCount, 1)
+        // Same row whichever pane comes first in the tab.
         XCTAssertEqual(AgentRowFiles.make(paneIDs: [paneB, paneA], store: store), row)
     }
 
@@ -214,36 +213,22 @@ final class AgentDashboardTurnFilesTests: XCTestCase {
             paneA: entry([file("a.swift", root: "/one")]),
             paneB: entry([file("a.swift", root: "/two")])
         ])
-        XCTAssertEqual(AgentRowFiles.make(paneIDs: [paneA, paneB], store: store).shown.count, 2)
+        XCTAssertEqual(AgentRowFiles.make(paneIDs: [paneA, paneB], store: store).count, 2)
     }
 
-    func testADuplicatedFileFollowsThePaneThatFinishedLast() {
+    func testTheLineFollowsThePaneThatFinishedLast() {
         let earlier = store([
-            paneA: entry([file("shared.swift")], finishedAt: 300),
-            paneB: entry([file("shared.swift")], finishedAt: 200)
+            paneA: entry([file("a.swift")], finishedAt: 300),
+            paneB: entry([file("b.swift")], finishedAt: 200)
         ])
-        XCTAssertEqual(AgentRowFiles.make(paneIDs: [paneA, paneB], store: earlier).shown.first?.paneID, paneA)
+        XCTAssertEqual(AgentRowFiles.make(paneIDs: [paneA, paneB], store: earlier).paneID, paneA)
         let later = store([
-            paneA: entry([file("shared.swift")], finishedAt: 100),
-            paneB: entry([file("shared.swift")], finishedAt: 200)
+            paneA: entry([file("a.swift")], finishedAt: 100),
+            paneB: entry([file("b.swift")], finishedAt: 200)
         ])
-        XCTAssertEqual(AgentRowFiles.make(paneIDs: [paneA, paneB], store: later).shown.first?.paneID, paneB)
-    }
-
-    func testFiveFileCapWithAndNMore() {
-        let eight = (1...8).map { file("f\($0).swift") }
-        let store = store([paneA: entry(Array(eight.prefix(3)), finishedAt: 100), paneB: entry(Array(eight.dropFirst(3)), finishedAt: 200)])
-        let row = AgentRowFiles.make(paneIDs: [paneA, paneB], store: store)
-        XCTAssertEqual(row.shown.map(\.file.path), ["f1.swift", "f2.swift", "f3.swift", "f4.swift", "f5.swift"])
-        XCTAssertEqual(row.moreCount, 3)
-        XCTAssertEqual(row.lineCount, 6)
-        XCTAssertEqual(row.morePaneID, paneB)
-        XCTAssertEqual(row.moreRepositoryRoot, "/repo")
-
-        let exactlyFive = AgentRowFiles.make(paneIDs: [paneA], store: self.store([paneA: entry(Array(eight.prefix(5)))]))
-        XCTAssertEqual(exactlyFive.moreCount, 0)
-        XCTAssertNil(exactlyFive.morePaneID)
-        XCTAssertEqual(exactlyFive.lineCount, 5)
+        let row = AgentRowFiles.make(paneIDs: [paneA, paneB], store: later)
+        XCTAssertEqual(row.paneID, paneB)
+        XCTAssertEqual(row.repositoryRoot, "/repo")
     }
 
     func testPanesWithNothingChangedGiveAnEmptyRow() {
@@ -261,14 +246,12 @@ final class AgentDashboardTurnFilesTests: XCTestCase {
         )
     }
 
-    func testRowHeightForZeroOneFiveAndEightFiles() {
+    func testRowHeightAddsOneLineForAnyNumberOfFiles() {
         let base = AgentDashboardViewController.rowHeight(telemetryLines: 1, hasContextBar: true, files: .empty)
         XCTAssertEqual(base, 42 + 16 + 9)
         XCTAssertEqual(AgentDashboardViewController.rowHeight(telemetryLines: 1, hasContextBar: true, files: rowFiles(0)), base)
         XCTAssertEqual(AgentDashboardViewController.rowHeight(telemetryLines: 1, hasContextBar: true, files: rowFiles(1)), base + 16)
-        XCTAssertEqual(AgentDashboardViewController.rowHeight(telemetryLines: 1, hasContextBar: true, files: rowFiles(5)), base + 5 * 16)
-        // 5 files plus "and 3 more".
-        XCTAssertEqual(AgentDashboardViewController.rowHeight(telemetryLines: 1, hasContextBar: true, files: rowFiles(8)), base + 6 * 16)
+        XCTAssertEqual(AgentDashboardViewController.rowHeight(telemetryLines: 1, hasContextBar: true, files: rowFiles(8)), base + 16)
         XCTAssertEqual(AgentDashboardViewController.rowHeight(telemetryLines: 0, hasContextBar: false, files: .empty), 42)
     }
 
@@ -294,11 +277,8 @@ final class AgentDashboardTurnFilesTests: XCTestCase {
         XCTAssertEqual(row(.empty), row(.empty))
     }
 
-    func testRowsWithADifferentFileListAreNotEqual() {
+    func testRowsWithADifferentFileCountAreNotEqual() {
         XCTAssertNotEqual(row(rowFiles(3)), row(rowFiles(4)))
         XCTAssertNotEqual(row(.empty), row(rowFiles(1)))
-        let modified = AgentRowFiles.make(paneIDs: [paneA], store: store([paneA: entry([file("a.swift", .modified)])]))
-        let deleted = AgentRowFiles.make(paneIDs: [paneA], store: store([paneA: entry([file("a.swift", .deleted)])]))
-        XCTAssertNotEqual(row(modified), row(deleted))
     }
 }

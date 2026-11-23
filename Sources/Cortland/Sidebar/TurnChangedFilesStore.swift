@@ -99,52 +99,27 @@ nonisolated struct TurnChangedFilesStore: Equatable, Sendable {
     }
 }
 
-/// The changed-file lines of one Agents panel row.
+/// The "N files changed" line of one Agents panel row.
 nonisolated struct AgentRowFiles: Equatable, Sendable {
-    static let maxShown = 5
+    /// How many files the tab's agents changed this turn; 0 for no line.
+    let count: Int
+    /// The pane and checkout the line opens: the pane that finished last.
+    let paneID: UUID?
+    let repositoryRoot: String?
 
-    /// A listed file and the agent pane a click on it follows.
-    struct Entry: Equatable, Sendable {
-        let file: TurnChangedFile
-        let paneID: UUID
-    }
+    static let empty = AgentRowFiles(count: 0, paneID: nil, repositoryRoot: nil)
 
-    let shown: [Entry]
-    /// How many more files the "and N more" line stands for; 0 for no line.
-    let moreCount: Int
-    /// The pane and checkout "and N more" opens: the pane that finished last.
-    let morePaneID: UUID?
-    let moreRepositoryRoot: String?
+    var lineCount: Int { count > 0 ? 1 : 0 }
 
-    static let empty = AgentRowFiles(shown: [], moreCount: 0, morePaneID: nil, moreRepositoryRoot: nil)
-
-    var lineCount: Int { shown.count + (moreCount > 0 ? 1 : 0) }
-
-    /// The union of `paneIDs`' files in `store`, each absolute path once,
-    /// in path order. A file from several panes follows the pane that
-    /// finished last.
+    /// Counts the union of `paneIDs`' files in `store`, each absolute path
+    /// once.
     static func make(paneIDs: [UUID], store: TurnChangedFilesStore) -> AgentRowFiles {
         let panes = paneIDs.compactMap { id in store.entries[id].map { (id: id, entry: $0) } }
             .filter { !$0.entry.files.isEmpty }
         guard !panes.isEmpty else { return .empty }
 
-        var byPath: [String: (entry: Entry, finishedAt: Date)] = [:]
-        for pane in panes {
-            for file in pane.entry.files {
-                if let existing = byPath[file.absolutePath], existing.finishedAt >= pane.entry.finishedAt { continue }
-                byPath[file.absolutePath] = (Entry(file: file, paneID: pane.id), pane.entry.finishedAt)
-            }
-        }
-        let all = byPath.values.map(\.entry).sorted {
-            ($0.file.path, $0.file.absolutePath) < ($1.file.path, $1.file.absolutePath)
-        }
+        let paths = Set(panes.flatMap { $0.entry.files.map(\.absolutePath) })
         let latest = panes.max { $0.entry.finishedAt < $1.entry.finishedAt }
-        let more = max(0, all.count - maxShown)
-        return AgentRowFiles(
-            shown: Array(all.prefix(maxShown)),
-            moreCount: more,
-            morePaneID: more > 0 ? latest?.id : nil,
-            moreRepositoryRoot: more > 0 ? latest?.entry.repositoryRoot : nil
-        )
+        return AgentRowFiles(count: paths.count, paneID: latest?.id, repositoryRoot: latest?.entry.repositoryRoot)
     }
 }
