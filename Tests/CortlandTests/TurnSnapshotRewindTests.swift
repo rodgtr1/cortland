@@ -133,6 +133,27 @@ final class TurnSnapshotRewindTests: XCTestCase {
         XCTAssertEqual(try read("logs/keep.log", in: repo), "ignored\n")
     }
 
+    func testRewindKeepsLocalEditsToSkipWorktreeAndAssumeUnchangedFiles() throws {
+        let repo = try makeRepo()
+        try git(["update-index", "--skip-worktree", "a.txt"], in: repo)
+        try git(["update-index", "--assume-unchanged", "b.txt"], in: repo)
+        try write("a local edit\n", to: "a.txt", in: repo)
+        try write("b local edit\n", to: "b.txt", in: repo)
+        let service = TurnSnapshotService()
+        let snapshot = try service.takeSnapshot(paneID: UUID(), repositoryRoot: repo.path)
+        try write("keep agent edit\n", to: "keep.txt", in: repo)
+
+        let reverted = try service.rewind(to: snapshot.commit, repositoryRoot: repo.path)
+
+        XCTAssertEqual(reverted.map(\.path), ["keep.txt"])
+        XCTAssertEqual(try read("keep.txt", in: repo), "keep\n")
+        XCTAssertEqual(try read("a.txt", in: repo), "a local edit\n")
+        XCTAssertEqual(try read("b.txt", in: repo), "b local edit\n")
+        // The real index keeps its flags: `S` is skip-worktree, lowercase `h`
+        // is assume-unchanged.
+        XCTAssertEqual(try git(["ls-files", "-v", "a.txt", "b.txt"], in: repo), "S a.txt\nh b.txt\n")
+    }
+
     // MARK: - 2. Unchanged files are not rewritten
 
     func testRewindLeavesUnchangedFileModificationDate() throws {

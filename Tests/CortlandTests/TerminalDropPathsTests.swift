@@ -21,6 +21,11 @@ final class TerminalDropPathsTests: XCTestCase {
         XCTAssertEqual(TerminalDropPaths.quoted("/tmp/$HOME *?.txt"), "'/tmp/$HOME *?.txt'")
     }
 
+    func testCommandSubstitutionAndBackticksStayLiteral() {
+        XCTAssertEqual(TerminalDropPaths.quoted("/tmp/$(touch pwned).md"), "'/tmp/$(touch pwned).md'")
+        XCTAssertEqual(TerminalDropPaths.quoted("/tmp/`touch pwned`.md"), "'/tmp/`touch pwned`.md'")
+    }
+
     func testMultiplePathsAreSpaceSeparatedInOrder() {
         let text = TerminalDropPaths.typedText(for: ["/a/one.txt", "/b/two three.txt", "/c/it's.png"])
         XCTAssertEqual(text, "'/a/one.txt' '/b/two three.txt' '/c/it'\\''s.png'")

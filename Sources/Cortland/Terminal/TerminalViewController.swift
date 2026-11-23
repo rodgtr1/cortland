@@ -549,6 +549,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     nonisolated(unsafe) private var cwdTimer: Timer?
     private var currentCWD: String = "~"
     private var isUpdatingCWD = false
+    /// The (cwd, branch) last sent to `terminalDidUpdateTitle`, so a branch
+    /// watcher burst that changes neither doesn't repost `.terminalCWDChanged`.
+    private var lastNotifiedTitle: (directory: String, branch: String?)?
 
     // Consolidated git access: the single entry point for asking git a question
     // (repo root, branch), spawning through the shared ProcessRunner.
@@ -1284,8 +1287,13 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
                 // branch change refreshes the title without polling.
                 self.updateBranchWatch(repositoryRoot: repositoryRoot)
 
-                // Notify delegate for tab title updates
-                self.delegate?.terminalDidUpdateTitle(self, directory: cwd, branch: label)
+                // Notify delegate for tab title updates, only on a real change:
+                // the branch watcher calls this on every file-change burst, and
+                // each notification ends in a main-thread `git rev-parse`.
+                guard let delegate = self.delegate else { return }
+                if let last = self.lastNotifiedTitle, last == (cwd, label) { return }
+                self.lastNotifiedTitle = (cwd, label)
+                delegate.terminalDidUpdateTitle(self, directory: cwd, branch: label)
             }
         }
     }

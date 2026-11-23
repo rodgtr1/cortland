@@ -1093,7 +1093,9 @@ extension MainWindowController: SidebarContainerDelegate {
 
     private func openFileInTerminalEditor(_ url: URL) {
         let editor = ProcessInfo.processInfo.environment["EDITOR"] ?? "nvim"
-        let command = "\(editor) \"\(url.path)\""
+        // Single quotes keep `$(...)` and backticks in a file name literal.
+        // $EDITOR stays unquoted since it may carry arguments.
+        let command = "\(editor) \(TerminalDropPaths.quoted(url.path))"
         runCommandInActiveTerminal(command)
     }
 

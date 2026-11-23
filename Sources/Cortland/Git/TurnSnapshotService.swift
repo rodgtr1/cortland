@@ -487,6 +487,25 @@ nonisolated final class TurnSnapshotService: Sendable {
         }
         let indexEnvironment = ["GIT_INDEX_FILE": tempIndex.path]
 
+        // The copy keeps skip-worktree and assume-unchanged bits, and `add -A`
+        // skips those entries, so the tree would hold the index version instead
+        // of the local edit. Clear them in the temp index only.
+        let flagged = Self.skipOrAssumeUnchangedPaths(try git(
+            ["ls-files", "-v", "-z"],
+            repositoryRoot: repositoryRoot,
+            environment: indexEnvironment,
+            trimmingOutput: false
+        ))
+        // update-index applies only the first of these flags per call, so each
+        // runs on its own; a path without that bit is left as it is.
+        let batchSize = max(checkoutBatchSize, 1)
+        for flag in ["--no-skip-worktree", "--no-assume-unchanged"] {
+            for start in stride(from: 0, to: flagged.count, by: batchSize) {
+                let batch = Array(flagged[start..<min(start + batchSize, flagged.count)])
+                try git(["update-index", flag, "--"] + batch, repositoryRoot: repositoryRoot, environment: indexEnvironment)
+            }
+        }
+
         try git(["add", "-A"], repositoryRoot: repositoryRoot, environment: indexEnvironment)
         return try git(["write-tree"], repositoryRoot: repositoryRoot, environment: indexEnvironment)
     }
@@ -508,6 +527,16 @@ nonisolated final class TurnSnapshotService: Sendable {
     }
 
     // MARK: - Pure helpers
+
+    /// Paths from `git ls-files -v -z` output marked skip-worktree (`S`/`s`)
+    /// or assume-unchanged (a lowercase tag).
+    static func skipOrAssumeUnchangedPaths(_ lsFilesOutput: String) -> [String] {
+        lsFilesOutput.split(separator: "\0").compactMap { entry in
+            guard entry.count > 2, let tag = entry.first else { return nil }
+            guard tag.isLowercase || tag == "S" else { return nil }
+            return String(entry.dropFirst(2))
+        }
+    }
 
     static func refName(paneID: UUID, sequence: Int) -> String {
         refPrefix + paneID.uuidString.lowercased() + "/" + String(sequence)

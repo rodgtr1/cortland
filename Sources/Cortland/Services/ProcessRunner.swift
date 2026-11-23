@@ -133,8 +133,10 @@ nonisolated final class ProcessRunner: ProcessRunning {
 
         return ProcessResult(
             terminationStatus: task.terminationStatus,
-            stdout: String(data: outputBox.value, encoding: .utf8) ?? "",
-            stderr: String(data: errorBox.value, encoding: .utf8) ?? ""
+            // Lossy decoding: one invalid byte (a Latin-1 file in a diff) would
+            // otherwise make String(data:encoding:) nil and blank the whole stream.
+            stdout: String(decoding: outputBox.value, as: UTF8.self),
+            stderr: String(decoding: errorBox.value, as: UTF8.self)
         )
     }
 
