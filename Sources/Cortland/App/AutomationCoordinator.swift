@@ -600,6 +600,12 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     }
 
     private func handlePaneClose(paneID: UUID, completion: @escaping @Sendable (IPCResponse) -> Void) {
+        // closePane(id:) skips the unsaved-edits prompt the mouse and keyboard
+        // paths show, so refuse rather than silently drop a dirty buffer.
+        if automationPane(id: paneID)?.pane.editorViewController?.isModified == true {
+            completion(IPCResponse(ok: false, error: "Pane has unsaved changes; save or close it in Cortland first"))
+            return
+        }
         guard let context = automationPane(id: paneID), context.controller.closePane(id: paneID) else {
             completion(IPCResponse(ok: false, error: "Pane not found or cannot close the last pane"))
             return

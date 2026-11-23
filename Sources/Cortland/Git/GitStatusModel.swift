@@ -476,8 +476,10 @@ class GitStatusModel {
         }
     }
 
-    func discardChanges(_ file: GitFileItem) {
-        var command: [String]
+    /// Completion reports failure with git's stderr so the panel can show it
+    /// the way it shows a failed pull or push, instead of silently doing nothing.
+    func discardChanges(_ file: GitFileItem, completion: @escaping @MainActor (Bool, String?) -> Void) {
+        let command: [String]
 
         // Handle different file states
         if file.unstagedStatus == .untracked {
@@ -486,23 +488,27 @@ class GitStatusModel {
             // repositories intact (removing those needs -ff) — unlike a blind
             // FileManager.removeItem, which would wipe a nested repo's contents
             // too. The trailing-slash path from porcelain works as a clean arg.
-            executeGitCommand(["clean", "-fd", "--", file.path]) { [weak self] success in
-                if success {
-                    self?.refreshStatus(force: true)
-                }
-            }
-            return
+            command = ["clean", "-fd", "--", file.path]
+        } else if file.stagedStatus == .added {
+            // A staged new file isn't in HEAD, so there is nothing to restore:
+            // discarding it means unstaging and deleting it.
+            command = ["rm", "-f", "--", file.path]
         } else if file.isStaged {
-            // For staged files, restore from HEAD (discards both staged and unstaged changes)
+            // For staged files, restore from HEAD (discards both staged and unstaged changes).
+            // A staged rename's path is the destination, which isn't in HEAD; the
+            // source isn't kept on GitFileItem, so that case fails and is reported.
             command = ["checkout", "HEAD", "--", file.path]
         } else {
             // For unstaged files, restore from index (discards unstaged changes only)
             command = ["checkout", "--", file.path]
         }
 
-        executeGitCommand(command) { [weak self] success in
+        executeGitCommandWithOutput(command) { [weak self] success, _, errorOutput in
             if success {
                 self?.refreshStatus(force: true)
+                completion(true, nil)
+            } else {
+                completion(false, errorOutput ?? "Failed to discard changes")
             }
         }
     }

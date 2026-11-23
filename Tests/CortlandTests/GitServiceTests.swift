@@ -389,8 +389,8 @@ final class GitServiceTests: XCTestCase {
 
         let calls = runner.calls
         XCTAssertEqual(calls.map(\.arguments), [
-            ["-C", "/repo", "diff", "--cached"],
-            ["-C", "/repo", "diff"],
+            ["-C", "/repo", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--cached"],
+            ["-C", "/repo", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"],
         ])
         for call in calls {
             XCTAssertEqual(call.environment?["GIT_OPTIONAL_LOCKS"], "0")
@@ -434,12 +434,39 @@ final class GitServiceTests: XCTestCase {
         XCTAssertTrue(try GitService().diffsAgainstDefaultBranchByPath(repositoryRoot: repo.path, defaultBranch: "main").isEmpty)
     }
 
+    /// diff.noprefix and diff.mnemonicPrefix change the `diff --git` header the
+    /// parser keys on; the pinned prefixes must keep per-file diffs intact.
+    private func assertModifiedFileDiffSurvivesConfig(_ key: String, file: StaticString = #filePath, line: UInt = #line) throws {
+        var cleanup: [URL] = []
+        defer { cleanup.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let (git, repo) = try makeTempRepo(cleanup: &cleanup)
+        try "base\n".write(to: repo.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        try git(["add", "."])
+        try git(["commit", "-qm", "init"])
+        try git(["config", key, "true"])
+        try "base\nchanged\n".write(to: repo.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+
+        let entry = GitStatusEntry(path: "README", stagedStatus: " ", unstagedStatus: "M")
+        let diffs = try GitService().diffsByPath(for: [entry], repositoryRoot: repo.path)
+
+        XCTAssertEqual(Array(diffs.keys), ["README"], file: file, line: line)
+        XCTAssertTrue(diffs["README"]?.contains("+changed") ?? false, diffs["README"] ?? "nil", file: file, line: line)
+    }
+
+    func testDiffsByPathSurvivesDiffNoprefix() throws {
+        try assertModifiedFileDiffSurvivesConfig("diff.noprefix")
+    }
+
+    func testDiffsByPathSurvivesDiffMnemonicPrefix() throws {
+        try assertModifiedFileDiffSurvivesConfig("diff.mnemonicPrefix")
+    }
+
     func testDiffsAgainstDefaultBranchByPathRunsWithoutOptionalLocks() throws {
         let runner = RecordingRunner()
         _ = try GitService(runner: runner).diffsAgainstDefaultBranchByPath(repositoryRoot: "/repo", defaultBranch: "main")
 
         let calls = runner.calls
-        XCTAssertEqual(calls.map(\.arguments), [["-C", "/repo", "diff", "main...HEAD"]])
+        XCTAssertEqual(calls.map(\.arguments), [["-C", "/repo", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "main...HEAD"]])
         for call in calls {
             XCTAssertEqual(call.environment?["GIT_OPTIONAL_LOCKS"], "0")
         }

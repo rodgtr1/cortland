@@ -165,7 +165,7 @@ nonisolated final class GitService: Sendable {
         defaultBranch: String
     ) throws -> [GitBranchDiffEntry] {
         let result = try runGit(
-            ["diff", "--name-status", "\(defaultBranch)...HEAD"],
+            ["diff"] + Self.nameStatusFlags + ["--name-status", "\(defaultBranch)...HEAD"],
             repositoryRoot: repositoryRoot,
             allowOptionalLocks: false
         )
@@ -221,10 +221,10 @@ nonisolated final class GitService: Sendable {
         // so never take index.lock: it could fail an agent's concurrent
         // `git add`/`git commit`, and the index write re-fires the watcher.
         let stagedByPath = Self.splitDiffByFile(
-            try runGit(["diff", "--cached"], repositoryRoot: repositoryRoot, allowOptionalLocks: false).stdout
+            try runGit(["diff"] + Self.patchFlags + ["--cached"], repositoryRoot: repositoryRoot, allowOptionalLocks: false).stdout
         )
         let unstagedByPath = Self.splitDiffByFile(
-            try runGit(["diff"], repositoryRoot: repositoryRoot, allowOptionalLocks: false).stdout
+            try runGit(["diff"] + Self.patchFlags, repositoryRoot: repositoryRoot, allowOptionalLocks: false).stdout
         )
 
         var combined: [String: String] = [:]
@@ -259,13 +259,20 @@ nonisolated final class GitService: Sendable {
         // The changes pane runs this on every watcher event while agents work,
         // so never take index.lock (see diffsByPath).
         let result = try runGit(
-            ["diff", "\(defaultBranch)...HEAD"],
+            ["diff"] + Self.patchFlags + ["\(defaultBranch)...HEAD"],
             repositoryRoot: repositoryRoot,
             allowOptionalLocks: false
         )
         guard result.succeeded else { return [:] }
         return Self.splitDiffByFile(result.stdout)
     }
+
+    /// Pins the patch format splitDiffByFile parses, whatever the user's git
+    /// config says (diff.noprefix, diff.mnemonicPrefix, color.ui=always), and
+    /// keeps a repo's external diff or textconv driver from running.
+    private static let patchFlags = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"]
+    /// --name-status prints no a/ b/ headers, so only color and drivers matter.
+    private static let nameStatusFlags = ["--no-color", "--no-ext-diff"]
 
     static func splitDiffByFile(_ output: String) -> [String: String] {
         var result: [String: String] = [:]

@@ -778,7 +778,12 @@ class GitPanelViewController: NSViewController {
         alert.addButton(withTitle: "Cancel")
 
         if alert.runModal() == .alertFirstButtonReturn {
-            gitStatusModel.discardChanges(file)
+            gitStatusModel.discardChanges(file) { [weak self] success, message in
+                guard !success else { return }
+                DispatchQueue.main.async {
+                    self?.showGitOperationResult(title: "Discard", success: false, message: message)
+                }
+            }
         }
     }
 

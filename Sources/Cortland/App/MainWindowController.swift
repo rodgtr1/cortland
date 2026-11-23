@@ -320,6 +320,12 @@ class MainWindowController: NSWindowController {
             guard let self = self else { return }
             Log.debug("🔄 Config file changed on disk, reloading", category: "app")
             let newConfig = Config.load()
+            // A save mid-edit can leave the file unparseable; Config.load() then
+            // returns defaults. Keep the running config until it parses again.
+            guard !newConfig.loadDidFail else {
+                Log.error("Config file failed to parse; keeping the running config", category: "app")
+                return
+            }
             Theme.shared.loadFromConfig(newConfig)
             self.applyRuntimeConfig(newConfig)
         }

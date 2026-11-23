@@ -216,6 +216,11 @@ nonisolated final class TurnSnapshotService: Sendable {
         return Self.parseSnapshotList(output)
     }
 
+    /// Pins the patch format GitService.splitDiffByFile parses regardless of
+    /// user git config, and keeps a repo's external diff or textconv driver from running.
+    private static let patchFlags = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"]
+    private static let nameStatusFlags = ["--no-color", "--no-ext-diff"]
+
     /// Every file that differs between `commit`'s tree and the working tree
     /// now, in path order: modified and deleted files, plus files created since
     /// (untracked ones included, ignored ones not). A file left as it was when
@@ -241,13 +246,13 @@ nonisolated final class TurnSnapshotService: Sendable {
         _ = try runGit(["update-index", "-q", "--refresh"], repositoryRoot: repositoryRoot, environment: indexEnvironment)
 
         let nameStatus = try git(
-            ["diff", "--no-renames", "--name-status"],
+            ["diff"] + Self.nameStatusFlags + ["--no-renames", "--name-status"],
             repositoryRoot: repositoryRoot,
             environment: indexEnvironment,
             trimmingOutput: false
         )
         let patches = GitService.splitDiffByFile(try git(
-            ["diff", "--no-renames"],
+            ["diff"] + Self.patchFlags + ["--no-renames"],
             repositoryRoot: repositoryRoot,
             environment: indexEnvironment,
             trimmingOutput: false
