@@ -74,7 +74,10 @@ class CodeTextView: NSTextView {
         let sel = selectedRange()
         let block = ns.lineRange(for: sel)
         let blockStr = ns.substring(with: block)
-        let endsWithNewline = blockStr.hasSuffix("\n")
+        // UTF-16 test: in Swift "\r\n" is one Character, so String.hasSuffix
+        // misses a CRLF ending and the line after the block got indented too.
+        // The split and join below are NSString-based, so each line keeps its \r.
+        let endsWithNewline = (blockStr as NSString).hasSuffix("\n")
 
         var lines = blockStr.components(separatedBy: "\n")
         if endsWithNewline { lines.removeLast() }
@@ -110,7 +113,7 @@ class CodeTextView: NSTextView {
             reindent(add: false)
             return
         }
-        if ns.substring(with: sel).contains("\n") {
+        if (ns.substring(with: sel) as NSString).contains("\n") {
             reindent(add: true)
             return
         }

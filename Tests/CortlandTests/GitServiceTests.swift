@@ -368,6 +368,31 @@ final class GitServiceTests: XCTestCase {
         XCTAssertEqual(try GitService().defaultBranch(repositoryRoot: repo.path), "main")
     }
 
+    func testUntrackedCRLFFileHasOneAddedLinePerLine() throws {
+        var cleanup: [URL] = []
+        defer { cleanup.forEach { try? FileManager.default.removeItem(at: $0) } }
+        let (_, repo) = try makeTempRepo(cleanup: &cleanup)
+        try "one\r\ntwo\r\nthree".write(to: repo.appendingPathComponent("crlf.txt"), atomically: true, encoding: .utf8)
+
+        let diff = try GitService().untrackedFileDiff(relativePath: "crlf.txt", repositoryRoot: repo.path)
+        let added = diff.components(separatedBy: "\n").filter { $0.hasPrefix("+") && !$0.hasPrefix("+++") }
+        XCTAssertEqual(added, ["+one", "+two", "+three"])
+        XCTAssertTrue(diff.contains("@@ -0,0 +1,3 @@"))
+    }
+
+    func testStatusThrowsOutsideARepository() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("sk-norepo-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        XCTAssertThrowsError(try GitService().status(repositoryRoot: dir.path)) { error in
+            guard case WorktreeService.WorktreeError.gitFailed(let message) = error else {
+                return XCTFail("unexpected error \(error)")
+            }
+            XCTAssertTrue(message.contains("not a git repository"), message)
+        }
+    }
+
     func testDefaultBranchFallsBackToMasterWhenNoMain() throws {
         var cleanup: [URL] = []
         defer { cleanup.forEach { try? FileManager.default.removeItem(at: $0) } }

@@ -151,14 +151,28 @@ final class ExtensionRegistry {
     }
 
     /// Pulls the extension's checkout, off the main thread, then rescans.
-    /// Its enabled state does not change.
-    func update(_ id: String) async throws(ExtensionInstallError) -> ExtensionUpdateResult {
+    /// Its enabled state does not change, unless `disableIfChanged` is set
+    /// (an update a pane process asked for over IPC): then an enabled
+    /// extension whose HEAD moved is disabled, as a fresh install is, so new
+    /// upstream code waits for the user to re-enable it.
+    func update(_ id: String, disableIfChanged: Bool = false) async throws(ExtensionInstallError) -> ExtensionUpdateResult {
         let installer = installer
         let result = await Task.detached {
             Result { () throws(ExtensionInstallError) in try installer.update(id) }
         }.value
-        reload()
-        return try result.get()
+        defer { reload() }
+        var update = try result.get()
+        // Read from the state file rather than `extensions`, so an extension
+        // that is invalid right now (and so not listed) is still caught.
+        var ids = Self.loadEnabled(from: stateFileURL)
+        if disableIfChanged, update.updated, ids.contains(id) {
+            ids.remove(id)
+            let scan = Self.scan(directory: extensionsDirectory, enabled: [])
+            if (try? writeState(ids, known: scan.folderNames)) != nil {
+                update.disabled = true
+            }
+        }
+        return update
     }
 
     /// Writes the enabled list, keeping only ids that match an installed folder.

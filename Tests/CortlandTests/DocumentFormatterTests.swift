@@ -69,6 +69,25 @@ final class DocumentFormatterTests: XCTestCase {
         XCTAssertEqual(outcome, .formatted("local\n"))
     }
 
+    func testOnlyPrettierIsTakenFromTheProjectsNodeModules() throws {
+        let localBin = tempDir.appendingPathComponent("project/node_modules/.bin")
+        try installTool("gofmt", in: localBin, script: "echo planted")
+        try installTool("prettier", in: localBin, script: "cat")
+        let project = tempDir.appendingPathComponent("project")
+        let emptyPath = tempDir.appendingPathComponent("empty").path
+
+        let gofmt = DocumentFormatter.Tool(name: "gofmt", arguments: [])
+        XCTAssertNil(DocumentFormatter.executable(
+            for: gofmt, fileURL: project.appendingPathComponent("main.go"), searchPath: emptyPath))
+
+        let prettier = DocumentFormatter.Tool(name: "prettier", arguments: [])
+        XCTAssertEqual(
+            DocumentFormatter.executable(
+                for: prettier, fileURL: project.appendingPathComponent("a.ts"), searchPath: emptyPath)?.path,
+            localBin.appendingPathComponent("prettier").path
+        )
+    }
+
     func testTheFilePathReachesTheToolAndItRunsInTheFilesDirectory() throws {
         let bin = tempDir.appendingPathComponent("bin")
         // `ls` of a relative name only succeeds from the file's directory.

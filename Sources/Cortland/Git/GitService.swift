@@ -204,7 +204,11 @@ nonisolated final class GitService: Sendable {
             repositoryRoot: repositoryRoot,
             allowOptionalLocks: false
         )
-        guard result.succeeded else { return [] }
+        // A non-zero exit (not a repository, a deleted root) must not read as
+        // a clean tree; callers that want "nothing to show" catch it.
+        guard result.succeeded else {
+            throw WorktreeService.WorktreeError.gitFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         return Self.parseStatusOutput(result.stdout)
     }
 
@@ -335,8 +339,12 @@ nonisolated final class GitService: Sendable {
         try runGit(["reset", "HEAD", "--", path], repositoryRoot: repositoryRoot).succeeded
     }
 
-    func run(repositoryRoot: String, arguments: [String]) throws -> ProcessResult {
-        try runGit(arguments, repositoryRoot: repositoryRoot)
+    func run(
+        repositoryRoot: String,
+        arguments: [String],
+        timeout: TimeInterval = ProcessRunner.defaultTimeout
+    ) throws -> ProcessResult {
+        try runGit(arguments, repositoryRoot: repositoryRoot, timeout: timeout)
     }
 
     static func parseStatusOutput(_ output: String) -> [GitStatusEntry] {
@@ -461,7 +469,8 @@ nonisolated final class GitService: Sendable {
     private func runGit(
         _ arguments: [String],
         repositoryRoot: String,
-        allowOptionalLocks: Bool = true
+        allowOptionalLocks: Bool = true,
+        timeout: TimeInterval = ProcessRunner.defaultTimeout
     ) throws -> ProcessResult {
         var environment = ProcessInfo.processInfo.environment
         if !allowOptionalLocks {
@@ -472,7 +481,8 @@ nonisolated final class GitService: Sendable {
             executableURL: URL(fileURLWithPath: "/usr/bin/git"),
             arguments: ["-C", repositoryRoot] + arguments,
             currentDirectoryURL: URL(fileURLWithPath: repositoryRoot),
-            environment: environment
+            environment: environment,
+            timeout: timeout
         )
     }
 
@@ -588,7 +598,11 @@ nonisolated final class GitService: Sendable {
             stub += "+(file too large or binary to preview)\n"
             return stub
         }
-        let lines = content.components(separatedBy: .newlines)
+        // Split on "\n" alone: `.newlines` treats CRLF as two breaks, which put
+        // a blank added line after every line of a CRLF file.
+        let lines = content.components(separatedBy: "\n").map { line in
+            line.hasSuffix("\r") ? String(line.dropLast()) : line
+        }
 
         var diffOutput = "diff --git a/\(trimmedPath) b/\(trimmedPath)\n"
         diffOutput += "new file\n"

@@ -149,6 +149,8 @@ scroll_on_output = false
 scroll_on_keystroke = true
 # allow_hyperlinks: true | false — clickable URLs.
 allow_hyperlinks = true
+# clipboard_write: true | false (let programs copy to the clipboard via OSC 52).
+clipboard_write = true
 # mouse_autohide: true | false — hide the mouse cursor while typing.
 mouse_autohide = true
 # audible_bell: true | false — play a sound on the terminal bell.
@@ -437,6 +439,7 @@ public struct BehaviorConfig: Codable {
     public var scrollOnOutput: Bool
     public var scrollOnKeystroke: Bool
     public var allowHyperlinks: Bool
+    public var clipboardWrite: Bool
     public var mouseAutohide: Bool
     public var audibleBell: Bool
     public var restoreSession: Bool
@@ -447,6 +450,7 @@ public struct BehaviorConfig: Codable {
         case scrollOnOutput = "scroll_on_output"
         case scrollOnKeystroke = "scroll_on_keystroke"
         case allowHyperlinks = "allow_hyperlinks"
+        case clipboardWrite = "clipboard_write"
         case mouseAutohide = "mouse_autohide"
         case audibleBell = "audible_bell"
         case restoreSession = "restore_session"
@@ -458,6 +462,7 @@ public struct BehaviorConfig: Codable {
         self.scrollOnOutput = false
         self.scrollOnKeystroke = true
         self.allowHyperlinks = true
+        self.clipboardWrite = true
         self.mouseAutohide = true
         self.audibleBell = false
         self.restoreSession = true
@@ -473,6 +478,7 @@ public struct BehaviorConfig: Codable {
         scrollOnOutput = try container.decodeIfPresent(Bool.self, forKey: .scrollOnOutput) ?? scrollOnOutput
         scrollOnKeystroke = try container.decodeIfPresent(Bool.self, forKey: .scrollOnKeystroke) ?? scrollOnKeystroke
         allowHyperlinks = try container.decodeIfPresent(Bool.self, forKey: .allowHyperlinks) ?? allowHyperlinks
+        clipboardWrite = try container.decodeIfPresent(Bool.self, forKey: .clipboardWrite) ?? clipboardWrite
         mouseAutohide = try container.decodeIfPresent(Bool.self, forKey: .mouseAutohide) ?? mouseAutohide
         audibleBell = try container.decodeIfPresent(Bool.self, forKey: .audibleBell) ?? audibleBell
         restoreSession = try container.decodeIfPresent(Bool.self, forKey: .restoreSession) ?? restoreSession

@@ -48,6 +48,26 @@ final class ClipboardEscapeTests: XCTestCase {
         XCTAssertNil(ClipboardEscape.copyText(from: params(b64("no selector field"))))
     }
 
+    func testPayloadAtTheCapIsAcceptedAndOverItIsDropped() {
+        // 786_432 bytes encode to exactly 1 MiB of base64.
+        let atCap = Data(repeating: UInt8(ascii: "a"), count: ClipboardEscape.maxPayloadBytes / 4 * 3).base64EncodedString()
+        XCTAssertEqual(atCap.utf8.count, ClipboardEscape.maxPayloadBytes)
+        XCTAssertEqual(ClipboardEscape.copyText(from: params("c;" + atCap))?.utf8.count, ClipboardEscape.maxPayloadBytes / 4 * 3)
+        XCTAssertNil(ClipboardEscape.copyText(from: params("c;" + atCap + "YWFh")))
+    }
+
+    func testDisabledHandlerLeavesThePasteboardAlone() {
+        let view = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("cortland.tests.osc52.off"))
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("untouched", forType: .string)
+        ClipboardEscape.install(on: view.terminal, pasteboard: pasteboard, isEnabled: { false })
+
+        view.terminal.feed(byteArray: Array("\u{1B}]52;c;\(b64("blocked"))\u{07}".utf8))
+        XCTAssertEqual(pasteboard.string(forType: .string), "untouched")
+    }
+
     func testSequenceFedThroughTheEmulatorReachesThePasteboard() {
         let view = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("cortland.tests.osc52"))

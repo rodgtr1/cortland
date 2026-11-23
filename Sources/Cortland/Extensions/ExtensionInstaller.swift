@@ -23,9 +23,12 @@ nonisolated struct ExtensionUpdateResult: Codable, Equatable, Sendable {
     /// The validation message when the manifest no longer validates after the
     /// update. The extension is still updated; the registry lists it as invalid.
     let invalid: String?
+    /// True when an update requested over IPC brought new code to an enabled
+    /// extension, which was disabled so the new code doesn't run unreviewed.
+    var disabled: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, updated, invalid
+        case id, updated, invalid, disabled
         case versionBefore = "version_before"
         case versionAfter = "version_after"
     }

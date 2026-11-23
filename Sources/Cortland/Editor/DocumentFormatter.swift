@@ -6,8 +6,8 @@ import Foundation
 /// project's own config (.prettierrc, rustfmt.toml, .swift-format).
 nonisolated enum DocumentFormatter {
     struct Tool: Sendable, Equatable {
-        /// Executable name, looked up in node_modules/.bin above the file and
-        /// then on the search path.
+        /// Executable name, looked up on the search path (and, for Prettier
+        /// only, first in node_modules/.bin above the file).
         let name: String
         /// Arguments that make the tool read stdin and write stdout. `{file}`
         /// stands for the file's path, which formatters use to pick a parser
@@ -55,13 +55,15 @@ nonisolated enum DocumentFormatter {
         }
     }
 
-    /// Where `tool` lives for a file at `fileURL`: the nearest
+    /// Where `tool` lives for a file at `fileURL`: the directories of
+    /// `searchPath`, except that Prettier first looks in the nearest
     /// node_modules/.bin above the file (the project's pinned Prettier wins
-    /// over a global one), then the directories of `searchPath`.
+    /// over a global one). Only Prettier gets that walk: a cloned repo could
+    /// otherwise ship its own `gofmt` or `xcrun` and have it run on Format.
     static func executable(for tool: Tool, fileURL: URL, searchPath: String) -> URL? {
         let fileManager = FileManager.default
         var directory = fileURL.deletingLastPathComponent().standardizedFileURL
-        while true {
+        while tool.name == "prettier" {
             let local = directory.appendingPathComponent("node_modules/.bin/\(tool.name)")
             if fileManager.isExecutableFile(atPath: local.path) { return local }
             // deletingLastPathComponent on "/" yields "/..", never "/" again.

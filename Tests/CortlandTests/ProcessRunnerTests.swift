@@ -15,4 +15,18 @@ final class ProcessRunnerTests: XCTestCase {
         XCTAssertTrue(result.stdout.hasPrefix("a"))
         XCTAssertTrue(result.stdout.contains("b"))
     }
+
+    func testACallerChosenTimeoutStopsTheChildEarly() throws {
+        let start = Date()
+        let result = try ProcessRunner.shared.run(
+            executableURL: URL(fileURLWithPath: "/bin/sleep"),
+            arguments: ["2"],
+            currentDirectoryURL: nil,
+            environment: nil,
+            timeout: 0.5
+        )
+
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.8)
+        XCTAssertFalse(result.succeeded)
+    }
 }

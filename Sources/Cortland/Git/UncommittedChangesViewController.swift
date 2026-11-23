@@ -641,8 +641,15 @@ final class UncommittedChangesViewController: NSViewController {
                 } else {
                     // Keep a stable order by relative path; the focused file is
                     // scrolled into view rather than reordered to the top.
-                    let entries = try gitService.status(repositoryRoot: repositoryPath)
-                        .sorted { $0.path < $1.path }
+                    // A git that exits non-zero (no repository here) shows as
+                    // no changes, as it always has, not as a load error.
+                    let status: [GitStatusEntry]
+                    do {
+                        status = try gitService.status(repositoryRoot: repositoryPath)
+                    } catch WorktreeService.WorktreeError.gitFailed(_) {
+                        status = []
+                    }
+                    let entries = status.sorted { $0.path < $1.path }
 
                     let diffs = try gitService.diffsByPath(for: entries, repositoryRoot: repositoryPath)
                     result = .success(entries.map { entry in

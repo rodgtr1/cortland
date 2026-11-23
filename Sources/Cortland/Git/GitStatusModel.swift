@@ -364,6 +364,10 @@ class GitStatusModel {
                     },
                 path: \.path
             )
+        } catch WorktreeService.WorktreeError.gitFailed(_) {
+            // git ran and exited non-zero (no repository at this path, or its
+            // root was just deleted): the panel has always shown that as clean.
+            return []
         } catch {
             let message = error.localizedDescription
             DispatchQueue.main.async { [weak self] in
@@ -475,7 +479,7 @@ class GitStatusModel {
             return
         }
 
-        executeGitCommand(["commit", "-m", message]) { [weak self] success in
+        executeGitCommand(["commit", "-m", message], timeout: Self.userOperationTimeout) { [weak self] success in
             if success {
                 self?.commitMessage = ""
                 self?.notifyChanged()
@@ -543,7 +547,7 @@ class GitStatusModel {
     }
 
     func pull(completion: @escaping @MainActor (Bool, String?) -> Void) {
-        executeGitCommandWithOutput(["pull"]) { [weak self] success, output, errorOutput in
+        executeGitCommandWithOutput(["pull"], timeout: Self.userOperationTimeout) { [weak self] success, output, errorOutput in
             if success {
                 self?.refreshStatus(force: true)
                 completion(true, output)
@@ -554,7 +558,7 @@ class GitStatusModel {
     }
 
     func push(completion: @escaping @MainActor (Bool, String?) -> Void) {
-        executeGitCommandWithOutput(["push"]) { [weak self] success, output, errorOutput in
+        executeGitCommandWithOutput(["push"], timeout: Self.userOperationTimeout) { [weak self] success, output, errorOutput in
             if success {
                 self?.refreshStatus(force: true)
                 completion(true, output)
@@ -565,7 +569,7 @@ class GitStatusModel {
     }
 
     func fetch(completion: @escaping @MainActor (Bool, String?) -> Void) {
-        executeGitCommandWithOutput(["fetch"]) { [weak self] success, output, errorOutput in
+        executeGitCommandWithOutput(["fetch"], timeout: Self.userOperationTimeout) { [weak self] success, output, errorOutput in
             if success {
                 self?.refreshStatus(force: true)
                 completion(true, output)
@@ -575,13 +579,22 @@ class GitStatusModel {
         }
     }
 
-    private func executeGitCommand(_ arguments: [String], completion: @escaping @MainActor (Bool) -> Void) {
+    /// Commit, pull, push, and fetch are started by the user and can run long
+    /// (a big push on a slow link, a pre-commit hook running tests), so they
+    /// get far more than the runner's two-minute backstop.
+    private static let userOperationTimeout: TimeInterval = 30 * 60
+
+    private func executeGitCommand(
+        _ arguments: [String],
+        timeout: TimeInterval = ProcessRunner.defaultTimeout,
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
         let service = gitService
         let repoPath = _repositoryPath
         beginAppMutation()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let result = try service.run(repositoryRoot: repoPath, arguments: arguments)
+                let result = try service.run(repositoryRoot: repoPath, arguments: arguments, timeout: timeout)
                 let success = result.succeeded
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
@@ -602,13 +615,17 @@ class GitStatusModel {
         }
     }
 
-    private func executeGitCommandWithOutput(_ arguments: [String], completion: @escaping @MainActor (Bool, String?, String?) -> Void) {
+    private func executeGitCommandWithOutput(
+        _ arguments: [String],
+        timeout: TimeInterval = ProcessRunner.defaultTimeout,
+        completion: @escaping @MainActor (Bool, String?, String?) -> Void
+    ) {
         let service = gitService
         let repoPath = _repositoryPath
         beginAppMutation()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let result = try service.run(repositoryRoot: repoPath, arguments: arguments)
+                let result = try service.run(repositoryRoot: repoPath, arguments: arguments, timeout: timeout)
                 let success = result.succeeded
 
                 DispatchQueue.main.async {

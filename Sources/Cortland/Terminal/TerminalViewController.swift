@@ -262,6 +262,16 @@ enum TerminalLinkNormalizer {
         guard rest.hasPrefix("//") || scheme == "mailto" || scheme == "tel" else { return nil }
         return URL(string: raw)
     }
+
+    /// True when a clicked URL must be confirmed before it reaches
+    /// LaunchServices. Program output chooses the link (an OSC 8 target can
+    /// differ from its visible text), so only web and mail links open on a
+    /// click; `ssh:`, `smb:`, or an app's own scheme launch a handler the user
+    /// never saw named.
+    nonisolated static func requiresOpenConfirmation(_ url: URL) -> Bool {
+        let scheme = url.scheme?.lowercased() ?? ""
+        return !["http", "https", "mailto"].contains(scheme)
+    }
 }
 
 /// Decides whether a left-button gesture over the terminal is a text selection
@@ -1005,7 +1015,9 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
         terminalView.terminal.changeScrollback(TerminalScrollback.lines(forConfigured: config.behavior.scrollbackLines))
         // OSC 52 copies from the program inside the pane; SwiftTerm parses the
         // sequence but never reaches the pasteboard on macOS (see ClipboardEscape).
-        ClipboardEscape.install(on: terminalView.terminal)
+        ClipboardEscape.install(on: terminalView.terminal) { [weak self] in
+            self?.config.behavior.clipboardWrite ?? false
+        }
         applyThemeColors()
 
         // Apply background based on blur configuration

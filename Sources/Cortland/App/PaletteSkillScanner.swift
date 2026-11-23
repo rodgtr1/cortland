@@ -91,11 +91,22 @@ nonisolated enum PaletteSkillScanner {
 
         guard value(paletteKey) == "true" else { return nil }
         let name = fields["name"].flatMap { $0.isEmpty ? nil : $0 } ?? fallbackName
+        // The name is typed into the focused pane, which may be a shell, so a
+        // cloned repo's skill must not smuggle `;` or `$(` in through it.
+        guard isValidName(name) else { return nil }
         return PaletteSkill(
             name: name,
             title: value(labelKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultTitle(for: name),
             submit: value(submitKey) == "true"
         )
+    }
+
+    /// Letters, digits, and `_ : . -` only: enough for `stage-and-commit`
+    /// and plugin-style `plugin:skill`.
+    static func isValidName(_ name: String) -> Bool {
+        !name.isEmpty && name.unicodeScalars.allSatisfy { scalar in
+            scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || "_:.-".unicodeScalars.contains(scalar))
+        }
     }
 
     /// "stage-and-commit" → "Stage And Commit".

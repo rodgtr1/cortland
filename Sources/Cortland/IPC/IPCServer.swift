@@ -727,8 +727,13 @@ nonisolated final class IPCServer: @unchecked Sendable {
         while shouldKeepRunning {
             let clientFD = accept(serverFD, nil, nil)
             guard clientFD != -1 else {
+                let acceptErrno = errno
                 if shouldKeepRunning {
-                    Log.debug("IPCServer: Failed to accept connection: \(String(cString: strerror(errno)))")
+                    if acceptErrno == EINTR { continue }
+                    Log.debug("IPCServer: Failed to accept connection: \(String(cString: strerror(acceptErrno)))")
+                    // EMFILE/ENFILE fail again at once until descriptors free
+                    // up; without a pause this pegs a core and floods the log.
+                    usleep(100_000)
                     continue
                 }
                 break

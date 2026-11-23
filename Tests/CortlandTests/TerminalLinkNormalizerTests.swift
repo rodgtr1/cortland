@@ -136,6 +136,22 @@ final class TerminalLinkTargetTests: XCTestCase {
         XCTAssertEqual(target("ssh://host.example.com/x"), .url(URL(string: "ssh://host.example.com/x")!))
     }
 
+    func testOnlyWebAndMailLinksOpenWithoutConfirmation() {
+        func needs(_ raw: String) -> Bool {
+            TerminalLinkNormalizer.requiresOpenConfirmation(URL(string: raw)!)
+        }
+        XCTAssertFalse(needs("http://example.com"))
+        XCTAssertFalse(needs("https://example.com/a"))
+        XCTAssertFalse(needs("HTTPS://Example.com/A"))
+        XCTAssertFalse(needs("mailto:someone@example.com"))
+        XCTAssertFalse(needs("MailTo:someone@example.com"))
+        XCTAssertTrue(needs("ssh://host.example.com"))
+        XCTAssertTrue(needs("SSH://host.example.com"))
+        XCTAssertTrue(needs("smb://server/share"))
+        XCTAssertTrue(needs("tel:+15555550100"))
+        XCTAssertTrue(needs("someapp://do/thing"))
+    }
+
     func testAFileOnDiskBeatsAHostnameReading() {
         // `notes.md` reads as a hostname (two labels, alphabetic TLD), but a file
         // by that name in the pane's cwd is what the click meant.

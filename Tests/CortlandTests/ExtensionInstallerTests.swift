@@ -344,6 +344,28 @@ final class ExtensionInstallerTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: marker.path))
     }
 
+    func testIPCUpdateThatChangesCodeDisablesAnEnabledExtension() async throws {
+        let repo = try makeRepository(manifest: manifest())
+        let registry = makeRegistry()
+        _ = try await registry.install(from: repo.path)
+        try registry.setEnabled("acme.widgets", true)
+
+        // Nothing new: stays enabled.
+        let unchanged = try await registry.update("acme.widgets", disableIfChanged: true)
+        XCTAssertFalse(unchanged.updated)
+        XCTAssertNil(unchanged.disabled)
+        XCTAssertEqual(registry.extensions.first?.isEnabled, true)
+
+        try commit(manifest(version: "0.2.0"), to: repo, message: "bump")
+        let changed = try await registry.update("acme.widgets", disableIfChanged: true)
+        XCTAssertTrue(changed.updated)
+        XCTAssertEqual(changed.disabled, true)
+        XCTAssertEqual(registry.extensions.first?.manifest.version, "0.2.0")
+        XCTAssertEqual(registry.extensions.first?.isEnabled, false)
+        XCTAssertEqual(ExtensionRegistry.loadEnabled(from: stateFile), [])
+        XCTAssertFalse(fm.fileExists(atPath: marker.path))
+    }
+
     func testRegistryListsAnExtensionBrokenByUpdateAsInvalid() async throws {
         let repo = try makeRepository(manifest: manifest())
         let registry = makeRegistry()

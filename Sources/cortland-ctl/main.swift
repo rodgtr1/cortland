@@ -438,6 +438,8 @@ struct CortlandCtl {
           extension update <id>                            git pull an extension installed from a URL;
                               prints id, updated, version_before, version_after, and
                               invalid (only when the manifest no longer validates).
+                              An enabled extension whose code changed comes back
+                              disabled ("disabled": true); re-enable it in Cortland.
         """)
         exit(1)
     }

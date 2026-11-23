@@ -782,8 +782,14 @@ final class AutomationCoordinator: NSObject, IPCServerDelegate {
     private func handleExtensionUpdate(id: String, completion: @escaping @Sendable (IPCResponse) -> Void) {
         Task {
             do {
-                let update = try await ExtensionRegistry.shared.update(id)
-                completion(IPCResponse(result: IPCResult(update: update)))
+                // A pane process can ask for this, so new upstream code must
+                // not run until the user re-enables it (Preferences updates
+                // are the user's own click and keep the extension enabled).
+                let update = try await ExtensionRegistry.shared.update(id, disableIfChanged: true)
+                let text = update.disabled == true
+                    ? "\(id) was updated and has been disabled. Re-enable it in Cortland (Settings > Extensions) to run the new version."
+                    : nil
+                completion(IPCResponse(result: IPCResult(text: text, update: update)))
             } catch {
                 completion(IPCResponse(ok: false, error: error.localizedDescription))
             }

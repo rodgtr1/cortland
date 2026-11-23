@@ -39,9 +39,34 @@ nonisolated protocol ProcessRunning: Sendable {
         currentDirectoryURL: URL?,
         environment: [String: String]?
     ) throws -> ProcessResult
+
+    /// The same, with the caller choosing how long the child may run.
+    func run(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL?,
+        environment: [String: String]?,
+        timeout: TimeInterval
+    ) throws -> ProcessResult
 }
 
 nonisolated extension ProcessRunning {
+    /// Fakes that don't model time ignore the timeout.
+    func run(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL?,
+        environment: [String: String]?,
+        timeout: TimeInterval
+    ) throws -> ProcessResult {
+        try run(
+            executableURL: executableURL,
+            arguments: arguments,
+            currentDirectoryURL: currentDirectoryURL,
+            environment: environment
+        )
+    }
+
     func run(
         executableURL: URL,
         arguments: [String],
@@ -65,14 +90,32 @@ nonisolated final class ProcessRunner: ProcessRunning {
     /// Backstop so a wedged child (e.g. one waiting on an interactive prompt we
     /// couldn't suppress, or a stalled network filesystem) can't hang a worker
     /// thread forever. Generous because it's a safety net, not a deadline — the
-    /// git operations here are normally sub-second.
-    private static let timeout: TimeInterval = 120
+    /// git operations here are normally sub-second. Callers running something
+    /// the user started and may legitimately take long (a push, a commit with
+    /// hooks) pass their own.
+    static let defaultTimeout: TimeInterval = 120
 
     func run(
         executableURL: URL,
         arguments: [String],
         currentDirectoryURL: URL? = nil,
         environment: [String: String]? = nil
+    ) throws -> ProcessResult {
+        try run(
+            executableURL: executableURL,
+            arguments: arguments,
+            currentDirectoryURL: currentDirectoryURL,
+            environment: environment,
+            timeout: Self.defaultTimeout
+        )
+    }
+
+    func run(
+        executableURL: URL,
+        arguments: [String],
+        currentDirectoryURL: URL?,
+        environment: [String: String]?,
+        timeout: TimeInterval
     ) throws -> ProcessResult {
         let task = Process()
         task.executableURL = executableURL
@@ -122,7 +165,7 @@ nonisolated final class ProcessRunner: ProcessRunning {
         // SIGTERM the child if it overruns the timeout, then SIGKILL if it
         // ignores that. Either way its pipes close, so the drains finish and
         // readGroup.wait() can't hang.
-        if exited.wait(timeout: .now() + Self.timeout) == .timedOut {
+        if exited.wait(timeout: .now() + timeout) == .timedOut {
             task.terminate()
             if exited.wait(timeout: .now() + 2) == .timedOut {
                 kill(task.processIdentifier, SIGKILL)

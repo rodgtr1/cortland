@@ -515,6 +515,7 @@ scrollback_lines = 10000     # -1 for unlimited
 scroll_on_output = false
 scroll_on_keystroke = true
 allow_hyperlinks = true
+clipboard_write = true       # let programs copy to the clipboard (OSC 52)
 mouse_autohide = true
 audible_bell = false
 restore_session = true

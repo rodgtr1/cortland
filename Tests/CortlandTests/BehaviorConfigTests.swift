@@ -24,4 +24,10 @@ final class BehaviorConfigTests: XCTestCase {
         let b = try behavior(from: "confirm_close = false")
         XCTAssertFalse(b.confirmClose)
     }
+
+    func testClipboardWriteDefaultsOnAndCanBeDisabled() throws {
+        XCTAssertTrue(BehaviorConfig().clipboardWrite)
+        XCTAssertTrue(try behavior(from: "restore_session = false").clipboardWrite)
+        XCTAssertFalse(try behavior(from: "clipboard_write = false").clipboardWrite)
+    }
 }

@@ -19,10 +19,21 @@ import SwiftTerm
 /// dies in a protocol-extension no-op. A handler registered on the terminal
 /// runs ahead of SwiftTerm's own dispatch, which is how Cortland takes it over.
 nonisolated enum ClipboardEscape {
-    /// Routes every OSC 52 write on `terminal` to `pasteboard`.
-    static func install(on terminal: Terminal, pasteboard: NSPasteboard = .general) {
+    /// The largest base64 payload accepted (1 MiB). Anything bigger is
+    /// dropped before decoding, so program output can't push an arbitrarily
+    /// large string onto the clipboard.
+    static let maxPayloadBytes = 1 << 20
+
+    /// Routes every OSC 52 write on `terminal` to `pasteboard`. `isEnabled` is
+    /// asked on each write, so `[behavior] clipboard_write` applies to open
+    /// panes as soon as the config reloads.
+    static func install(
+        on terminal: Terminal,
+        pasteboard: NSPasteboard = .general,
+        isEnabled: @escaping () -> Bool = { true }
+    ) {
         terminal.registerOscHandler(code: 52) { data in
-            guard let text = copyText(from: data) else { return }
+            guard isEnabled(), let text = copyText(from: data) else { return }
             pasteboard.clearContents()
             pasteboard.setString(text, forType: .string)
         }
@@ -31,8 +42,8 @@ nonisolated enum ClipboardEscape {
     /// The text an OSC 52 parameter string (`Pc ; Pd`) asks to put on the
     /// clipboard, or nil when there is nothing to copy: a `?` query (never
     /// answered; a program must not be able to read the clipboard through the
-    /// PTY), a malformed selector, an empty payload, or bytes that aren't
-    /// base64.
+    /// PTY), a malformed selector, an empty payload, a payload over
+    /// `maxPayloadBytes`, or bytes that aren't base64.
     ///
     /// macOS has one clipboard, so every selection in `Pc` lands on the general
     /// pasteboard. The payload tolerates the line wrapping and missing padding
@@ -45,6 +56,7 @@ nonisolated enum ClipboardEscape {
 
         let payload = data[(separator + 1)...]
         guard !payload.isEmpty, payload != [UInt8(ascii: "?")][...] else { return nil }
+        guard payload.count <= maxPayloadBytes else { return nil }
 
         var base64 = payload.filter { !whitespace.contains($0) }
         guard !base64.isEmpty else { return nil }

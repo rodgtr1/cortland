@@ -824,7 +824,23 @@ class MainWindowController: NSWindowController {
             return
         }
         lastOpenedURL = (url, Date())
-        NSWorkspace.shared.open(url)
+        guard TerminalLinkNormalizer.requiresOpenConfirmation(url) else {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Open this link?"
+        alert.informativeText = "A program in this pane printed a link that opens in another app:\n\n\(url.absoluteString)"
+        // Cancel goes first so Return dismisses rather than launches.
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Open")
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertSecondButtonReturn {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
 
     @objc private func paneCommandStatusChanged(_ notification: Notification) {
