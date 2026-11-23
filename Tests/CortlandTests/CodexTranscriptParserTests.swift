@@ -36,6 +36,22 @@ final class CodexTranscriptParserTests: XCTestCase {
         XCTAssertNil(CodexTranscriptParser.aggregate(jsonl: fixture).estimatedCostUSD())
     }
 
+    func testReadsModelContextWindowAndUsesItForFraction() {
+        let jsonl = """
+        {"type":"turn_context","payload":{"model":"gpt-5.5"}}
+        {"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"output_tokens":10},"last_token_usage":{"input_tokens":1000},"model_context_window":258400}}}
+        {"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":36340,"output_tokens":20},"last_token_usage":{"input_tokens":35340},"model_context_window":353400}}}
+        """
+        let u = CodexTranscriptParser.aggregate(jsonl: jsonl)
+        XCTAssertEqual(u.reportedContextWindow, 353_400)   // last wins
+        XCTAssertEqual(u.contextWindow(), 353_400)
+        XCTAssertEqual(try XCTUnwrap(u.contextFraction()), 0.1, accuracy: 1e-9)
+    }
+
+    func testNoModelContextWindowLeavesItNil() {
+        XCTAssertNil(CodexTranscriptParser.aggregate(jsonl: fixture).reportedContextWindow)
+    }
+
     func testEmptyYieldsZero() {
         XCTAssertEqual(CodexTranscriptParser.aggregate(jsonl: ""), TranscriptUsage())
     }

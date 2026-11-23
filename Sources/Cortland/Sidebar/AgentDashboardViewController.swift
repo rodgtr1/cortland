@@ -772,7 +772,7 @@ extension AgentDashboardViewController: NSTableViewDelegate {
     /// Hover text for the context bar, e.g. `context 82k / 200k (41%)`.
     private static func contextTooltip(_ usage: TranscriptUsage) -> String {
         guard let fraction = usage.contextFraction() else { return "" }
-        let window = ContextWindow.tokens(forModel: usage.model, occupancy: usage.contextTokens)
+        let window = usage.contextWindow()
         let percent = Int((fraction * 100).rounded())
         return "context \(TelemetryFormat.compactTokens(usage.contextTokens)) / \(TelemetryFormat.compactTokens(window)) (\(percent)%)"
     }

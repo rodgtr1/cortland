@@ -51,29 +51,52 @@ public enum ContextWindow {
     /// The opt-in 1M-token (beta) window.
     public static let extended = 1_000_000
 
+    /// Claude ids that still run the 200k window by default: Haiku 4.5 and
+    /// everything older than the 4.6 generation. Matched as lowercase prefixes,
+    /// so date-suffixed ids (e.g. `claude-haiku-4-5-20251001`) match too.
+    static let standardWindowPrefixes = [
+        "claude-haiku-4-5",
+        "claude-opus-4-5", "claude-sonnet-4-5",
+        "claude-opus-4-1",
+        "claude-opus-4-0", "claude-opus-4-2025",
+        "claude-sonnet-4-0", "claude-sonnet-4-2025",
+        "claude-3",
+    ]
+
     /// Best-effort context-window size for `model` given current `occupancy`.
     ///
-    /// The transcript's model id (e.g. `claude-opus-4-8`) doesn't reliably carry
-    /// the `[1m]` extended-context marker, so we can't always read the window off
-    /// the name. We therefore default to the standard 200k and promote to 1M when
-    /// either the id explicitly mentions `1m` or occupancy has already exceeded
-    /// 200k — in which case the session must be running the extended window. This
-    /// keeps the bar correct for 1M sessions once they cross 200k and clamps it
-    /// otherwise; below 200k a 1M session reads against the 200k cap, which only
-    /// over-reports early in a session.
+    /// Claude ids (`claude-...`) default to the 1M window, since every model
+    /// from the 4.6 generation on runs it, including ids this code has never
+    /// seen. The exceptions in `standardWindowPrefixes` (Haiku 4.5 and older
+    /// Claude models) default to 200k, as do non-Claude models. A 200k default
+    /// still promotes to 1M when the id mentions `1m` or occupancy has already
+    /// passed 200k, since the session must then be running the extended window.
     public static func tokens(forModel model: String?, occupancy: Int) -> Int {
-        if let model, model.lowercased().contains("1m") { return extended }
+        let id = model?.lowercased() ?? ""
+        if id.hasPrefix("claude-"),
+           !standardWindowPrefixes.contains(where: { id.hasPrefix($0) }) {
+            return extended
+        }
+        if id.contains("1m") { return extended }
         return occupancy > standard ? extended : standard
     }
 }
 
 public extension TranscriptUsage {
+    /// The context-window size the bar and its tooltip read against: the
+    /// transcript-reported window when present and positive, otherwise the
+    /// `ContextWindow` estimate for the model and current occupancy.
+    func contextWindow() -> Int {
+        if let reportedContextWindow, reportedContextWindow > 0 { return reportedContextWindow }
+        return ContextWindow.tokens(forModel: model, occupancy: contextTokens)
+    }
+
     /// Fraction (0...1) of the context window currently occupied, or nil when no
     /// billed assistant turn has been seen yet (nothing to show). Clamped so a
     /// mis-sized window can never drive a bar past full.
     func contextFraction() -> Double? {
         guard contextTokens > 0 else { return nil }
-        let window = ContextWindow.tokens(forModel: model, occupancy: contextTokens)
+        let window = contextWindow()
         guard window > 0 else { return nil }
         return min(1.0, max(0.0, Double(contextTokens) / Double(window)))
     }

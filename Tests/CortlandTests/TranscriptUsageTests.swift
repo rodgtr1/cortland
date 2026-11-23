@@ -37,8 +37,8 @@ final class TranscriptUsageTests: XCTestCase {
     // MARK: - Context window
 
     func testContextFractionUsesLatestTurnAgainstStandardWindow() {
-        // 50k occupied of the 200k standard window = 0.25.
-        let u = TranscriptUsage(model: "claude-opus-4-8", contextTokens: 50_000)
+        // Haiku 4.5 runs the 200k window: 50k occupied = 0.25.
+        let u = TranscriptUsage(model: "claude-haiku-4-5", contextTokens: 50_000)
         XCTAssertEqual(try XCTUnwrap(u.contextFraction()), 0.25, accuracy: 1e-9)
     }
 
@@ -49,14 +49,61 @@ final class TranscriptUsageTests: XCTestCase {
     func testContextWindowPromotesToExtendedOncePastStandard() {
         // Above 200k the session must be running the 1M window, so it reads
         // against 1M rather than overflowing the standard cap.
-        let u = TranscriptUsage(model: "claude-opus-4-8", contextTokens: 300_000)
+        let u = TranscriptUsage(model: "claude-haiku-4-5", contextTokens: 300_000)
         XCTAssertEqual(ContextWindow.tokens(forModel: u.model, occupancy: u.contextTokens), 1_000_000)
         XCTAssertEqual(try XCTUnwrap(u.contextFraction()), 0.3, accuracy: 1e-9)
     }
 
     func testContextFractionClampsToFull() {
-        let u = TranscriptUsage(model: "claude-opus-4-8", contextTokens: 199_999)
+        let u = TranscriptUsage(model: "claude-haiku-4-5", contextTokens: 199_999)
         XCTAssertEqual(try XCTUnwrap(u.contextFraction()), 199_999.0 / 200_000.0, accuracy: 1e-9)
+    }
+
+    func testModernClaudeModelsDefaultToExtendedWindow() {
+        let u = TranscriptUsage(model: "claude-fable-5-2", contextTokens: 53_000)
+        XCTAssertEqual(try XCTUnwrap(u.contextFraction()), 0.053, accuracy: 1e-9)
+        for id in ["claude-opus-4-8", "claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-5-5",
+                   "claude-haiku-5-5", "claude-mythos-5", "Claude-Opus-5-5", "claude-someday-9"] {
+            XCTAssertEqual(ContextWindow.tokens(forModel: id, occupancy: 1), 1_000_000, id)
+        }
+    }
+
+    func testOlderClaudeModelsDefaultToStandardWindow() {
+        for id in ["claude-haiku-4-5-20251001", "claude-opus-4-5", "claude-sonnet-4-5-20250929",
+                   "claude-opus-4-1", "claude-opus-4-0", "claude-opus-4-20250514",
+                   "claude-sonnet-4-0", "claude-sonnet-4-20250514", "claude-3-7-sonnet-latest",
+                   "CLAUDE-HAIKU-4-5"] {
+            XCTAssertEqual(ContextWindow.tokens(forModel: id, occupancy: 1), 200_000, id)
+        }
+        // The `1m` marker still promotes an older id.
+        XCTAssertEqual(ContextWindow.tokens(forModel: "claude-sonnet-4-5[1m]", occupancy: 1), 1_000_000)
+    }
+
+    func testNonClaudeModelWithoutReportedWindowKeepsStandardDefault() {
+        let u = TranscriptUsage(model: "gpt-5.5", contextTokens: 50_000)
+        XCTAssertEqual(u.contextWindow(), 200_000)
+        XCTAssertEqual(try XCTUnwrap(u.contextFraction()), 0.25, accuracy: 1e-9)
+        XCTAssertEqual(TranscriptUsage(model: nil, contextTokens: 50_000).contextWindow(), 200_000)
+    }
+
+    func testReportedContextWindowOverridesEstimate() {
+        let u = TranscriptUsage(model: "gpt-5.5", contextTokens: 25_840, reportedContextWindow: 258_400)
+        XCTAssertEqual(u.contextWindow(), 258_400)
+        XCTAssertEqual(try XCTUnwrap(u.contextFraction()), 0.1, accuracy: 1e-9)
+        // Zero is treated as unknown.
+        XCTAssertEqual(TranscriptUsage(model: "gpt-5.5", contextTokens: 1, reportedContextWindow: 0).contextWindow(), 200_000)
+    }
+
+    func testDecodesPersistedUsageWithoutReportedWindow() throws {
+        let json = """
+        {"model":"claude-opus-4-8","inputTokens":1,"outputTokens":2,"cacheReadTokens":3,
+         "cacheCreation5mTokens":4,"cacheCreation1hTokens":5,"assistantResponses":6,
+         "userPrompts":7,"contextTokens":8}
+        """
+        let u = try JSONDecoder().decode(TranscriptUsage.self, from: Data(json.utf8))
+        XCTAssertNil(u.reportedContextWindow)
+        XCTAssertEqual(u.contextTokens, 8)
+        XCTAssertEqual(u.userPrompts, 7)
     }
 
     /// The transcript writes one line per content block, so a multi-block

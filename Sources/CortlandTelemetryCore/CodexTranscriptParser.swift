@@ -85,6 +85,10 @@ public enum CodexTranscriptParser {
                 if let last = info["last_token_usage"] as? [String: Any] {
                     acc.latestTurn = last
                 }
+                // The real window for this model (last wins).
+                if let window = info["model_context_window"] as? NSNumber {
+                    acc.usage.reportedContextWindow = int(window)
+                }
             }
         default:
             break

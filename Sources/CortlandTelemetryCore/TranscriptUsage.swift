@@ -39,6 +39,11 @@ public struct TranscriptUsage: Equatable, Codable, Sendable {
     /// context-usage bar. 0 when no billed assistant turn was seen.
     public var contextTokens: Int
 
+    /// The context-window size the transcript itself recorded (Codex writes
+    /// `model_context_window` on its token counts), or nil when unknown. When
+    /// present and positive it overrides the `ContextWindow` estimate.
+    public var reportedContextWindow: Int?
+
     public init(
         model: String? = nil,
         inputTokens: Int = 0,
@@ -49,7 +54,8 @@ public struct TranscriptUsage: Equatable, Codable, Sendable {
         assistantResponses: Int = 0,
         userPrompts: Int = 0,
         reportedCostUSD: Double? = nil,
-        contextTokens: Int = 0
+        contextTokens: Int = 0,
+        reportedContextWindow: Int? = nil
     ) {
         self.model = model
         self.inputTokens = inputTokens
@@ -61,6 +67,7 @@ public struct TranscriptUsage: Equatable, Codable, Sendable {
         self.userPrompts = userPrompts
         self.reportedCostUSD = reportedCostUSD
         self.contextTokens = contextTokens
+        self.reportedContextWindow = reportedContextWindow
     }
 
     /// All cache-creation (cache-write) tokens, 5-minute + 1-hour.
