@@ -600,12 +600,16 @@ nonisolated final class TurnSnapshotService: Sendable {
     }
 
     /// The snapshot "This turn" compares against: the newest one `followedPane`
-    /// took, or, when no pane is followed or it took none here, the newest in
-    /// the repository, whichever pane took it. `snapshots` is oldest first, as
-    /// `list` returns.
-    static func turnSnapshot(in snapshots: [TurnSnapshot], followedPane: UUID? = nil) -> TurnSnapshot? {
+    /// took; when no pane is followed or it took none here, the newest taken
+    /// by a pane in `tabPanes` (the changes pane's own tab); otherwise the
+    /// newest in the repository, whichever pane took it. `snapshots` is oldest
+    /// first, as `list` returns.
+    static func turnSnapshot(in snapshots: [TurnSnapshot], followedPane: UUID? = nil, tabPanes: Set<UUID> = []) -> TurnSnapshot? {
         if let followedPane, let followed = snapshots.last(where: { $0.paneID == followedPane }) {
             return followed
+        }
+        if let inTab = snapshots.last(where: { tabPanes.contains($0.paneID) }) {
+            return inTab
         }
         return snapshots.last
     }
@@ -613,8 +617,8 @@ nonisolated final class TurnSnapshotService: Sendable {
     /// The snapshot "This session" compares against: the newest session start
     /// of the pane `turnSnapshot` picks, or that pane's oldest retained
     /// snapshot when its session start has been pruned.
-    static func sessionSnapshot(in snapshots: [TurnSnapshot], followedPane: UUID? = nil) -> TurnSnapshot? {
-        guard let turn = turnSnapshot(in: snapshots, followedPane: followedPane) else { return nil }
+    static func sessionSnapshot(in snapshots: [TurnSnapshot], followedPane: UUID? = nil, tabPanes: Set<UUID> = []) -> TurnSnapshot? {
+        guard let turn = turnSnapshot(in: snapshots, followedPane: followedPane, tabPanes: tabPanes) else { return nil }
         let pane = snapshots.filter { $0.paneID == turn.paneID }
         return pane.last(where: \.isSessionStart) ?? pane.first
     }

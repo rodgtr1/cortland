@@ -206,6 +206,57 @@ final class ChangesOnAgentDoneTests: XCTestCase {
             .map { $0 == (1, 0) } ?? false)
     }
 
+    // MARK: - 5b. Reuse lookup for a finished turn
+
+    private typealias FinishedTurnPane = (repository: String?, source: ChangesSource?, followedPaneID: UUID?)
+
+    private func finishedTurnLocation(_ tabs: [[FinishedTurnPane]], agentTab: Int) -> (tab: Int, pane: Int)? {
+        ChangesSource.finishedTurnPaneLocation(in: tabs, agentTab: agentTab, agentPaneID: agent, repositoryPath: "/repo")
+    }
+
+    func testFinishedTurnReusesThePaneInTheAgentsTab() {
+        let tabs: [[FinishedTurnPane]] = [
+            [(nil, nil, nil), ("/repo", .uncommitted, nil)]
+        ]
+        XCTAssertTrue(finishedTurnLocation(tabs, agentTab: 0).map { $0 == (0, 1) } ?? false)
+    }
+
+    func testFinishedTurnIgnoresAPaneInAnotherTabNotFollowingThisAgent() {
+        let followingOther: [[FinishedTurnPane]] = [
+            [(nil, nil, nil), ("/repo", .uncommitted, other)],
+            [(nil, nil, nil)]
+        ]
+        XCTAssertNil(finishedTurnLocation(followingOther, agentTab: 1))
+        let followingNone: [[FinishedTurnPane]] = [
+            [("/repo", .uncommitted, nil)],
+            [(nil, nil, nil)]
+        ]
+        XCTAssertNil(finishedTurnLocation(followingNone, agentTab: 1))
+    }
+
+    func testFinishedTurnReusesAPaneInAnotherTabAlreadyFollowingThisAgent() {
+        let tabs: [[FinishedTurnPane]] = [
+            [(nil, nil, nil)],
+            [("/repo", .uncommitted, agent)]
+        ]
+        XCTAssertTrue(finishedTurnLocation(tabs, agentTab: 0).map { $0 == (1, 0) } ?? false)
+    }
+
+    func testFinishedTurnPrefersThePaneInTheAgentsTabOverAFollowingPaneElsewhere() {
+        let tabs: [[FinishedTurnPane]] = [
+            [("/repo", .uncommitted, agent)],
+            [(nil, nil, nil), ("/repo", .uncommitted, nil)]
+        ]
+        XCTAssertTrue(finishedTurnLocation(tabs, agentTab: 1).map { $0 == (1, 1) } ?? false)
+    }
+
+    func testFinishedTurnIgnoresOtherCheckoutsAndBranchPanes() {
+        let tabs: [[FinishedTurnPane]] = [
+            [(nil, nil, nil), ("/other", .uncommitted, agent), ("/repo", .branch(defaultBranch: "main"), agent)]
+        ]
+        XCTAssertNil(finishedTurnLocation(tabs, agentTab: 0))
+    }
+
     // MARK: - 6. Session save of a split holding a changes pane
 
     /// Changes panes are not restored; the saved active index points at the

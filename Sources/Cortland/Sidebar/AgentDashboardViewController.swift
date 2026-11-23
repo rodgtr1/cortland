@@ -4,7 +4,7 @@ import CortlandTelemetryCore
 protocol AgentDashboardDelegate: AnyObject {
     func agentDashboardTabs(_ dashboard: AgentDashboardViewController) -> [TabModel]
     func agentDashboard(_ dashboard: AgentDashboardViewController, didSelectTabAt index: Int)
-    /// A changed file (or "and N more") was clicked: show `paneID`'s current
+    /// A row's "N files changed" line was clicked: show `paneID`'s current
     /// turn in `repositoryPath`'s changes pane, scrolled to `focusedFilePath`
     /// when there is one.
     func agentDashboard(
@@ -56,7 +56,7 @@ final class AgentDashboardViewController: NSViewController {
         /// or more billed panes render one telemetry line each, so a split
         /// running fable beside opus shows both spends instead of one.
         let paneTelemetries: [PaneTelemetry]
-        /// The files the tab's agents changed this turn, from `turnFiles`.
+        /// How many files the tab's agents changed this turn, from `turnFiles`.
         let files: AgentRowFiles
     }
 
@@ -73,10 +73,9 @@ final class AgentDashboardViewController: NSViewController {
     /// the telemetry tooltip never survived long enough to appear.
     private static let detailLabelTag = 0x5DE7A11   // "sidetail"
 
-    /// Identifiers of a row's changed-file lines, so a click can tell which
-    /// line it hit: the prefix plus the file's index, or `moreFilesIdentifier`.
-    private static let fileLineIdentifierPrefix = "turnFile."
-    private static let moreFilesIdentifier = "turnFile.more"
+    /// Identifier of a row's "N files changed" line, so a click can tell it
+    /// landed there.
+    private static let filesLineIdentifier = "turnFiles"
 
     override func loadView() {
         view = NSView()
@@ -498,35 +497,21 @@ final class AgentDashboardViewController: NSViewController {
         let row = tableView.clickedRow
         guard row >= 0 && row < rows.count else { return }
         let files = rows[row].files
-        if let identifier = clickedFileLineIdentifier(row: row) {
-            if identifier == Self.moreFilesIdentifier {
-                if let paneID = files.morePaneID, let root = files.moreRepositoryRoot {
-                    delegate?.agentDashboard(self, didRequestTurnChangesIn: root, followingPane: paneID, focusedFilePath: nil)
-                    return
-                }
-            } else if let index = Int(identifier.dropFirst(Self.fileLineIdentifierPrefix.count)),
-                      let entry = files.shown[safe: index] {
-                delegate?.agentDashboard(
-                    self,
-                    didRequestTurnChangesIn: entry.file.repositoryRoot,
-                    followingPane: entry.paneID,
-                    focusedFilePath: entry.file.absolutePath
-                )
-                return
-            }
+        if clickedFilesLine(row: row), let paneID = files.paneID, let root = files.repositoryRoot {
+            delegate?.agentDashboard(self, didRequestTurnChangesIn: root, followingPane: paneID, focusedFilePath: nil)
+            return
         }
         delegate?.agentDashboard(self, didSelectTabAt: rows[row].tabIndex)
     }
 
-    /// The identifier of the changed-file line under the click in `row`, if
-    /// the click landed on one.
-    private func clickedFileLineIdentifier(row: Int) -> String? {
+    /// Whether the click in `row` landed on its "N files changed" line.
+    private func clickedFilesLine(row: Int) -> Bool {
         guard let event = NSApp.currentEvent,
-              let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) else { return nil }
+              let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) else { return false }
         let point = cell.convert(event.locationInWindow, from: nil)
-        return cell.subviews.first { view in
-            view.identifier?.rawValue.hasPrefix(Self.fileLineIdentifierPrefix) == true && view.frame.contains(point)
-        }?.identifier?.rawValue
+        return cell.subviews.contains { view in
+            view.identifier?.rawValue == Self.filesLineIdentifier && view.frame.contains(point)
+        }
     }
 
     private static func sortPriority(_ row: Row) -> Int {
@@ -709,36 +694,21 @@ extension AgentDashboardViewController: NSTableViewDelegate {
             lastBottom = bar.bottomAnchor
         }
 
-        // Files the tab's agents changed this turn, then "and N more". Each
-        // line spans the row so a click anywhere on it opens the turn.
-        var fileLines: [(text: NSAttributedString, tooltip: String?, identifier: String)] = rowData.files.shown
-            .enumerated().map { index, entry in
-                (Self.fileLineText(entry.file), entry.file.path, Self.fileLineIdentifierPrefix + String(index))
-            }
-        if rowData.files.moreCount > 0 {
-            fileLines.append((
-                NSAttributedString(string: "and \(rowData.files.moreCount) more", attributes: [
-                    .font: Self.fileLineFont,
-                    .foregroundColor: AppTheme.mutedText
-                ]),
-                nil,
-                Self.moreFilesIdentifier
-            ))
-        }
-        for line in fileLines {
-            let label = NSTextField(labelWithAttributedString: line.text)
-            label.lineBreakMode = .byTruncatingMiddle
-            label.toolTip = line.tooltip
-            label.identifier = NSUserInterfaceItemIdentifier(line.identifier)
+        // "N files changed" for the tab's agents this turn. The line spans
+        // the row so a click anywhere on it opens the turn.
+        if rowData.files.count > 0 {
+            let count = rowData.files.count
+            let label = NSTextField(labelWithString: count == 1 ? "1 file changed" : "\(count) files changed")
+            label.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
+            label.textColor = AppTheme.mutedText
+            label.identifier = NSUserInterfaceItemIdentifier(Self.filesLineIdentifier)
             label.translatesAutoresizingMaskIntoConstraints = false
-            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             cell.addSubview(label)
             NSLayoutConstraint.activate([
                 label.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
                 label.topAnchor.constraint(equalTo: lastBottom, constant: 2),
                 label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8)
             ])
-            lastBottom = label.bottomAnchor
         }
 
         return cell
@@ -754,37 +724,12 @@ extension AgentDashboardViewController: NSTableViewDelegate {
         )
     }
 
-    /// A row's height: the title and state lines, 16 per telemetry or
-    /// changed-file line, and the context bar. Internal for unit tests.
+    /// A row's height: the title and state lines, 16 per telemetry line and
+    /// for the files-changed line, and the context bar. Internal for unit tests.
     static func rowHeight(telemetryLines: Int, hasContextBar: Bool, files: AgentRowFiles) -> CGFloat {
         var height: CGFloat = 42 + CGFloat(telemetryLines + files.lineCount) * 16
         if hasContextBar { height += 9 }
         return height
-    }
-
-    // MARK: - Changed files
-
-    private static let fileLineFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
-
-    /// `M  name.swift  Sources/Dir`: the status letter in the changes pane's
-    /// status color, the file name, then its directory dimmed.
-    private static func fileLineText(_ file: TurnChangedFile) -> NSAttributedString {
-        let text = NSMutableAttributedString(string: file.status.rawValue + "  ", attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold),
-            .foregroundColor: file.status.color
-        ])
-        text.append(NSAttributedString(string: (file.path as NSString).lastPathComponent, attributes: [
-            .font: fileLineFont,
-            .foregroundColor: AppTheme.primaryText
-        ]))
-        let directory = (file.path as NSString).deletingLastPathComponent
-        if !directory.isEmpty {
-            text.append(NSAttributedString(string: "  " + directory, attributes: [
-                .font: fileLineFont,
-                .foregroundColor: AppTheme.mutedText
-            ]))
-        }
-        return text
     }
 
     // MARK: - Context bar
