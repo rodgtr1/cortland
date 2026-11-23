@@ -44,7 +44,7 @@ final class AutomationPaneCloseTests: XCTestCase {
         controller = PaneSplitController(config: Config())
         _ = controller.view
         tab = TabModel()
-        tab.panes = [makeEditorPane(), makeEditorPane()]
+        tab.panes = [Self.makeEditorPane(in: tempDir), Self.makeEditorPane(in: tempDir)]
         tab.activePaneIndex = 0
         controller.rebuildSplitView(for: tab)
         host = FakeHost(tab: tab, controller: controller)
@@ -59,8 +59,8 @@ final class AutomationPaneCloseTests: XCTestCase {
         try? FileManager.default.removeItem(at: tempDir)
     }
 
-    private func makeEditorPane() -> PaneModel {
-        let url = tempDir.appendingPathComponent("f-\(UUID().uuidString).txt")
+    private static func makeEditorPane(in dir: URL) -> PaneModel {
+        let url = dir.appendingPathComponent("f-\(UUID().uuidString).txt")
         try? Data("hello\n".utf8).write(to: url)
         let pane = PaneModel()
         pane.createEditorViewController(for: url)
