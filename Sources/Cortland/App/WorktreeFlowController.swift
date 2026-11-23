@@ -102,7 +102,10 @@ final class WorktreeFlowController {
             let result = Result { try WorktreeService().mergeBranch(branch, intoPrimaryFrom: repoRoot) }
             DispatchQueue.main.async {
                 guard let self else { return }
-                if case .failure(let error) = result {
+                switch result {
+                case .success(let summary):
+                    self.presentMergeSuccess(branch: branch, summary: summary)
+                case .failure(let error):
                     self.presentWorktreeError(Self.worktreeErrorMessage(error))
                 }
                 self.host?.worktreeRefreshPanel()
@@ -124,6 +127,20 @@ final class WorktreeFlowController {
         alert.alertStyle = .warning
         alert.messageText = "Worktree"
         alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window)
+    }
+
+    /// A merge that succeeds changes nothing visible in the panel, so say so:
+    /// the sheet carries git's own summary of what the merge did.
+    private func presentMergeSuccess(branch: String, summary: String) {
+        guard let window = host?.worktreeWindow else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = summary.hasPrefix("Already up to date")
+            ? "Nothing to merge from \(branch)"
+            : "Merged \(branch)"
+        alert.informativeText = summary
         alert.addButton(withTitle: "OK")
         alert.beginSheetModal(for: window)
     }

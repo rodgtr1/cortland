@@ -169,6 +169,9 @@ default_cwd = "~"
 [diff]
 # context_lines: integer number of unchanged lines shown around each change.
 context_lines = 3
+# font_size: integer points for the changes pane's diff text; unset follows
+#   [editor] font_size.
+# font_size = 13
 
 [editor]
 # file_open_mode: "terminal" (open files in $EDITOR/nvim in the terminal) |
@@ -689,9 +692,13 @@ public struct ShellConfig: Codable {
 // MARK: - Diff Configuration
 public struct DiffConfig: Codable {
     public var contextLines: Int
+    /// Point size for the changes pane's diff text. Nil means follow
+    /// `[editor] font_size`.
+    public var fontSize: Int?
 
     enum CodingKeys: String, CodingKey {
         case contextLines = "context_lines"
+        case fontSize = "font_size"
     }
 
     public init() {

@@ -43,6 +43,8 @@ class PreferencesWindowController: NSWindowController {
     private var editorFontFamilyPopup: NSPopUpButton!
     private var editorFontSizeSlider: NSSlider!
     private var editorFontSizeLabel: NSTextField!
+    private var diffFontSizeSlider: NSSlider!
+    private var diffFontSizeLabel: NSTextField!
     private var wordWrapCheckbox: NSButton!
     private var liveReloadCheckbox: NSButton!
     private var markdownReadModeCheckbox: NSButton!
@@ -104,7 +106,7 @@ class PreferencesWindowController: NSWindowController {
             repaintBackgrounds(in: paneView)
             recolorLabels(in: paneView, color: AppTheme.primaryText)
         }
-        [opacityLabel, fontSizeLabel, editorFontSizeLabel, shellIntegrationStatusLabel].forEach {
+        [opacityLabel, fontSizeLabel, editorFontSizeLabel, diffFontSizeLabel, shellIntegrationStatusLabel].forEach {
             $0?.textColor = AppTheme.secondaryText
         }
         agentStatusLabels.values.forEach { $0.textColor = AppTheme.secondaryText }
@@ -637,6 +639,16 @@ class PreferencesWindowController: NSWindowController {
 
         editorFontSizeLabel = Self.valueLabel("13pt")
 
+        diffFontSizeSlider = NSSlider()
+        diffFontSizeSlider.minValue = 8
+        diffFontSizeSlider.maxValue = 32
+        diffFontSizeSlider.numberOfTickMarks = 25
+        diffFontSizeSlider.allowsTickMarkValuesOnly = true
+        diffFontSizeSlider.target = self
+        diffFontSizeSlider.action = #selector(diffFontSizeChanged(_:))
+
+        diffFontSizeLabel = Self.valueLabel("13pt")
+
         wordWrapCheckbox = NSButton(checkboxWithTitle: "Wrap long lines", target: self, action: #selector(wordWrapChanged(_:)))
         wordWrapCheckbox.font = NSFont.systemFont(ofSize: 13)
 
@@ -667,6 +679,8 @@ class PreferencesWindowController: NSWindowController {
         form.leadingControl(editorFontFamilyPopup, gapAbove: 10, width: 200)
         form.fieldLabel("Text Size:", gapAbove: 24)
         form.sliderRow(editorFontSizeSlider, valueLabel: editorFontSizeLabel, gapAbove: 10)
+        form.fieldLabel("Diff Font Size:", gapAbove: 24)
+        form.sliderRow(diffFontSizeSlider, valueLabel: diffFontSizeLabel, gapAbove: 10)
         form.checkbox(wordWrapCheckbox, gapAbove: 24)
         form.checkbox(showHiddenFilesCheckbox, gapAbove: 12)
         form.checkbox(liveReloadCheckbox, gapAbove: 12)
@@ -758,6 +772,9 @@ class PreferencesWindowController: NSWindowController {
 
         editorFontSizeSlider.doubleValue = Double(editorConfig.fontSize)
         updateEditorFontSizeLabel()
+        // Unset follows the editor, so show the size the diff actually uses.
+        diffFontSizeSlider.doubleValue = Double(config.diff.fontSize ?? editorConfig.fontSize)
+        updateDiffFontSizeLabel()
         wordWrapCheckbox.state = editorConfig.wordWrap ? .on : .off
         showHiddenFilesCheckbox.state = editorConfig.showHiddenFiles ? .on : .off
         liveReloadCheckbox.state = editorConfig.liveReload ? .on : .off
@@ -931,6 +948,18 @@ class PreferencesWindowController: NSWindowController {
         let size = Int(sender.doubleValue)
         mutateConfig { Self.ensuringEditor(&$0); $0.editor?.fontSize = size }
         updateEditorFontSizeLabel()
+        // An unset diff size follows the editor, so its slider does too.
+        if config.diff.fontSize == nil {
+            diffFontSizeSlider.doubleValue = Double(size)
+            updateDiffFontSizeLabel()
+        }
+        mainWindowController?.applyRuntimeConfig(config)
+    }
+
+    @objc private func diffFontSizeChanged(_ sender: NSSlider) {
+        let size = Int(sender.doubleValue)
+        mutateConfig { $0.diff.fontSize = size }
+        updateDiffFontSizeLabel()
         mainWindowController?.applyRuntimeConfig(config)
     }
 
@@ -1252,6 +1281,10 @@ class PreferencesWindowController: NSWindowController {
 
     private func updateEditorFontSizeLabel() {
         editorFontSizeLabel.stringValue = "\(Int(editorFontSizeSlider.doubleValue))pt"
+    }
+
+    private func updateDiffFontSizeLabel() {
+        diffFontSizeLabel.stringValue = "\(Int(diffFontSizeSlider.doubleValue))pt"
     }
 
     private func applyOpacityChange() {

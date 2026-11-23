@@ -173,11 +173,16 @@ final class UncommittedChangesViewController: NSViewController {
         loadChanges()
     }
 
-    /// Draws the diff text in the editor font from `config`. Built diffs are
+    /// Draws the diff text in the editor font family from `config`, at
+    /// `[diff] font_size` when set, else the editor's size. Built diffs are
     /// re-rendered in place, so their rows (and the comments on them) stay
     /// put, and the reader's place is held.
     func applyConfig(_ config: Config) {
-        let font = EditorViewController.editorFont(for: config.editor ?? EditorConfig())
+        var editorConfig = config.editor ?? EditorConfig()
+        if let diffSize = config.diff.fontSize {
+            editorConfig.fontSize = diffSize
+        }
+        let font = EditorViewController.editorFont(for: editorConfig)
         guard font != diffFont else { return }
         diffFont = font
         diffLineHeight = Metrics.diffLineHeight(for: font)

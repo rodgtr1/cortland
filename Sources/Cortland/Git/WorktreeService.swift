@@ -172,7 +172,11 @@ nonisolated struct WorktreeService: Sendable {
     /// - On a failed merge (conflicts), runs `git merge --abort` in the primary
     ///   root so it's left clean, then throws `.gitFailed` carrying git's output
     ///   so the user can resolve manually.
-    func mergeBranch(_ branch: String, intoPrimaryFrom directory: String) throws {
+    ///
+    /// Returns git's summary of the merge ("Fast-forward", "Already up to
+    /// date.", ...) for the caller to show; `--no-stat` keeps it to that.
+    @discardableResult
+    func mergeBranch(_ branch: String, intoPrimaryFrom directory: String) throws -> String {
         guard Self.isValidBranchName(branch) else {
             throw WorktreeError.gitFailed("invalid branch name: \(branch)")
         }
@@ -196,7 +200,7 @@ nonisolated struct WorktreeService: Sendable {
             throw WorktreeError.primaryHasUncommittedChanges
         }
 
-        let result = try git.run(repositoryRoot: primaryRoot, arguments: ["merge", branch])
+        let result = try git.run(repositoryRoot: primaryRoot, arguments: ["merge", "--no-stat", branch])
         guard result.succeeded else {
             // Leave the primary tree clean: undo the half-applied merge so the
             // user isn't dropped into a conflicted main they didn't ask for.
@@ -204,6 +208,7 @@ nonisolated struct WorktreeService: Sendable {
             let combined = (result.stdout + "\n" + result.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
             throw WorktreeError.gitFailed(combined.isEmpty ? "git merge failed" : combined)
         }
+        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Prunes stale worktree admin entries — bookkeeping for worktrees whose

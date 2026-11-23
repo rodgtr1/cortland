@@ -31,10 +31,11 @@ final class ChangesPaneFontTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func config(family: String = "", size: Int = 13) -> Config {
+    private func config(family: String = "", size: Int = 13, diffSize: Int? = nil) -> Config {
         var config = Config()
         config.editor?.fontFamily = family
         config.editor?.fontSize = size
+        config.diff.fontSize = diffSize
         return config
     }
 
@@ -237,5 +238,62 @@ final class ChangesPaneFontTests: XCTestCase {
         // and a comment anchor still land on the same diff line.
         let rerendered = InlineDiffRenderer.render(sampleDiff, fileExtension: "swift", font: pane.diffFont)
         XCTAssertEqual(ChangesComments.rows(in: rerendered), rowsBefore)
+    }
+
+    // MARK: - 6. Diff font size
+
+    func testPaneUsesTheDiffSizeWithTheEditorFamily() throws {
+        let pane = makePane()
+        pane.applyConfig(config(family: "Menlo", size: 17, diffSize: 14))
+        pane.display([section("a.swift", lines: 3)])
+        settle(pane)
+
+        let expected = try XCTUnwrap(NSFont(name: "Menlo", size: 14))
+        XCTAssertEqual(pane.diffFont, expected)
+        XCTAssertEqual(codeFont(diffTextView("a.swift", in: pane).textStorage!, line: 1), expected)
+    }
+
+    func testPaneWithoutADiffSizeUsesTheEditorSize() throws {
+        let pane = makePane()
+        pane.applyConfig(config(family: "Menlo", size: 17))
+        pane.display([section("a.swift", lines: 3)])
+        settle(pane)
+
+        let expected = try XCTUnwrap(NSFont(name: "Menlo", size: 17))
+        XCTAssertEqual(pane.diffFont, expected)
+        XCTAssertEqual(codeFont(diffTextView("a.swift", in: pane).textStorage!, line: 1), expected)
+    }
+
+    func testChangingOnlyTheDiffSizeRerendersInPlace() throws {
+        let pane = makePane()
+        let sections = (0..<8).map { section("file\($0).swift", lines: 30) }
+        pane.applyConfig(config(family: "Menlo", size: 17, diffSize: 12))
+        pane.display(sections)
+        settle(pane)
+
+        let scroll = scrollView(pane)
+        let target = sectionView("file4.swift", in: pane)
+        let targetTop = target.convert(target.bounds, to: scroll.documentView!).minY
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: targetTop + 40))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        let before = offsetFromVisibleTop(target, in: pane)
+        let heightBefore = target.frame.height
+        let textView = diffTextView("file4.swift", in: pane)
+
+        pane.applyConfig(config(family: "Menlo", size: 17, diffSize: 16))
+        settle(pane)
+
+        let expected = try XCTUnwrap(NSFont(name: "Menlo", size: 16))
+        XCTAssertEqual(pane.diffFont, expected)
+        XCTAssertTrue(diffTextView("file4.swift", in: pane) === textView)
+        XCTAssertEqual(codeFont(textView.textStorage!, line: 0), expected)
+        XCTAssertEqual(
+            gutterIndent(textView.textStorage!, line: 0) ?? 0,
+            DiffLineBackgroundLayoutManager.gutterMetrics(for: expected).width,
+            accuracy: 0.01
+        )
+        XCTAssertGreaterThan(target.frame.height, heightBefore)
+        XCTAssertTrue(sectionView("file4.swift", in: pane) === target)
+        XCTAssertEqual(offsetFromVisibleTop(target, in: pane), before, accuracy: 1)
     }
 }

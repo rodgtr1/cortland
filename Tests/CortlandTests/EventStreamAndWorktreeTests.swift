@@ -323,7 +323,11 @@ final class EventStreamAndWorktreeTests: XCTestCase {
         try git(["commit", "-qm", "feature work"])
         try git(["checkout", "-q", "main"])
 
-        try WorktreeService().mergeBranch("feature", intoPrimaryFrom: repo.path)
+        let summary = try WorktreeService().mergeBranch("feature", intoPrimaryFrom: repo.path)
+
+        // git's summary comes back for the success sheet, without the diffstat.
+        XCTAssertTrue(summary.hasSuffix("Fast-forward"), summary)
+        XCTAssertEqual(try WorktreeService().mergeBranch("feature", intoPrimaryFrom: repo.path), "Already up to date.")
 
         // The feature file is now on main and the tree is clean.
         XCTAssertTrue(FileManager.default.fileExists(atPath: repo.appendingPathComponent("feature.txt").path))

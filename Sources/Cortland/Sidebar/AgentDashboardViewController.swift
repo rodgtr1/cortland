@@ -640,6 +640,9 @@ extension AgentDashboardViewController: NSTableViewDelegate {
         dot.font = NSFont.systemFont(ofSize: 10)
         dot.textColor = stateColor
         dot.translatesAutoresizingMaskIntoConstraints = false
+        // The file lines pin to both edges of the row; without this the dot
+        // stretches to take up their slack and pushes the text column right.
+        dot.setContentHuggingPriority(.required, for: .horizontal)
 
         let titleLabel = NSTextField(labelWithString: rowData.title)
         titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .medium)

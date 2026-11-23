@@ -527,6 +527,7 @@ default_cwd = "~"
 
 [diff]
 context_lines = 3
+# font_size = 13             # changes pane diff text; unset follows [editor] font_size
 
 [editor]
 file_open_mode = "terminal"  # terminal ($EDITOR/nvim) | builtin (Cortland's editor pane)
