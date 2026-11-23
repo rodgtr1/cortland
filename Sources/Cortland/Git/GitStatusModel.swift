@@ -131,7 +131,8 @@ class GitStatusModel {
     // Set on the main actor; torn down in the nonisolated deinit at end-of-life.
     nonisolated(unsafe) private var refreshTimer: Timer?
     // The app's shared FSEvents change detector — see RepositoryWatcher.
-    private let watcher = RepositoryWatcher()
+    // The minimum interval caps sustained writes at one refresh a second.
+    private let watcher = RepositoryWatcher(minimumInterval: 1.0)
     private let gitService: GitService
     private var refreshGeneration: Int = 0
     // Coalesce overlapping refreshes: while a background git query is running, a
@@ -232,10 +233,23 @@ class GitStatusModel {
         // .git/worktrees/<name> dir, not under the checkout root — watch both so
         // an agent's stages/commits fire the watcher, not just the fallback poll.
         var watchPaths = [repositoryRoot]
-        if let gitDir = Self.linkedWorktreeGitDir(forRoot: repositoryRoot) {
-            watchPaths.append(gitDir)
+        let linkedGitDir = Self.linkedWorktreeGitDir(forRoot: repositoryRoot)
+        if let linkedGitDir {
+            watchPaths.append(linkedGitDir)
         }
-        watcher.start(paths: watchPaths)
+        let status = GitWatchFilter.statusFilter(root: repositoryRoot, linkedGitDir: linkedGitDir)
+        watcher.start(paths: watchPaths, filter: status.filter, onFire: status.onFire)
+    }
+
+    /// The repository's git directory: `<root>/.git` when that is a directory,
+    /// else the linked worktree's resolved pointer; nil when neither resolves.
+    nonisolated static func gitDirectory(forRoot root: String) -> String? {
+        let dotGit = URL(fileURLWithPath: root).appendingPathComponent(".git").path
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory), isDirectory.boolValue {
+            return dotGit
+        }
+        return linkedWorktreeGitDir(forRoot: root)
     }
 
     /// For a linked worktree whose root `.git` is a *file*, the resolved git

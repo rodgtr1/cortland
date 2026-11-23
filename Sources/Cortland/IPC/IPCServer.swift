@@ -855,7 +855,17 @@ nonisolated final class IPCServer: @unchecked Sendable {
             let reader = Thread { [weak self] in
                 EventBroadcaster.shared.addSubscriber(clientFD, filter: filter, includeBacklog: includeBacklog)
                 var drain = [UInt8](repeating: 0, count: 256)
-                while read(clientFD, &drain, drain.count) > 0 { /* clients don't send */ }
+                // The broadcaster made the fd non-blocking, so wait for input (or
+                // hang-up, or the broadcaster's shutdown) in poll() rather than
+                // mistaking EAGAIN for EOF.
+                while true {
+                    let count = read(clientFD, &drain, drain.count)
+                    if count > 0 { continue }   // clients don't send
+                    if count < 0, errno == EINTR { continue }
+                    guard count < 0, errno == EAGAIN || errno == EWOULDBLOCK else { break }
+                    var pfd = pollfd(fd: clientFD, events: Int16(POLLIN), revents: 0)
+                    if poll(&pfd, 1, -1) < 0, errno != EINTR { break }
+                }
                 EventBroadcaster.shared.removeSubscriber(clientFD)
                 self?.releaseEventSubscriberSlot()
             }

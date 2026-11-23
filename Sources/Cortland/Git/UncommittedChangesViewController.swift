@@ -106,7 +106,8 @@ final class UncommittedChangesViewController: NSViewController {
     /// Collapse and Viewed marks, keyed by relative path, for this pane only.
     private var sectionStates = ChangesSectionStates()
     private var requests = LatestRequestGate()
-    private let watcher = RepositoryWatcher()
+    /// At most one refresh a second while a build or install keeps writing.
+    private let watcher = RepositoryWatcher(minimumInterval: 1.0)
     /// The repository changed while the pane was hidden.
     private var isStale = false
 
@@ -590,10 +591,14 @@ final class UncommittedChangesViewController: NSViewController {
     private func startWatching() {
         watcher.onChange = { [weak self] in self?.repositoryChanged() }
         var paths = [repositoryPath]
-        if let gitDir = GitStatusModel.linkedWorktreeGitDir(forRoot: repositoryPath) {
-            paths.append(gitDir)
+        let linkedGitDir = GitStatusModel.linkedWorktreeGitDir(forRoot: repositoryPath)
+        if let linkedGitDir {
+            paths.append(linkedGitDir)
         }
-        watcher.start(paths: paths)
+        // Drops object, reflog, and ignored-directory writes, which change
+        // nothing this pane shows.
+        let status = GitWatchFilter.statusFilter(root: repositoryPath, linkedGitDir: linkedGitDir)
+        watcher.start(paths: paths, filter: status.filter, onFire: status.onFire)
     }
 
     /// The pane is on screen only while its tab is attached to the window.

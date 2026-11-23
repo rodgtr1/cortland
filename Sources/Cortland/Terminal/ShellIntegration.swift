@@ -108,7 +108,8 @@ enum ShellIntegration {
             kept += "\n"
         }
         kept += "\n\(zshrcMarker)\n\(zshrcSourceLine)\n"
-        try kept.write(to: url, atomically: true, encoding: .utf8)
+        // Through a symlink (dotfiles repo) to its target, so the link survives.
+        try kept.write(to: Config.resolvingSymlinkForWrite(url), atomically: true, encoding: .utf8)
         return true
     }
 

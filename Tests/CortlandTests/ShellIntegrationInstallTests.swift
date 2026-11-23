@@ -82,6 +82,37 @@ final class ShellIntegrationInstallTests: XCTestCase {
         XCTAssertTrue(ShellIntegration.isInstalledInZshrc(at: zshrc))
     }
 
+    func testInstallKeepsZshrcPermissions() throws {
+        let dir = try makeTempDir()
+        defer { try? fm.removeItem(at: dir) }
+        let zshrc = dir.appendingPathComponent(".zshrc")
+        try "export EDITOR=vim\n".write(to: zshrc, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: zshrc.path)
+
+        XCTAssertTrue(try ShellIntegration.installInZshrc(at: zshrc))
+
+        XCTAssertEqual(try fm.attributesOfItem(atPath: zshrc.path)[.posixPermissions] as? Int, 0o600)
+        XCTAssertTrue(try String(contentsOf: zshrc, encoding: .utf8).contains(sourceLineNeedle))
+    }
+
+    func testInstallWritesThroughASymlinkedZshrc() throws {
+        let dir = try makeTempDir()
+        defer { try? fm.removeItem(at: dir) }
+        let dotfiles = dir.appendingPathComponent("dotfiles")
+        try fm.createDirectory(at: dotfiles, withIntermediateDirectories: true)
+        let real = dotfiles.appendingPathComponent("zshrc")
+        try "export EDITOR=vim\n".write(to: real, atomically: true, encoding: .utf8)
+        let zshrc = dir.appendingPathComponent(".zshrc")
+        try fm.createSymbolicLink(atPath: zshrc.path, withDestinationPath: "dotfiles/zshrc")
+
+        XCTAssertTrue(try ShellIntegration.installInZshrc(at: zshrc))
+
+        XCTAssertEqual(try fm.attributesOfItem(atPath: zshrc.path)[.type] as? FileAttributeType, .typeSymbolicLink)
+        let updated = try String(contentsOf: real, encoding: .utf8)
+        XCTAssertTrue(updated.hasPrefix("export EDITOR=vim\n"))
+        XCTAssertTrue(updated.contains(sourceLineNeedle))
+    }
+
     func testInstallIsIdempotent() throws {
         let dir = try makeTempDir()
         defer { try? fm.removeItem(at: dir) }

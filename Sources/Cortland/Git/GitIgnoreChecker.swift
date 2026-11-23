@@ -113,7 +113,7 @@ class GitIgnoreChecker {
 
     /// Runs `git ls-files` for ignored entries off the main actor. Returns the
     /// relative paths, or nil when git is unavailable / the dir isn't a repo.
-    private nonisolated static func loadIgnoredFiles(rootPath: String) -> Set<String>? {
+    nonisolated static func loadIgnoredFiles(rootPath: String) -> Set<String>? {
         // Via the shared runner: it drains both stdout and stderr on separate
         // queues (so a repo whose git writes >64KB to stderr can't deadlock the
         // child, which the old hand-rolled version risked), and adds a timeout.

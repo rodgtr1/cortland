@@ -24,6 +24,16 @@ final class RepositoryWatcher {
 
     private let debounce: TimeInterval
     private let latency: TimeInterval
+    // The least time between two `onChange` firings, or nil for a plain
+    // debounce. Events inside the window collapse into one trailing firing.
+    private let minimumInterval: TimeInterval?
+    private var lastFired: DispatchTime?
+    // Decides whether one event path is worth a firing; nil means every event
+    // counts. Held only while watching, so whatever it captures (an
+    // ignored-directory subscription) is released by `stop()`.
+    private var pathFilter: ((String) -> Bool)?
+    // Runs just before each `onChange` while watching; cleared by `stop()`.
+    private var onFire: (() -> Void)?
     // Set/torn down on the main actor; reached from the nonisolated deinit at
     // end-of-life, so they opt out of isolation like GitStatusModel's did.
     nonisolated(unsafe) private var eventStream: FSEventStreamRef?
@@ -32,9 +42,12 @@ final class RepositoryWatcher {
 
     /// `debounce` collapses a burst of file writes into one `onChange`;
     /// `latency` is the FSEvents coalescing window before the callback fires.
-    init(debounce: TimeInterval = 0.3, latency: TimeInterval = 0.5) {
+    /// `minimumInterval`, when set, keeps a steady stream of events from firing
+    /// more than once per interval.
+    init(debounce: TimeInterval = 0.3, latency: TimeInterval = 0.5, minimumInterval: TimeInterval? = nil) {
         self.debounce = debounce
         self.latency = latency
+        self.minimumInterval = minimumInterval
     }
 
     // Tear down the stream directly: the resource handles are nonisolated(unsafe)
@@ -63,10 +76,18 @@ final class RepositoryWatcher {
     /// agent's stages/commits fire no event and only the fallback poll notices.
     /// A no-op restart is avoided by the caller (this always rebuilds), so
     /// callers should guard on changed paths when that matters.
-    func start(paths: [String]) {
+    ///
+    /// With a `filter`, the stream reports individual files and a callback
+    /// schedules a firing only if the filter passes one of its paths (or
+    /// FSEvents asks for a rescan). The filter runs on the main actor for every
+    /// event, so it must answer from memory. `onFire` runs before each
+    /// `onChange` this stream causes.
+    func start(paths: [String], filter: ((String) -> Bool)? = nil, onFire: (() -> Void)? = nil) {
         stop()
         watchedPaths = paths
         guard !paths.isEmpty else { return }
+        pathFilter = filter
+        self.onFire = onFire
 
         // The stream is dispatched to the main queue (below), so the callback
         // already runs on the main actor — assert that to reach the watcher.
@@ -74,6 +95,15 @@ final class RepositoryWatcher {
             guard let info = info else { return }
             let box = Unmanaged<Box>.fromOpaque(info).takeUnretainedValue()
             MainActor.assumeIsolated { box.watcher?.scheduleDebounced() }
+        }
+        // Paths are CFStrings (kFSEventStreamCreateFlagUseCFTypes below); copy
+        // them and the flags out of the C buffers inside the callback.
+        let filteredCallback: FSEventStreamCallback = { _, info, numEvents, eventPaths, eventFlags, _ in
+            guard let info = info else { return }
+            let box = Unmanaged<Box>.fromOpaque(info).takeUnretainedValue()
+            let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] ?? []
+            let flags = Array(UnsafeBufferPointer(start: eventFlags, count: numEvents))
+            MainActor.assumeIsolated { box.watcher?.handleEvents(paths: paths, flags: flags) }
         }
 
         // The context retains a weak box, not the watcher: FSEventStreamCreate
@@ -99,12 +129,15 @@ final class RepositoryWatcher {
         let created = withExtendedLifetime(box) {
             FSEventStreamCreate(
                 nil,
-                callback,
+                filter == nil ? callback : filteredCallback,
                 &context,
                 paths as CFArray,
                 FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
                 latency,
-                FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
+                // File-level events only when a filter needs the paths.
+                filter == nil
+                    ? FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
+                    : FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes)
             )
         }
         guard let stream = created else {
@@ -122,6 +155,8 @@ final class RepositoryWatcher {
         pending?.cancel()
         pending = nil
         watchedPaths = []
+        pathFilter = nil
+        onFire = nil
         guard let stream = eventStream else { return }
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
@@ -145,12 +180,44 @@ final class RepositoryWatcher {
         return nil
     }
 
-    private func scheduleDebounced() {
+    /// One FSEvents callback's worth of events from a filtered stream. Every
+    /// path goes through the filter, even after one passes, because a filter
+    /// may act on what it sees (a `.gitignore` event requests a reload).
+    func handleEvents(paths: [String], flags: [FSEventStreamEventFlags]) {
+        // When FSEvents loses history or asks for a rescan, the paths say
+        // nothing reliable, so the batch always counts.
+        let mustRescan = FSEventStreamEventFlags(
+            kFSEventStreamEventFlagMustScanSubDirs
+                | kFSEventStreamEventFlagUserDropped
+                | kFSEventStreamEventFlagKernelDropped
+                | kFSEventStreamEventFlagRootChanged
+        )
+        var relevant = flags.contains { $0 & mustRescan != 0 }
+        for path in paths {
+            if pathFilter?(path) ?? true { relevant = true }
+        }
+        guard relevant else { return }
+        scheduleDebounced()
+    }
+
+    func scheduleDebounced() {
         pending?.cancel()
+        let now = DispatchTime.now()
+        var deadline = now + debounce
+        // Inside the window after the last firing, wait for its end instead:
+        // the burst still yields exactly one trailing firing.
+        if let minimumInterval, let lastFired {
+            deadline = max(deadline, lastFired + minimumInterval)
+        }
         let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.onChange?() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.lastFired = .now()
+                self.onFire?()
+                self.onChange?()
+            }
         }
         pending = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: deadline, execute: work)
     }
 }

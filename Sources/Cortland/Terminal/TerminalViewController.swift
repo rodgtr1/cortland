@@ -568,9 +568,11 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     private let gitService = GitService()
     // FSEvents-backed branch tracking for the pane title, so an in-place branch
     // switch or commit (which leaves the cwd unchanged) refreshes the title
-    // without polling. Points at the current cwd's repository root.
+    // without polling. Points at the current cwd's repository git directory,
+    // filtered to HEAD, so working-tree writes never reach it.
     private let branchWatcher = RepositoryWatcher()
     private var watchedRepoRoot: String?
+    private var watchedGitDir: String?
 
     // SwiftTerm tracks the exact child PID; scanning `ps` for "a child of
     // this app" breaks as soon as a second tab (or any transient child
@@ -1272,6 +1274,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
             // title shows just the directory (no bogus "(unknown)").
             let repositoryRoot = self.gitService.repositoryRoot(from: cwd)
             let branch = repositoryRoot.flatMap { try? self.gitService.currentBranch(repositoryRoot: $0) }
+            let gitDir = repositoryRoot.flatMap { GitStatusModel.gitDirectory(forRoot: $0) }
 
             // GitService reports a detached HEAD already parenthesized as
             // "(sha)"; unwrap it so neither the window title nor the tab title
@@ -1297,7 +1300,7 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
 
                 // Point the FSEvents watcher at the current repo so an in-place
                 // branch change refreshes the title without polling.
-                self.updateBranchWatch(repositoryRoot: repositoryRoot)
+                self.updateBranchWatch(repositoryRoot: repositoryRoot, gitDir: gitDir)
 
                 // Notify delegate for tab title updates, only on a real change:
                 // the branch watcher calls this on every file-change burst, and
@@ -1323,12 +1326,16 @@ class TerminalViewController: NSViewController, LocalProcessTerminalViewDelegate
     }
 
     /// (Re)targets the branch watcher when the pane's repository changes. A no-op
-    /// when the root is unchanged so an FSEvents-driven `updateTitle` doesn't
-    /// tear down and rebuild the very stream that triggered it.
-    private func updateBranchWatch(repositoryRoot: String?) {
-        guard repositoryRoot != watchedRepoRoot else { return }
+    /// when the root and git dir are unchanged so an FSEvents-driven `updateTitle`
+    /// doesn't tear down and rebuild the very stream that triggered it. With a
+    /// `gitDir` it watches only that directory's HEAD; without one, the root.
+    private func updateBranchWatch(repositoryRoot: String?, gitDir: String?) {
+        guard repositoryRoot != watchedRepoRoot || gitDir != watchedGitDir else { return }
         watchedRepoRoot = repositoryRoot
-        if let repositoryRoot {
+        watchedGitDir = gitDir
+        if repositoryRoot != nil, let gitDir {
+            branchWatcher.start(paths: [gitDir], filter: { GitWatchFilter.isBranchEvent($0, gitDir: gitDir) })
+        } else if let repositoryRoot {
             branchWatcher.start(root: repositoryRoot)
         } else {
             branchWatcher.stop()

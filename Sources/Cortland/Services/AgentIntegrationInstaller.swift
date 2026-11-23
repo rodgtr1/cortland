@@ -462,7 +462,8 @@ nonisolated enum AgentIntegrationInstaller {
             at: settingsURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try data.write(to: settingsURL, options: .atomic)
+        // Through a symlink (dotfiles repo) to its target, so the link survives.
+        try data.write(to: Config.resolvingSymlinkForWrite(settingsURL), options: .atomic)
     }
 
     /// Pure core of `syncClaudeAutoApprove`: mutates a parsed settings dict to
@@ -632,7 +633,8 @@ nonisolated enum AgentIntegrationInstaller {
             at: configURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try updated.write(to: configURL, atomically: true, encoding: .utf8)
+        // Through a symlink (dotfiles repo) to its target, so the link survives.
+        try updated.write(to: Config.resolvingSymlinkForWrite(configURL), atomically: true, encoding: .utf8)
     }
 
     /// Codex (sandbox_mode, approval_policy) pairs per level — the config-key form
@@ -784,7 +786,8 @@ nonisolated enum AgentIntegrationInstaller {
             at: settingsURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try data.write(to: settingsURL, options: .atomic)
+        // Through a symlink (dotfiles repo) to its target, so the link survives.
+        try data.write(to: Config.resolvingSymlinkForWrite(settingsURL), options: .atomic)
     }
 
     /// Appends a command hook group for `event` unless an equivalent hook is
@@ -931,7 +934,8 @@ nonisolated enum AgentIntegrationInstaller {
             at: configURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try config.write(to: configURL, atomically: true, encoding: .utf8)
+        // Through a symlink (dotfiles repo) to its target, so the link survives.
+        try config.write(to: Config.resolvingSymlinkForWrite(configURL), atomically: true, encoding: .utf8)
     }
 
     /// Drops every `[[hooks.<event>]]` block that runs a pre-rename helper.

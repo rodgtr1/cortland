@@ -53,6 +53,11 @@ nonisolated struct CommandRecorder {
     /// Raw output captured per command is bounded so a runaway log tail can't
     /// grow this pane's memory without limit; the tail is what agents read.
     private static let maxCommandOutputChars = 256_000
+    /// Output retained across all of a pane's records. Over it, the oldest
+    /// records shrink to their last `shrunkCommandOutputChars` first, so a pane
+    /// that ran many noisy commands can't hold 100 x 256KB for its whole life.
+    static let maxRetainedOutputChars = 2_000_000
+    static let shrunkCommandOutputChars = 8_000
 
     private struct InFlightCommand {
         let command: String
@@ -66,6 +71,9 @@ nonisolated struct CommandRecorder {
     /// every output chunk.
     private var inFlightOutput = ""
     private var commandRecords: [TerminalCommandRecord] = []
+    /// Sum of `output.count` over `commandRecords`, kept as records come and go
+    /// so an append never re-counts every record.
+    private(set) var retainedOutputChars = 0
 
     /// True between a `C` mark and the matching `D` — a foreground command is
     /// running.
@@ -111,13 +119,42 @@ nonisolated struct CommandRecorder {
                 finishedAt: date,
                 promptRow: inFlight.promptRow
             ))
+            retainedOutputChars += cleanOutput.count
             if commandRecords.count > Self.maxCommandRecords {
-                commandRecords.removeFirst(commandRecords.count - Self.maxCommandRecords)
+                let excess = commandRecords.count - Self.maxCommandRecords
+                for record in commandRecords.prefix(excess) {
+                    retainedOutputChars -= record.output.count
+                }
+                commandRecords.removeFirst(excess)
             }
+            shrinkOldestOutputToBudget()
         }
         inFlightCommand = nil
         inFlightOutput = ""
         return TerminalCommandStatus(exitCode: exitCode, duration: duration, command: commandLine)
+    }
+
+    /// Shrinks the oldest records' output to its tail until the total fits the
+    /// budget. The newest record is never shrunk, and no record is dropped.
+    private mutating func shrinkOldestOutputToBudget() {
+        var index = 0
+        while retainedOutputChars > Self.maxRetainedOutputChars, index < commandRecords.count - 1 {
+            let record = commandRecords[index]
+            index += 1
+            // UTF-8 length bounds the Character count, so this skips already
+            // shrunk records without counting them.
+            guard record.output.utf8.count > Self.shrunkCommandOutputChars else { continue }
+            let count = record.output.count
+            guard count > Self.shrunkCommandOutputChars else { continue }
+            commandRecords[index - 1] = TerminalCommandRecord(
+                command: record.command,
+                exitCode: record.exitCode,
+                duration: record.duration,
+                output: String(record.output.suffix(Self.shrunkCommandOutputChars)),
+                finishedAt: record.finishedAt,
+                promptRow: record.promptRow)
+            retainedOutputChars -= count - Self.shrunkCommandOutputChars
+        }
     }
 
     /// The most recently finished commands (oldest first), capped to `limit`

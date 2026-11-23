@@ -290,6 +290,78 @@ final class AgentHookReconcileTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: piExtensionURL.path))
     }
 
+    // MARK: - User-owned files keep their mode and their symlink
+
+    private func mode(of url: URL) throws -> Int {
+        try XCTUnwrap(try fm.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int)
+    }
+
+    private func isSymlink(_ url: URL) throws -> Bool {
+        try fm.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType == .typeSymbolicLink
+    }
+
+    /// Moves `url`'s file into a fake dotfiles repo and leaves a relative
+    /// symlink in its place, as stow does. Returns the real file.
+    private func stow(_ url: URL, as name: String) throws -> URL {
+        let dotfiles = root.appendingPathComponent("dotfiles")
+        try fm.createDirectory(at: dotfiles, withIntermediateDirectories: true)
+        let real = dotfiles.appendingPathComponent(name)
+        try fm.moveItem(at: url, to: real)
+        let relative = String(repeating: "../", count: url.deletingLastPathComponent().pathComponents.count
+            - root.pathComponents.count) + "dotfiles/\(name)"
+        try fm.createSymbolicLink(atPath: url.path, withDestinationPath: relative)
+        return real
+    }
+
+    private let oldCodexIntegration = """
+        model = "gpt-5"
+
+        [[hooks.UserPromptSubmit]]
+        [[hooks.UserPromptSubmit.hooks]]
+        type = "command"
+        command = "/x/.local/bin/cortland-agent-status busy"
+        """
+
+    func testClaudeSettingsKeepTheirPermissions() throws {
+        try writeOldClaudeIntegration()
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: settingsURL.path)
+
+        XCTAssertEqual(reconcile([.claude])[.claude], .reconciled)
+
+        XCTAssertEqual(try mode(of: settingsURL), 0o600)
+        XCTAssertTrue(try hookCommands(event: "SessionStart").contains { $0.hasSuffix("cortland-telemetry") })
+    }
+
+    func testSymlinkedClaudeSettingsStayASymlinkAndTheTargetIsUpdated() throws {
+        try writeOldClaudeIntegration()
+        let real = try stow(settingsURL, as: "claude-settings.json")
+
+        XCTAssertEqual(reconcile([.claude])[.claude], .reconciled)
+
+        XCTAssertTrue(try isSymlink(settingsURL))
+        XCTAssertTrue(try text(of: real).contains("cortland-telemetry"))
+    }
+
+    func testCodexConfigKeepsItsPermissions() throws {
+        try write(oldCodexIntegration, to: codexConfigURL)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: codexConfigURL.path)
+
+        XCTAssertEqual(reconcile([.codex])[.codex], .reconciled)
+
+        XCTAssertEqual(try mode(of: codexConfigURL), 0o600)
+        XCTAssertTrue(try text(of: codexConfigURL).contains("cortland-telemetry"))
+    }
+
+    func testSymlinkedCodexConfigStaysASymlinkAndTheTargetIsUpdated() throws {
+        try write(oldCodexIntegration, to: codexConfigURL)
+        let real = try stow(codexConfigURL, as: "codex-config.toml")
+
+        XCTAssertEqual(reconcile([.codex])[.codex], .reconciled)
+
+        XCTAssertTrue(try isSymlink(codexConfigURL))
+        XCTAssertTrue(try text(of: real).contains("cortland-telemetry"))
+    }
+
     // MARK: - Gate
 
     func testAnXCTestRunIsNotTreatedAsAnInstalledApp() {

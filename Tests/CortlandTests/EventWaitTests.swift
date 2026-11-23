@@ -1,4 +1,5 @@
 import XCTest
+import os
 import CortlandIPCCore
 @testable import Cortland
 
@@ -164,4 +165,109 @@ final class EventWaitTests: XCTestCase {
             }
         })
     }
+
+    // MARK: Stalled subscriber
+
+    private func setBufferSizes(_ fds: [Int32], _ size: Int32) {
+        var value = size
+        let length = socklen_t(MemoryLayout<Int32>.size)
+        setsockopt(fds[0], SOL_SOCKET, SO_SNDBUF, &value, length)
+        setsockopt(fds[1], SOL_SOCKET, SO_RCVBUF, &value, length)
+    }
+
+    /// A subscriber whose peer never reads must be dropped once its buffer is
+    /// full, without the emitting call blocking in write() for it, while a
+    /// draining subscriber keeps getting every line.
+    func testStalledSubscriberIsDroppedWithoutBlockingEmit() throws {
+        let broadcaster = EventBroadcaster()
+        var stalled: [Int32] = [0, 0]
+        var draining: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &stalled), 0)
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &draining), 0)
+        var noSigpipe: Int32 = 1
+        for fd in [stalled[0], draining[0]] {
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, socklen_t(MemoryLayout<Int32>.size))
+        }
+        // Small buffers for the stalled one so a line soon outgrows the space
+        // left; ample ones for the draining one so it never fills.
+        setBufferSizes(stalled, 8_192)
+        setBufferSizes(draining, 1_048_576)
+
+        broadcaster.addSubscriber(stalled[0], includeBacklog: false)
+        broadcaster.addSubscriber(draining[0], includeBacklog: false)
+
+        let drainerPeer = draining[1]
+        let drained = expectation(description: "draining subscriber read every line")
+        let lineCount = 40
+        let drainBox = DrainBox()
+        Thread {
+            var buffer = [UInt8](repeating: 0, count: 65_536)
+            var data = Data()
+            while true {
+                let count = read(drainerPeer, &buffer, buffer.count)
+                if count <= 0 { break }
+                data.append(contentsOf: buffer[0..<count])
+                // hello + every emitted line
+                if data.reduce(0, { $0 + ($1 == 10 ? 1 : 0) }) >= lineCount + 1 { break }
+            }
+            drainBox.set(data)
+            drained.fulfill()
+        }.start()
+
+        // Each line is larger than what an 8KB buffer has left after one of
+        // them, so a blocking write would stall here until the peer reads.
+        let emitted = expectation(description: "emit returned")
+        Thread {
+            for index in 0..<lineCount {
+                var event = CortlandEvent(type: "command")
+                event.paneID = "p"
+                event.command = String(repeating: "x", count: 6_000) + " \(index)"
+                broadcaster.emit(event)
+            }
+            emitted.fulfill()
+        }.start()
+
+        // Bounded, so a regression fails instead of hanging the suite.
+        let result = XCTWaiter.wait(for: [emitted, drained], timeout: 5)
+        defer {
+            broadcaster.removeSubscriber(stalled[0])
+            broadcaster.removeSubscriber(draining[0])
+            close(stalled[1])
+            close(draining[1])
+        }
+        // Closing the stalled peer first unblocks a regressed write so the
+        // emitting thread can exit.
+        if result != .completed { close(stalled[1]); stalled[1] = -1 }
+        XCTAssertEqual(result, .completed, "emit blocked on a subscriber that stopped reading")
+
+        let drainedLines = String(decoding: drainBox.get(), as: UTF8.self).split(separator: "\n")
+        XCTAssertEqual(drainedLines.count, lineCount + 1)
+        XCTAssertTrue(drainedLines.last?.contains("x \(lineCount - 1)\"") ?? false)
+
+        // The stalled one got some lines, then was dropped: its buffered bytes
+        // read out and then EOF (the broadcaster shut it down), not EAGAIN.
+        guard stalled[1] >= 0 else { return }
+        let flags = fcntl(stalled[1], F_GETFL, 0)
+        _ = fcntl(stalled[1], F_SETFL, flags | O_NONBLOCK)
+        var buffer = [UInt8](repeating: 0, count: 65_536)
+        var stalledData = Data()
+        var sawEOF = false
+        while true {
+            let count = read(stalled[1], &buffer, buffer.count)
+            if count == 0 { sawEOF = true; break }
+            if count < 0 { break }
+            stalledData.append(contentsOf: buffer[0..<count])
+        }
+        XCTAssertTrue(sawEOF, "stalled subscriber was not dropped")
+        let stalledLines = stalledData.reduce(0) { $0 + ($1 == 10 ? 1 : 0) }
+        XCTAssertGreaterThanOrEqual(stalledLines, 1, "it received lines before its buffer filled")
+        XCTAssertLessThan(stalledLines, lineCount + 1)
+    }
+}
+
+/// Hands the drainer thread's bytes back to the test.
+private final class DrainBox: Sendable {
+    private let data = OSAllocatedUnfairLock(initialState: Data())
+    func set(_ value: Data) { data.withLock { $0 = value } }
+    func get() -> Data { data.withLock { $0 } }
 }

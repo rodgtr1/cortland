@@ -92,4 +92,85 @@ final class CommandRecorderTests: XCTestCase {
         XCTAssertEqual(TerminalCommandStatus(exitCode: 1, duration: 2.34).summary, "✗ exit 1 · 2.3s")
         XCTAssertEqual(TerminalCommandStatus(exitCode: 0, duration: 90).summary, "✓ exit 0 · 1m 30s")
     }
+
+    // MARK: Retained output budget
+
+    /// `size` characters of output whose last 11 are a marker naming `index`,
+    /// so a shrunk record's surviving tail is identifiable.
+    private func output(_ index: Int, size: Int) -> String {
+        String(repeating: "x", count: size - 11) + String(format: "tail-%05d", index) + "!"
+    }
+
+    private func record(_ recorder: inout CommandRecorder, _ index: Int, size: Int) {
+        recorder.commandStarted(command: "cmd \(index)", promptRow: index)
+        recorder.appendOutput(output(index, size: size))
+        _ = recorder.commandFinished(exitCode: index % 3)
+    }
+
+    func testOutputUnderBudgetIsUntouched() {
+        var recorder = CommandRecorder()
+        // 8 x 250,000 is exactly the 2,000,000 budget: not over it.
+        for index in 0..<8 { record(&recorder, index, size: 250_000) }
+        let records = recorder.recentRecords()
+        XCTAssertEqual(records.count, 8)
+        for (index, rec) in records.enumerated() {
+            XCTAssertEqual(rec.output, output(index, size: 250_000))
+        }
+        XCTAssertEqual(recorder.retainedOutputChars, 2_000_000)
+    }
+
+    func testOverBudgetShrinksOldestToTailAndKeepsNewestIntact() {
+        var recorder = CommandRecorder()
+        for index in 0..<9 { record(&recorder, index, size: 250_000) }
+        let records = recorder.recentRecords()
+        XCTAssertEqual(records.count, 9, "the budget never drops a record")
+
+        // 2,250,000 over a 2,000,000 budget: shrinking record 0 leaves
+        // 2,008,000, still over, so record 1 shrinks too. Record 2 on are whole.
+        let shrunk = CommandRecorder.shrunkCommandOutputChars
+        for index in 0..<2 {
+            XCTAssertEqual(records[index].output.count, shrunk)
+            XCTAssertEqual(records[index].output, String(output(index, size: 250_000).suffix(shrunk)))
+            XCTAssertTrue(records[index].output.hasSuffix(String(format: "tail-%05d!", index)))
+        }
+        for index in 2..<9 {
+            XCTAssertEqual(records[index].output, output(index, size: 250_000))
+        }
+        // Metadata is never touched.
+        for (index, rec) in records.enumerated() {
+            XCTAssertEqual(rec.command, "cmd \(index)")
+            XCTAssertEqual(rec.exitCode, index % 3)
+            XCTAssertEqual(rec.promptRow, index)
+            XCTAssertNotNil(rec.duration)
+        }
+        XCTAssertEqual(recorder.retainedOutputChars, records.reduce(0) { $0 + $1.output.count })
+        XCTAssertLessThanOrEqual(recorder.retainedOutputChars, CommandRecorder.maxRetainedOutputChars)
+    }
+
+    func testTotalStaysWithinBudgetAcrossManyRecords() {
+        var recorder = CommandRecorder()
+        for index in 0..<130 {
+            record(&recorder, index, size: 250_000)
+            XCTAssertLessThanOrEqual(recorder.retainedOutputChars, CommandRecorder.maxRetainedOutputChars)
+            XCTAssertEqual(recorder.recentRecords().last?.output, output(index, size: 250_000),
+                           "the newest record keeps its full output")
+        }
+        let records = recorder.recentRecords()
+        XCTAssertEqual(records.count, 100)
+        XCTAssertEqual(recorder.retainedOutputChars, records.reduce(0) { $0 + $1.output.count })
+    }
+
+    func testShrinkCutsOnCharacterBoundary() {
+        var recorder = CommandRecorder()
+        // Two-scalar graphemes (e + combining acute): a cut on anything but a
+        // Character boundary would leave a bare combining mark at the head.
+        let accented = "e\u{301}"
+        recorder.commandStarted(command: "accents")
+        recorder.appendOutput(String(repeating: accented, count: 100_000))
+        _ = recorder.commandFinished(exitCode: 0)
+        for index in 1..<9 { record(&recorder, index, size: 250_000) }
+        let first = recorder.recentRecords()[0].output
+        XCTAssertEqual(first, String(repeating: accented, count: CommandRecorder.shrunkCommandOutputChars))
+        XCTAssertEqual(first.unicodeScalars.count, 2 * CommandRecorder.shrunkCommandOutputChars)
+    }
 }

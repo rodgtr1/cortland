@@ -137,6 +137,14 @@ nonisolated final class EventBroadcaster: @unchecked Sendable {
         writeLock.lock()
         defer { writeLock.unlock() }
 
+        // Non-blocking so a write to a consumer that stopped draining fails
+        // instead of stalling `emit` on the main thread. The owning reader
+        // thread waits for input in poll() before each read to match.
+        let flags = fcntl(fd, F_GETFL)
+        if flags >= 0 {
+            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        }
+
         lock.lock()
         subscribers[fd] = filter
         let backlog = includeBacklog ? sortedSnapshotLocked() : []
@@ -239,7 +247,12 @@ nonisolated final class EventBroadcaster: @unchecked Sendable {
             var cursor = base
             var remaining = raw.count
             while remaining > 0 {
+                // The fd is non-blocking (see `addSubscriber`), so a line larger
+                // than the space poll found fails with EAGAIN instead of blocking
+                // main until a stalled consumer resumes. A half-written line can't
+                // be recovered, so that drops the subscriber like any failed write.
                 let count = write(fd, cursor, remaining)
+                if count < 0, errno == EINTR { continue }
                 guard count > 0 else { return false }
                 cursor = cursor.advanced(by: count)
                 remaining -= count

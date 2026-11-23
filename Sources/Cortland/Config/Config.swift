@@ -355,7 +355,8 @@ show_on_agent_done = "split"
     /// dotfiles/stow setup and its version control intact. Otherwise returns
     /// `url` unchanged. Resolves only the final component, by design: a relative
     /// stow target is resolved against the symlink's own directory.
-    static func resolvingSymlinkForWrite(_ url: URL) -> URL {
+    /// `nonisolated` so the off-main agent installer can use it too.
+    nonisolated static func resolvingSymlinkForWrite(_ url: URL) -> URL {
         guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else {
             return url
         }
