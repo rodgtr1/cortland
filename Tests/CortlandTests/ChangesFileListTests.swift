@@ -110,8 +110,12 @@ final class ChangesFileListTests: XCTestCase {
             windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
         )!
         row.mouseDown(with: event)
-        // The reveal scroll waits for the next runloop pass.
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        // The reveal scroll waits for the next runloop pass, which a slow
+        // machine may not reach in one fixed wait.
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        } while visibleTop(pane) == 0 && Date() < deadline
         settle(pane)
     }
 
