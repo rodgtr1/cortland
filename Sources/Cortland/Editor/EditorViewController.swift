@@ -163,6 +163,7 @@ class EditorViewController: NSViewController {
         }
 
         scrollView.documentView = textView
+        clipView.matchDocumentWidth()
 
         // The line-number gutter sits beside the scroll view rather than being
         // installed as its vertical ruler. On macOS 26 the scroll view no longer

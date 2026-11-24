@@ -49,10 +49,6 @@ final class EditorClipView: NSClipView {
         matchDocumentWidth()
     }
 
-    override var documentView: NSView? {
-        didSet { matchDocumentWidth() }
-    }
-
     /// NSScrollView re-sizes the document itself while tiling (to its idea of
     /// the content size, which can disagree with this view's bounds while a
     /// ruler is being added or a pane is being split). Every document frame
@@ -62,7 +58,10 @@ final class EditorClipView: NSClipView {
         matchDocumentWidth()
     }
 
-    private func matchDocumentWidth() {
+    /// Called by the owner after it sets the document view. This class must not
+    /// override `documentView`: AppKit reads it from a background queue while
+    /// scrolling, and an override's main-actor check traps there.
+    func matchDocumentWidth() {
         guard pinsDocumentToVisibleWidth,
               let document = documentView,
               bounds.width > 0,
