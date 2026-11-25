@@ -86,8 +86,12 @@ public final class CortlandIPCClient {
     /// copy of the fd closes, and a pane shell forked while the request was in
     /// flight can hold an inherited copy for its whole lifetime, which would
     /// block the read here long after the reply fully arrived.
-    public func send(_ command: [String: Any]) -> [String: Any]? {
-        guard let fd = openConnection(command, halfCloseWrite: true) else { return nil }
+    ///
+    /// Pass `halfCloseWrite: false` when the server watches the connection for
+    /// the caller hanging up while the request waits (the edit-gate hook): a
+    /// half-closed write side reads as EOF there.
+    public func send(_ command: [String: Any], halfCloseWrite: Bool = true) -> [String: Any]? {
+        guard let fd = openConnection(command, halfCloseWrite: halfCloseWrite) else { return nil }
         defer { close(fd) }
 
         var response = Data()

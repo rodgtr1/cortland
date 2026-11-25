@@ -23,7 +23,10 @@ enum EditGateCommand {
 
         let paneID = ProcessInfo.processInfo.environment["CORTLAND_PANE_ID"]
         guard let response = CortlandIPCClient().send(
-                  EditGate.ipcCommand(for: proposal, paneID: paneID)
+                  EditGate.ipcCommand(for: proposal, paneID: paneID),
+                  // Keep the write side open: the app treats EOF on a parked
+                  // request as the hook having exited and withdraws the edit.
+                  halfCloseWrite: false
               ),
               response["ok"] as? Bool == true,
               let accepted = response["accepted"] as? Bool

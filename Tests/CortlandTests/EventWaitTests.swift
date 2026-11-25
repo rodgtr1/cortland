@@ -141,6 +141,35 @@ final class EventWaitTests: XCTestCase {
         })
     }
 
+    /// The edit-gate hook parks at the approval desk, where the app treats EOF
+    /// on the client socket as the hook having exited. With the half-close off,
+    /// the server must not see EOF/hang-up while the request waits.
+    func testSendWithoutHalfCloseLeavesNoEOFForServer() throws {
+        let sawHangup = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+        try withMiniServer(serve: { fd in
+            // Same check as IPCServer.watchForClientDrop.
+            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&pfd, 1, 300)
+            var hungUp = false
+            if ready > 0 {
+                hungUp = (pfd.revents & Int16(POLLHUP | POLLERR)) != 0
+                if !hungUp && (pfd.revents & Int16(POLLIN)) != 0 {
+                    var byte: UInt8 = 0
+                    hungUp = recv(fd, &byte, 1, Int32(MSG_PEEK)) <= 0
+                }
+            }
+            let result = hungUp
+            sawHangup.withLock { $0 = result }
+            let reply = "{\"ok\":true,\"accepted\":true}\n"
+            _ = reply.withCString { write(fd, $0, strlen($0)) }
+        }, test: { client in
+            let response = client.send(["action": "show_diff"], halfCloseWrite: false)
+            XCTAssertEqual(response?["ok"] as? Bool, true)
+            XCTAssertEqual(response?["accepted"] as? Bool, true)
+        })
+        XCTAssertEqual(sawHangup.withLock { $0 }, false, "server saw EOF/hang-up from a client still waiting for its reply")
+    }
+
     func testWaitForLineTimesOutOnSilentStream() throws {
         try withMiniServer(serve: { fd in
             _ = "{\"type\":\"hello\"}\n".withCString { write(fd, $0, strlen($0)) }
