@@ -165,9 +165,30 @@ final class TranscriptUsageTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(u.estimatedCostUSD()), 0.027375, accuracy: 1e-9)
     }
 
+    func testCacheReadsUsePerModelRateWhenSet() {
+        func cost(_ model: String) throws -> Double {
+            try XCTUnwrap(TranscriptUsage(model: model, cacheReadTokens: 1_000_000).estimatedCostUSD())
+        }
+        XCTAssertEqual(try cost("claude-opus-5-5"), 0.20, accuracy: 1e-9)
+        XCTAssertEqual(try cost("claude-fable-5-2"), 0.20, accuracy: 1e-9)
+        XCTAssertEqual(try cost("claude-sonnet-5-5"), 0.10, accuracy: 1e-9)
+        // No per-model read rate: falls back to 0.1x the $5 input rate.
+        XCTAssertEqual(try cost("claude-opus-4-8"), 0.50, accuracy: 1e-9)
+    }
+
     func testRateResolutionToleratesDateSuffix() {
         let rate = TelemetryRates.rate(forModel: "claude-haiku-4-5-20251001")
         XCTAssertEqual(rate, TelemetryRate(inputPerMTok: 1, outputPerMTok: 5))
+    }
+
+    func testRateResolutionForCurrentModels() {
+        XCTAssertEqual(TelemetryRates.rate(forModel: "claude-opus-5-5"), TelemetryRate(inputPerMTok: 4, outputPerMTok: 20, cacheReadPerMTok: 0.20))
+        XCTAssertEqual(TelemetryRates.rate(forModel: "claude-sonnet-5-5"), TelemetryRate(inputPerMTok: 2, outputPerMTok: 10, cacheReadPerMTok: 0.10))
+        XCTAssertEqual(TelemetryRates.rate(forModel: "claude-haiku-5-5"), TelemetryRate(inputPerMTok: 0.10, outputPerMTok: 0.50))
+        XCTAssertEqual(TelemetryRates.rate(forModel: "claude-fable-5-2"), TelemetryRate(inputPerMTok: 8, outputPerMTok: 40, cacheReadPerMTok: 0.20))
+        // Longest prefix: fable-5-2 no longer falls through to fable-5, other fable-5 ids still do.
+        XCTAssertEqual(TelemetryRates.rate(forModel: "claude-fable-5-1"), TelemetryRate(inputPerMTok: 10, outputPerMTok: 50))
+        XCTAssertEqual(TelemetryRates.rate(forModel: "claude-opus-5"), TelemetryRate(inputPerMTok: 5, outputPerMTok: 25))
     }
 
     func testNilForUnknownOrMissingModel() {

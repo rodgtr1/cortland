@@ -1,15 +1,17 @@
 import Foundation
 
-/// Per-1M-token price for a model. Cache pricing is derived from the input rate
-/// (reads ≈0.1×, 5-min writes 1.25×, 1-hour writes 2×), so only the two base
-/// rates are stored.
+/// Per-1M-token price for a model. Cache writes are derived from the input rate
+/// (5-min writes 1.25×, 1-hour writes 2×). Cache reads use `cacheReadPerMTok`
+/// when set, otherwise 0.1× the input rate.
 public struct TelemetryRate: Equatable, Sendable {
     public let inputPerMTok: Double
     public let outputPerMTok: Double
+    public let cacheReadPerMTok: Double?
 
-    public init(inputPerMTok: Double, outputPerMTok: Double) {
+    public init(inputPerMTok: Double, outputPerMTok: Double, cacheReadPerMTok: Double? = nil) {
         self.inputPerMTok = inputPerMTok
         self.outputPerMTok = outputPerMTok
+        self.cacheReadPerMTok = cacheReadPerMTok
     }
 }
 
@@ -24,6 +26,12 @@ public enum TelemetryRates {
         "claude-sonnet-4-6": TelemetryRate(inputPerMTok: 3, outputPerMTok: 15),
         "claude-haiku-4-5": TelemetryRate(inputPerMTok: 1, outputPerMTok: 5),
         "claude-fable-5": TelemetryRate(inputPerMTok: 10, outputPerMTok: 50),
+        "claude-fable-5-2": TelemetryRate(inputPerMTok: 8, outputPerMTok: 40, cacheReadPerMTok: 0.20),
+        "claude-opus-5-5": TelemetryRate(inputPerMTok: 4, outputPerMTok: 20, cacheReadPerMTok: 0.20),
+        "claude-opus-5": TelemetryRate(inputPerMTok: 5, outputPerMTok: 25),
+        "claude-sonnet-5-5": TelemetryRate(inputPerMTok: 2, outputPerMTok: 10, cacheReadPerMTok: 0.10),
+        "claude-sonnet-5": TelemetryRate(inputPerMTok: 2, outputPerMTok: 10),
+        "claude-haiku-5-5": TelemetryRate(inputPerMTok: 0.10, outputPerMTok: 0.50),
     ]
 
     /// Resolves a rate for `model`, tolerating date suffixes by matching the
@@ -101,8 +109,9 @@ public extension TranscriptUsage {
         return min(1.0, max(0.0, Double(contextTokens) / Double(window)))
     }
 
-    /// Estimated USD cost for this usage under `rates`. Cache reads bill ≈0.1×
-    /// the input rate; 5-minute cache writes 1.25×, 1-hour writes 2×. Returns
+    /// Estimated USD cost for this usage under `rates`. Cache reads bill at the
+    /// rate's `cacheReadPerMTok`, else 0.1× the input rate; 5-minute cache
+    /// writes 1.25×, 1-hour writes 2×. Returns
     /// nil when the model has no known rate (e.g. a non-Claude agent), so the
     /// dashboard can show tokens without a misleading "$0.00".
     func estimatedCostUSD(rates: [String: TelemetryRate] = TelemetryRates.defaults) -> Double? {
@@ -111,9 +120,10 @@ public extension TranscriptUsage {
         guard let rate = TelemetryRates.rate(forModel: model, rates: rates) else { return nil }
         let inRate = rate.inputPerMTok / 1_000_000
         let outRate = rate.outputPerMTok / 1_000_000
+        let readRate = rate.cacheReadPerMTok.map { $0 / 1_000_000 } ?? 0.1 * inRate
         return Double(inputTokens) * inRate
             + Double(outputTokens) * outRate
-            + Double(cacheReadTokens) * 0.1 * inRate
+            + Double(cacheReadTokens) * readRate
             + Double(cacheCreation5mTokens) * 1.25 * inRate
             + Double(cacheCreation1hTokens) * 2.0 * inRate
     }
